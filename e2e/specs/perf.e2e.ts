@@ -104,6 +104,47 @@ async function holdKey(key: string, presses: number) {
   );
 }
 
+/**
+ * A fast trackpad flick: `pxPerFrame` for `frames` frames. Counts frames where part of the viewport
+ * shows no rows, rows still loading, or rows rendered for a different scroll position.
+ */
+async function flick(pxPerFrame: number, frames: number) {
+  return browser.executeAsync(
+    (pxPerFrame: number, frames: number, done: (r: { intervals: number[]; blank: number }) => void) => {
+      const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+      const intervals: number[] = [];
+      let blank = 0;
+      let last = performance.now();
+      let n = 0;
+      const isBlank = () => {
+        const box = el.getBoundingClientRect();
+        for (let i = 0; i <= 8; i++) {
+          const y = Math.min(box.bottom - 1, Math.max(box.top + 1, box.top + (box.height * i) / 8));
+          const hit = document.elementFromPoint(box.left + box.width / 2, y)?.closest(".row, .insert");
+          if (!hit || hit.classList.contains("row-loading")) return true;
+        }
+        return false;
+      };
+      const step = (now: number) => {
+        intervals.push(now - last);
+        last = now;
+        el.scrollTop += pxPerFrame;
+        if (++n < frames) requestAnimationFrame(step);
+        else done({ intervals: intervals.slice(1), blank });
+      };
+      // Checked in a second rAF pass each frame: what the frame after the scroll shows.
+      const check = () => {
+        if (isBlank()) blank++;
+        if (n < frames) requestAnimationFrame(check);
+      };
+      requestAnimationFrame(step);
+      requestAnimationFrame(check);
+    },
+    pxPerFrame,
+    frames,
+  );
+}
+
 const percentile = (values: number[], p: number) => {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
@@ -158,6 +199,13 @@ describe("performance budgets (synthetic worst case)", () => {
   it("scrolls the whole 50k-line diff at 60 fps", async () => {
     const { intervals, blank } = await scrollFrames(60, 600);
     report("scroll whole diff", intervals, blank);
+  });
+
+  it("flicks through the diff without blank frames", async () => {
+    const down = await flick(250, 240);
+    report("flick down", down.intervals, down.blank);
+    const up = await flick(-250, 240);
+    report("flick up", up.intervals, up.blank);
   });
 
   it("scrolls the 20k-line file at 60 fps", async () => {

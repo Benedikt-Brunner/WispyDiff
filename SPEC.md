@@ -30,7 +30,14 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - Two modes, toggled per file (`s`) with a global default (`S`, remembered): **unified** and **full-file side-by-side** (whole base file vs whole head file). The two sides are aligned line for line — changes sit opposite what they replaced, with hatched filler where one side has more lines — so a single scroll keeps them in sync and no connector bands are needed. Side-by-side rows always span the viewport 50/50; horizontal scrolling moves the code in both halves together. No hunk-only split view.
 - Collapsed by default: lockfiles, minified files and source maps, snapshots, `linguist-generated` (from the head's `.gitattributes`). `e` collapses/expands the current file. "Hide whitespace changes" (`w`, default off) recomputes the range with `-w`. Per-repo local ignore list via the palette (`> ignore <glob>`, `> stop ignoring …`; gitignore-style globs).
 - `⌘K` palette: PR URLs / `owner/repo#N`, recent PRs, and `>` commands.
-- Keyboard-first: `j/k` hunks (the view glides there; holding the key scrolls through the changes and settles on one when released), `n/p` files, `[ ] { }` stack range, `s`/`S` side-by-side (file/all), `e` collapse, `w` whitespace, `c` comment, `v` viewed, `M` mark reviewed, `d` since checkpoint, `⌘`-click / `u` usages, `/` search repo, `⌘I` inbox, `⌘K` palette, `⌘B` file list, `a` assistant.
+- Keyboard-first (`?` or `⌘/` lists every shortcut):
+  - Moving: `↑/↓` scroll (held: continuously); `⇧↑/⇧↓` or `n/p` next/previous file (its header goes to the top); `j/k` hunks (the view glides there; holding the key scrolls through the changes and settles on one when released); `⌘B` file list.
+  - Stack: `Tab`/`⇧Tab` next/previous PR on its own (wrapping); `[ ]` move the range, `{ }` extend it; `w` whitespace; `M` mark reviewed; `d` since checkpoint.
+  - Files: `s`/`S` side-by-side (file/all); `Space` or `e` collapse/expand without touching the viewed mark; `v` viewed — marking moves on to the next file not yet viewed, so `v v v` ticks off consecutive files.
+  - Review: `c` comment, `⌘`-click / `u` usages, `/` search repo, `a` assistant; `Esc` closes the assistant first, then other panels, then an open comment box.
+  - Anywhere: `⌘K` palette, `⌘I` inbox, `⌘T` theme.
+- **Themes** (`⌘T`, or `> Change theme…`): System (follows macOS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia. Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
+- Scrolling never shows blank rows: rows for a new scroll position render before the frame paints, a screen of rows is drawn beyond each edge, and rows two screens ahead are fetched.
 
 ## Offline
 - **Every inbox stack is prefetched** in the background (at launch, every 5 minutes, and on window focus): the full stack is discovered and fetched, each inbox PR alone and the whole stack are precomputed (highlighted full files included), and review threads are cached. Stacks of PRs that left the inbox because they were merged/closed are evicted unless they have unposted drafts.
