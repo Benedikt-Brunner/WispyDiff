@@ -1,4 +1,4 @@
-//! Opens a PR through the full service, like the app does:
+//! Opens a PR's stack through the full service, like the app does:
 //! `cargo run --release -p wispy-core --example open_pr -- <api-base> <owner/repo#N>`
 use std::time::Instant;
 
@@ -23,10 +23,14 @@ async fn main() {
         Highlighter::new(),
     );
     let t = Instant::now();
-    let meta = service.fetch_pull_request(&pr).await.unwrap();
-    println!("metadata {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    let stack = service.discover(&pr).await.unwrap();
+    println!("discover {:.0} ms: {:?}", t.elapsed().as_secs_f64() * 1e3, stack.prs.iter().map(|p| p.number).collect::<Vec<_>>());
     let t = Instant::now();
-    let loaded = service.load(&pr, meta).unwrap();
-    println!("load {:.0} ms, {} files", t.elapsed().as_secs_f64() * 1e3, loaded.view.summary.files.len());
+    let snapshot = service.fetch(stack).unwrap();
+    println!("fetch {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    let t = Instant::now();
+    let focus = snapshot.stack.focus;
+    let view = service.range(&snapshot, focus, focus).unwrap();
+    println!("range {:.0} ms, {} files", t.elapsed().as_secs_f64() * 1e3, view.summary.files.len());
     std::fs::remove_dir_all(data).ok();
 }

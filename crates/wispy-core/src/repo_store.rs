@@ -2,11 +2,22 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::git::Git;
+use crate::github::PullRequest;
 
 /// App-managed blobless bare clones, one per GitHub repository.
 pub struct RepoStore {
     root: PathBuf,
     github_token: Option<String>,
+}
+
+/// Where each PR of a stack starts and ends, after fetching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackPoints {
+    /// Head commit of each PR, bottom to top.
+    pub heads: Vec<String>,
+    /// The commit each PR's own diff starts from: the merge base with the default branch for
+    /// the bottom PR, and with the PR below for the others (GitHub's three-dot diff).
+    pub bases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,5 +73,30 @@ impl RepoStore {
         let base_sha = git.run_string(&["rev-parse", &base_local])?;
         let merge_base = git.run_string(&["merge-base", &base_sha, &head_sha])?;
         Ok(FetchedPr { base_sha, head_sha, merge_base })
+    }
+
+    /// Fetches every PR head of a stack plus the bottom PR's base branch in one `git fetch`.
+    pub fn fetch_stack(&self, git: &Git, prs: &[PullRequest]) -> Result<StackPoints> {
+        let bottom_base = &prs[0].base_ref;
+        let base_local = format!("refs/wispy/heads/{bottom_base}");
+        let head_local = |number: u64| format!("refs/wispy/pull/{number}/head");
+        let mut refspecs = vec![format!("+refs/heads/{bottom_base}:{base_local}")];
+        refspecs.extend(prs.iter().map(|pr| format!("+refs/pull/{}/head:{}", pr.number, head_local(pr.number))));
+
+        let mut args = vec!["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--filter=blob:none", "origin"];
+        args.extend(refspecs.iter().map(String::as_str));
+        git.run(&args)?;
+
+        let base_tip = git.run_string(&["rev-parse", &base_local])?;
+        let heads = prs
+            .iter()
+            .map(|pr| git.run_string(&["rev-parse", &head_local(pr.number)]))
+            .collect::<Result<Vec<_>>>()?;
+        let bases = std::iter::once(&base_tip)
+            .chain(&heads)
+            .zip(&heads)
+            .map(|(below, head)| git.run_string(&["merge-base", below, head]))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(StackPoints { heads, bases })
     }
 }

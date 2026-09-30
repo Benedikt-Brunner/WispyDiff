@@ -2,23 +2,14 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::github::PullRequest;
-use crate::model::{DiffView, MODEL_VERSION};
+use crate::model::DiffView;
 use crate::pr_ref::PrRef;
+use crate::range::RangeSpec;
+use crate::stack::StackSnapshot;
 
-/// What we last knew about a PR, enough to reopen it offline.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrSnapshot {
-    pub pull_request: PullRequest,
-    /// The SHAs the cached diff was computed between.
-    pub diff_from: String,
-    pub diff_to: String,
-}
-
-/// Local SQLite store for PR snapshots and precomputed diff views.
+/// Local SQLite store for stack snapshots and precomputed diff views.
 pub struct Cache {
     conn: Mutex<Connection>,
 }
@@ -39,7 +30,8 @@ impl Cache {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS pr_snapshots (
+             DROP TABLE IF EXISTS pr_snapshots;
+             CREATE TABLE IF NOT EXISTS stack_snapshots (
                  pr TEXT PRIMARY KEY,
                  data TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -53,45 +45,63 @@ impl Cache {
         Ok(Cache { conn: Mutex::new(conn) })
     }
 
-    pub fn put_snapshot(&self, pr: &PrRef, snapshot: &PrSnapshot) -> Result<()> {
+    /// Stores the snapshot under every PR of the stack, so opening any of them is cached.
+    pub fn put_stack(&self, snapshot: &StackSnapshot) -> Result<()> {
         let data = serde_json::to_string(snapshot).map_err(Error::codec)?;
-        self.conn().execute(
-            "INSERT INTO pr_snapshots (pr, data) VALUES (?1, ?2)
-             ON CONFLICT(pr) DO UPDATE SET data = excluded.data, updated_at = unixepoch()",
-            params![pr.to_string(), data],
-        )?;
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for index in 0..snapshot.len() {
+            tx.execute(
+                "INSERT INTO stack_snapshots (pr, data) VALUES (?1, ?2)
+                 ON CONFLICT(pr) DO UPDATE SET data = excluded.data, updated_at = unixepoch()",
+                params![snapshot.pr_ref(index).to_string(), data],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
-    pub fn snapshot(&self, pr: &PrRef) -> Result<Option<PrSnapshot>> {
+    /// The stack `pr` was last seen in, with `focus` pointing at `pr`.
+    pub fn stack(&self, pr: &PrRef) -> Result<Option<StackSnapshot>> {
         let data: Option<String> = self
             .conn()
-            .query_row("SELECT data FROM pr_snapshots WHERE pr = ?1", [pr.to_string()], |row| row.get(0))
+            .query_row("SELECT data FROM stack_snapshots WHERE pr = ?1", [pr.to_string()], |row| row.get(0))
             .optional()?;
-        data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+        let Some(mut snapshot) = data.map(|d| serde_json::from_str::<StackSnapshot>(&d).map_err(Error::codec)).transpose()? else {
+            return Ok(None);
+        };
+        match snapshot.stack.prs.iter().position(|p| p.number == pr.number) {
+            Some(focus) => {
+                snapshot.stack.focus = focus;
+                Ok(Some(snapshot))
+            }
+            None => Ok(None),
+        }
     }
 
-    pub fn put_diff_view(&self, repo_slug: &str, view: &DiffView) -> Result<()> {
-        let key = Self::diff_key(repo_slug, &view.summary.base_sha, &view.summary.head_sha);
+    pub fn put_diff_view(&self, repo_slug: &str, spec: &RangeSpec, view: &DiffView) -> Result<()> {
         let data = rmp_serde::to_vec(view).map_err(Error::codec)?;
         self.conn().execute(
             "INSERT OR REPLACE INTO diff_views (key, data) VALUES (?1, ?2)",
-            params![key, data],
+            params![spec.cache_key(repo_slug), data],
         )?;
         Ok(())
     }
 
-    pub fn diff_view(&self, repo_slug: &str, from: &str, to: &str) -> Result<Option<DiffView>> {
-        let key = Self::diff_key(repo_slug, from, to);
+    pub fn diff_view(&self, repo_slug: &str, spec: &RangeSpec) -> Result<Option<DiffView>> {
         let data: Option<Vec<u8>> = self
             .conn()
-            .query_row("SELECT data FROM diff_views WHERE key = ?1", [key], |row| row.get(0))
+            .query_row("SELECT data FROM diff_views WHERE key = ?1", [spec.cache_key(repo_slug)], |row| row.get(0))
             .optional()?;
         data.map(|d| rmp_serde::from_slice(&d).map_err(Error::codec)).transpose()
     }
 
-    fn diff_key(repo_slug: &str, from: &str, to: &str) -> String {
-        format!("v{MODEL_VERSION}:{repo_slug}:{from}..{to}")
+    pub fn has_diff_view(&self, repo_slug: &str, spec: &RangeSpec) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn()
+            .query_row("SELECT 1 FROM diff_views WHERE key = ?1", [spec.cache_key(repo_slug)], |row| row.get(0))
+            .optional()?;
+        Ok(found.is_some())
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {

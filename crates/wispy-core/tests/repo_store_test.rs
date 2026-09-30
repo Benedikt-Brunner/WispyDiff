@@ -3,8 +3,10 @@ mod support;
 use support::OriginRepo;
 use wispy_core::git::Git;
 use wispy_core::highlight::Highlighter;
+use wispy_core::highlight_cache::HighlightCache;
 use wispy_core::model::{row_kind, DiffView};
-use wispy_core::repo_store::RepoStore;
+use wispy_core::range::{compute_range, RangeSpec};
+use wispy_core::repo_store::{FetchedPr, RepoStore};
 
 fn origin_with_pr() -> (OriginRepo, String) {
     let origin = OriginRepo::init();
@@ -21,6 +23,11 @@ fn origin_with_pr() -> (OriginRepo, String) {
     origin.write("README.md", "# Shop\n\nMore docs.\n");
     origin.commit("docs on main");
     (origin, head)
+}
+
+fn single_pr_view(git: &Git, fetched: &FetchedPr) -> DiffView {
+    let spec = RangeSpec { from: fetched.merge_base.clone(), heads: vec![fetched.head_sha.clone()], prs: vec![0] };
+    compute_range(git, &spec, &Highlighter::new(), &HighlightCache::default()).unwrap()
 }
 
 fn missing_objects(git: &Git) -> usize {
@@ -69,7 +76,7 @@ fn computes_a_highlighted_three_dot_diff() {
     let git = store.ensure_repo("acme", "shop", &origin.url()).unwrap();
     let fetched = store.fetch_pr(&git, 7, "main").unwrap();
 
-    let view = DiffView::compute(&git, &fetched.merge_base, &fetched.head_sha, &Highlighter::new()).unwrap();
+    let view = single_pr_view(&git, &fetched);
 
     let paths: Vec<_> = view.summary.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(paths, vec!["src/Bin.ts", "src/Stock.php"], "README change on main must not appear");
@@ -90,6 +97,10 @@ fn computes_a_highlighted_three_dot_diff() {
 
     let deleted = stock_rows.iter().find(|r| r.k == row_kind::DELETED).unwrap();
     assert_eq!((deleted.o, deleted.n), (Some(4), None));
+
+    // A single-PR range attributes every change to that PR and nothing else.
+    assert!(view.rows.iter().all(|r| matches!(r.k, row_kind::ADDED | row_kind::DELETED) == (r.a == Some(0))));
+    assert!(view.summary.files.iter().all(|f| f.prs == vec![0]));
 }
 
 #[test]
@@ -99,7 +110,7 @@ fn rows_window_is_clamped() {
     let store = RepoStore::new(root.path(), None);
     let git = store.ensure_repo("acme", "shop", &origin.url()).unwrap();
     let fetched = store.fetch_pr(&git, 7, "main").unwrap();
-    let view = DiffView::compute(&git, &fetched.merge_base, &fetched.head_sha, &Highlighter::new()).unwrap();
+    let view = single_pr_view(&git, &fetched);
 
     let total = view.summary.total_rows;
     assert_eq!(view.rows(0, 10_000).len() as u32, total);

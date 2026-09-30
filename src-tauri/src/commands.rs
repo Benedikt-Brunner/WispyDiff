@@ -1,59 +1,114 @@
-use serde::Serialize;
-use tauri::State;
-use wispy_core::github::PullRequest;
-use wispy_core::model::{DiffSummary, Row};
-use wispy_core::pr_ref::PrRef;
-use wispy_core::service::LoadedPr;
+use std::sync::Arc;
 
-use crate::state::AppState;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+use wispy_core::github::PullRequest;
+use wispy_core::model::{DiffSummary, DiffView, Row};
+use wispy_core::pr_ref::PrRef;
+use wispy_core::service::PrService;
+use wispy_core::stack::StackSnapshot;
+
+use crate::state::{view_id, AppState};
+
+#[derive(Serialize, Clone, Copy)]
+pub struct Range {
+    pub lo: usize,
+    pub hi: usize,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OpenedPr {
-    /// Handle for [`get_rows`].
+pub struct OpenedStack {
+    pub stack_id: String,
+    /// Bottom to top.
+    pub prs: Vec<PullRequest>,
+    pub needs_rebase: Vec<bool>,
+    pub focus: usize,
+    pub range: Range,
     pub view_id: String,
-    pub pr: PrRef,
-    pub pull_request: PullRequest,
     pub summary: DiffSummary,
     pub from_cache: bool,
 }
 
-fn register(state: &AppState, loaded: LoadedPr, from_cache: bool) -> OpenedPr {
-    let view_id = format!("{}@{}..{}", loaded.pr, loaded.view.summary.base_sha, loaded.view.summary.head_sha);
-    let summary = loaded.view.summary.clone();
-    state.register_view(&view_id, loaded.view);
-    OpenedPr { view_id, pr: loaded.pr, pull_request: loaded.pull_request, summary, from_cache }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedRange {
+    pub view_id: String,
+    pub range: Range,
+    pub summary: DiffSummary,
 }
 
-/// Opens a PR by URL or `owner/repo#N`. Returns the cached diff immediately when there is
-/// one (call [`refresh_pr`] afterwards); otherwise fetches and computes it.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RangeReady {
+    stack_id: String,
+    lo: usize,
+    hi: usize,
+}
+
+/// Opens the stack containing a PR (by URL or `owner/repo#N`), showing that PR alone.
+/// Returns the cached stack immediately when there is one (call [`refresh_pr`] afterwards).
 #[tauri::command]
-pub async fn open_pr(input: String, state: State<'_, AppState>) -> Result<OpenedPr, String> {
+pub async fn open_pr(input: String, app: AppHandle, state: State<'_, AppState>) -> Result<OpenedStack, String> {
     let pr = PrRef::parse(&input).map_err(|e| e.to_string())?;
     let service = state.service()?;
-    let cached = {
+
+    let cached = blocking({
         let (service, pr) = (service.clone(), pr.clone());
-        tauri::async_runtime::spawn_blocking(move || service.cached(&pr)).await.map_err(|e| e.to_string())?
+        move || {
+            let Some(snapshot) = service.cached_stack(&pr)? else { return Ok(None) };
+            let focus = snapshot.stack.focus;
+            Ok(service.cached_range(&snapshot, focus, focus)?.map(|view| (snapshot, view)))
+        }
+    })
+    .await?;
+    if let Some((snapshot, view)) = cached {
+        return Ok(open_stack(&app, &state, Arc::new(snapshot), Arc::new(view), true));
     }
-    .map_err(|e| e.to_string())?;
-    if let Some(loaded) = cached {
-        return Ok(register(&state, loaded, true));
-    }
-    let loaded = fetch_and_load(&service, pr).await?;
-    Ok(register(&state, loaded, false))
+
+    let (snapshot, view) = discover_and_load(&service, &pr).await?;
+    Ok(open_stack(&app, &state, snapshot, view, false))
 }
 
-/// Re-fetches PR metadata; returns a new view only if the PR's head moved.
+/// Re-discovers the stack; returns it only if anything (structure or heads) changed.
 #[tauri::command]
-pub async fn refresh_pr(input: String, known_head_sha: String, state: State<'_, AppState>) -> Result<Option<OpenedPr>, String> {
+pub async fn refresh_pr(
+    input: String,
+    known_stack_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<OpenedStack>, String> {
     let pr = PrRef::parse(&input).map_err(|e| e.to_string())?;
     let service = state.service()?;
-    let pull_request = service.fetch_pull_request(&pr).await.map_err(|e| e.to_string())?;
-    if pull_request.head_sha == known_head_sha {
+    let stack = service.discover(&pr).await.map_err(|e| e.to_string())?;
+    let snapshot = blocking({
+        let service = service.clone();
+        move || service.fetch(stack)
+    })
+    .await?;
+    if crate::state::stack_id(&snapshot) == known_stack_id {
         return Ok(None);
     }
-    let loaded = load_blocking(&service, pr, pull_request).await?;
-    Ok(Some(register(&state, loaded, false)))
+    let (snapshot, view) = load_focus(&service, Arc::new(snapshot)).await?;
+    Ok(Some(open_stack(&app, &state, snapshot, view, false)))
+}
+
+/// Switches the shown range to stack PRs `lo..=hi`.
+#[tauri::command]
+pub async fn select_range(stack_id: String, lo: usize, hi: usize, state: State<'_, AppState>) -> Result<OpenedRange, String> {
+    let snapshot = state.stack(&stack_id).ok_or_else(|| format!("stack {stack_id} is no longer open"))?;
+    let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
+    let id = view_id(&stack_id, lo, hi);
+    let view = match state.view(&id) {
+        Some(view) => view,
+        None => {
+            let service = state.service()?;
+            let view = blocking(move || service.range(&snapshot, lo, hi)).await?;
+            state.register_view(&id, view.clone());
+            view
+        }
+    };
+    Ok(OpenedRange { view_id: id, range: Range { lo, hi }, summary: view.summary.clone() })
 }
 
 #[tauri::command]
@@ -62,19 +117,70 @@ pub fn get_rows(view_id: String, start: u32, end: u32, state: State<'_, AppState
     Ok(view.rows(start, end).to_vec())
 }
 
-async fn fetch_and_load(service: &std::sync::Arc<wispy_core::service::PrService>, pr: PrRef) -> Result<LoadedPr, String> {
-    let pull_request = service.fetch_pull_request(&pr).await.map_err(|e| e.to_string())?;
-    load_blocking(service, pr, pull_request).await
+async fn discover_and_load(service: &Arc<PrService>, pr: &PrRef) -> Result<(Arc<StackSnapshot>, Arc<DiffView>), String> {
+    let stack = service.discover(pr).await.map_err(|e| e.to_string())?;
+    let snapshot = blocking({
+        let service = service.clone();
+        move || service.fetch(stack)
+    })
+    .await?;
+    load_focus(service, Arc::new(snapshot)).await
 }
 
-async fn load_blocking(
-    service: &std::sync::Arc<wispy_core::service::PrService>,
-    pr: PrRef,
-    pull_request: PullRequest,
-) -> Result<LoadedPr, String> {
+async fn load_focus(service: &Arc<PrService>, snapshot: Arc<StackSnapshot>) -> Result<(Arc<StackSnapshot>, Arc<DiffView>), String> {
     let service = service.clone();
-    tauri::async_runtime::spawn_blocking(move || service.load(&pr, pull_request))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let for_view = snapshot.clone();
+    let view = blocking(move || {
+        let focus = for_view.stack.focus;
+        service.range(&for_view, focus, focus)
+    })
+    .await?;
+    Ok((snapshot, view))
+}
+
+fn open_stack(app: &AppHandle, state: &AppState, snapshot: Arc<StackSnapshot>, view: Arc<DiffView>, from_cache: bool) -> OpenedStack {
+    let stack_id = state.register_stack(snapshot.clone());
+    let focus = snapshot.stack.focus;
+    let id = view_id(&stack_id, focus, focus);
+    state.register_view(&id, view.clone());
+    spawn_precompute(app.clone(), stack_id.clone(), snapshot.clone());
+    OpenedStack {
+        stack_id,
+        prs: snapshot.stack.prs.clone(),
+        needs_rebase: snapshot.needs_rebase(),
+        focus,
+        range: Range { lo: focus, hi: focus },
+        view_id: id,
+        summary: view.summary.clone(),
+        from_cache,
+    }
+}
+
+/// Computes every range of the stack into the cache (most useful first) so switching ranges
+/// is a cache read. Stops as soon as another stack is opened.
+fn spawn_precompute(app: AppHandle, stack_id: String, snapshot: Arc<StackSnapshot>) {
+    if !app.state::<AppState>().start_precompute(&stack_id) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        if let Ok(service) = state.service() {
+            for (lo, hi) in snapshot.ranges_by_priority() {
+                if !state.is_current_stack(&stack_id) {
+                    break;
+                }
+                match service.precompute(&snapshot, lo, hi) {
+                    Ok(_) => {
+                        let _ = app.emit("range-ready", RangeReady { stack_id: stack_id.clone(), lo, hi });
+                    }
+                    Err(err) => eprintln!("precompute {stack_id} {lo}-{hi}: {err}"),
+                }
+            }
+        }
+        state.finish_precompute(&stack_id);
+    });
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> wispy_core::Result<T> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }

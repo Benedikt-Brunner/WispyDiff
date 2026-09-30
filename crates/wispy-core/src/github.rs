@@ -20,6 +20,18 @@ pub struct PullRequest {
     pub head_sha: String,
     /// Clone URL of the base repository (PR heads are always fetchable from it via `refs/pull/N/head`).
     pub clone_url: String,
+    /// `owner/repo` of the base repository.
+    pub base_repo: String,
+    /// `owner/repo` the head branch lives in; `None` if that fork was deleted.
+    pub head_repo: Option<String>,
+    pub default_branch: String,
+}
+
+impl PullRequest {
+    /// Whether the head branch lives in the base repository (stacks never span forks).
+    pub fn is_same_repo(&self) -> bool {
+        self.head_repo.as_deref() == Some(self.base_repo.as_str())
+    }
 }
 
 pub struct GitHubClient {
@@ -43,10 +55,33 @@ impl GitHubClient {
     }
 
     pub async fn pull_request(&self, pr: &PrRef) -> Result<PullRequest> {
-        let url = format!("{}/repos/{}/{}/pulls/{}", self.api_base, pr.owner, pr.repo, pr.number);
+        let path = format!("/repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number);
+        let raw: RawPullRequest = self.get(&path, &[]).await?;
+        Ok(raw.into())
+    }
+
+    /// Open PRs in `owner/repo` whose base branch is `base`.
+    pub async fn open_pulls_with_base(&self, owner: &str, repo: &str, base: &str) -> Result<Vec<PullRequest>> {
+        self.open_pulls(owner, repo, &[("base", base.to_string())]).await
+    }
+
+    /// Open PRs in `owner/repo` whose head is branch `head` of that same repository.
+    pub async fn open_pulls_with_head(&self, owner: &str, repo: &str, head: &str) -> Result<Vec<PullRequest>> {
+        self.open_pulls(owner, repo, &[("head", format!("{owner}:{head}"))]).await
+    }
+
+    async fn open_pulls(&self, owner: &str, repo: &str, filter: &[(&str, String)]) -> Result<Vec<PullRequest>> {
+        let mut query: Vec<(&str, String)> = vec![("state", "open".into()), ("per_page", "100".into())];
+        query.extend(filter.iter().cloned());
+        let raw: Vec<RawPullRequest> = self.get(&format!("/repos/{owner}/{repo}/pulls"), &query).await?;
+        Ok(raw.into_iter().map(PullRequest::from).collect())
+    }
+
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str, query: &[(&str, String)]) -> Result<T> {
         let response = self
             .http
-            .get(url)
+            .get(format!("{}{path}", self.api_base))
+            .query(query)
             .bearer_auth(&self.token)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
@@ -56,10 +91,16 @@ impl GitHubClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let message = serde_json::from_str::<ApiError>(&body).map(|e| e.message).unwrap_or(body);
-            return Err(Error::GitHub(format!("{pr}: {status} {message}")));
+            return Err(Error::GitHub(format!("GET {path}: {status} {message}")));
         }
-        let raw: RawPullRequest = response.json().await?;
-        Ok(PullRequest {
+        Ok(response.json().await?)
+    }
+}
+
+impl From<RawPullRequest> for PullRequest {
+    fn from(raw: RawPullRequest) -> Self {
+        let base_repo = raw.base.repo.expect("a PR's base repository always exists");
+        PullRequest {
             number: raw.number,
             title: raw.title,
             state: if raw.merged_at.is_some() { "merged".to_string() } else { raw.state },
@@ -70,8 +111,11 @@ impl GitHubClient {
             base_sha: raw.base.sha,
             head_ref: raw.head.ref_name,
             head_sha: raw.head.sha,
-            clone_url: raw.base.repo.clone_url,
-        })
+            clone_url: base_repo.clone_url,
+            base_repo: base_repo.full_name,
+            head_repo: raw.head.repo.map(|r| r.full_name),
+            default_branch: base_repo.default_branch,
+        }
     }
 }
 
@@ -103,10 +147,12 @@ struct RawBranch {
     #[serde(rename = "ref")]
     ref_name: String,
     sha: String,
-    repo: RawRepo,
+    repo: Option<RawRepo>,
 }
 
 #[derive(Deserialize)]
 struct RawRepo {
     clone_url: String,
+    full_name: String,
+    default_branch: String,
 }

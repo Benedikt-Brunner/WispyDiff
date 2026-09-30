@@ -19,6 +19,8 @@ export function sinceLast(start: string, end: string): number | undefined {
 declare global {
   interface Window {
     __wispyPerf?: { sinceLast: typeof sinceLast };
+    /** Set by App: how many ranges of a stack are precomputed, and the open stack. */
+    __wispyRanges?: { readyCount: (stackId: string) => number; current: () => string | null };
   }
 }
 

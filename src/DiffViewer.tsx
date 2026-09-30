@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
-import { RowKind, type FileSummary, type OpenedPr, type Row } from "./types";
+import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row } from "./types";
 
 export const ROW_HEIGHT = 20;
 const OVERSCAN = 20;
@@ -9,14 +9,22 @@ const OVERSCAN = 20;
 const JUMP_MARGIN = 3;
 
 interface Props {
-  opened: OpenedPr;
+  viewId: string;
+  summary: DiffSummary;
+  /** The whole stack, bottom to top (row attributions index into it). */
+  prs: PullRequest[];
+  /** Color lines by PR (hidden for a lone PR, where every line has the same one). */
+  showAttribution: boolean;
+  /** More than one PR selected: tag runs of lines with their PR number. */
+  multiPr: boolean;
   showFiles: boolean;
   keyboardEnabled: boolean;
 }
 
-export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
-  const { summary, viewId } = opened;
+export function DiffViewer({ viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** The file at the top of the viewport, kept across range switches when the new range has it. */
+  const currentPath = useRef<string | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(800);
   const [, setVersion] = useState(0);
@@ -30,8 +38,9 @@ export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = 0;
-    setScrollTop(0);
+    const sameFile = summary.files.find((f) => f.path === currentPath.current);
+    el.scrollTop = sameFile ? sameFile.first_row * ROW_HEIGHT : 0;
+    setScrollTop(el.scrollTop);
     firstPaint.current = false;
     const observer = new ResizeObserver(() => setViewportHeight(el.clientHeight));
     observer.observe(el);
@@ -50,7 +59,7 @@ export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
   useEffect(() => {
     if (visibleLoaded && !firstPaint.current) {
       firstPaint.current = true;
-      requestAnimationFrame(() => mark("open:first-file-visible"));
+      requestAnimationFrame(() => mark("view:first-visible"));
     }
   }, [visibleLoaded]);
 
@@ -61,6 +70,9 @@ export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
 
   const topRow = Math.floor(scrollTop / ROW_HEIGHT);
   const currentFile = fileAt(summary.files, topRow);
+  useEffect(() => {
+    currentPath.current = summary.files[currentFile]?.path ?? null;
+  }, [summary, currentFile]);
 
   const scrollToRow = useCallback((row: number) => {
     const el = scrollRef.current;
@@ -88,7 +100,14 @@ export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
 
   return (
     <div className="diff-layout">
-      {showFiles && <FileList files={summary.files} current={currentFile} onSelect={(f) => scrollToRow(f.first_row + JUMP_MARGIN)} />}
+      {showFiles && (
+        <FileList
+          files={summary.files}
+          current={currentFile}
+          showPrs={multiPr}
+          onSelect={(f) => scrollToRow(f.first_row + JUMP_MARGIN)}
+        />
+      )}
       <div className="diff-main">
         <div className="diff-scroll" ref={scrollRef} onScroll={onScroll} data-testid="diff-scroll">
           <div
@@ -102,7 +121,15 @@ export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
             }
           >
             {rows.map(({ index, row }) => (
-              <DiffRow key={index} index={index} row={row} file={row ? summary.files[row.f] : undefined} />
+              <DiffRow
+                key={index}
+                index={index}
+                row={row}
+                file={row ? summary.files[row.f] : undefined}
+                prs={prs}
+                showAttribution={showAttribution}
+                tag={multiPr && row !== undefined && startsRun(row, store.get(index - 1))}
+              />
             ))}
           </div>
         </div>
@@ -111,8 +138,18 @@ export function DiffViewer({ opened, showFiles, keyboardEnabled }: Props) {
   );
 }
 
-const DiffRow = memo(function DiffRow({ index, row, file }: { index: number; row?: Row; file?: FileSummary }) {
-  const style = { transform: `translateY(${index * ROW_HEIGHT}px)` };
+interface RowProps {
+  index: number;
+  row?: Row;
+  file?: FileSummary;
+  prs: PullRequest[];
+  showAttribution: boolean;
+  /** Show the PR tag: this row starts a run of lines from one PR. */
+  tag: boolean;
+}
+
+const DiffRow = memo(function DiffRow({ index, row, file, prs, showAttribution, tag }: RowProps) {
+  const style: React.CSSProperties = { transform: `translateY(${index * ROW_HEIGHT}px)` };
   if (!row) return <div className="row row-loading" style={style} />;
   switch (row.k) {
     case RowKind.File:
@@ -144,8 +181,14 @@ const DiffRow = memo(function DiffRow({ index, row, file }: { index: number; row
       );
     default: {
       const kind = row.k === RowKind.Added ? "add" : row.k === RowKind.Deleted ? "del" : "ctx";
+      const attributed = showAttribution && row.a !== null;
+      if (attributed) (style as Record<string, string>)["--pr"] = prColor(row.a!);
       return (
-        <div className={`row row-${kind}`} style={style}>
+        <div
+          className={`row row-${kind}${attributed ? " attributed" : ""}`}
+          style={style}
+          title={attributed ? lineHistory(row, prs) : undefined}
+        >
           <span className="gutter">
             <span className="ln">{row.o ?? ""}</span>
             <span className="ln">{row.n ?? ""}</span>
@@ -160,13 +203,35 @@ const DiffRow = memo(function DiffRow({ index, row, file }: { index: number; row
               ),
             )}
           </span>
+          {tag && row.a !== null && <span className="pr-tag">#{prs[row.a].number}</span>}
         </div>
       );
     }
   }
 });
 
-function FileList({ files, current, onSelect }: { files: FileSummary[]; current: number; onSelect: (f: FileSummary) => void }) {
+/** A run of changed lines from one PR starts here (the previous row is another PR or not a change). */
+function startsRun(row: Row, previous: Row | undefined) {
+  if (row.a === null) return false;
+  const changed = (r: Row) => r.k === RowKind.Added || r.k === RowKind.Deleted;
+  return !previous || !changed(previous) || previous.a !== row.a;
+}
+
+function lineHistory(row: Row, prs: PullRequest[]) {
+  const n = (i: number) => `#${prs[i]?.number}`;
+  if (row.k === RowKind.Deleted) return `Deleted in ${n(row.a!)}`;
+  if (row.h.length > 1) return `Added in ${n(row.h[0])} · modified in ${row.h.slice(1).map(n).join(", ")}`;
+  return `Added in ${n(row.a!)}`;
+}
+
+interface FileListProps {
+  files: FileSummary[];
+  current: number;
+  showPrs: boolean;
+  onSelect: (f: FileSummary) => void;
+}
+
+function FileList({ files, current, showPrs, onSelect }: FileListProps) {
   const activeRef = useRef<HTMLLIElement>(null);
   useEffect(() => activeRef.current?.scrollIntoView({ block: "nearest" }), [current]);
   return (
@@ -185,6 +250,13 @@ function FileList({ files, current, onSelect }: { files: FileSummary[]; current:
               <span className="file-dir">{dirname(f.path)}</span>
               {basename(f.path)}
             </span>
+            {showPrs && (
+              <span className="file-prs">
+                {f.prs.map((i) => (
+                  <span key={i} className="file-pr-dot" style={{ background: prColor(i) }} />
+                ))}
+              </span>
+            )}
             <span className="file-counts">
               {f.additions > 0 && <span className="add">+{f.additions}</span>}
               {f.deletions > 0 && <span className="del">−{f.deletions}</span>}
@@ -197,7 +269,7 @@ function FileList({ files, current, onSelect }: { files: FileSummary[]; current:
 }
 
 /** `j`/`k` = next/previous hunk, `n`/`p` = next/previous file. */
-export function navigationTarget(key: string, anchor: number, summary: OpenedPr["summary"]): number | undefined {
+export function navigationTarget(key: string, anchor: number, summary: DiffSummary): number | undefined {
   const fileStarts = summary.files.map((f) => f.first_row);
   switch (key) {
     case "j":

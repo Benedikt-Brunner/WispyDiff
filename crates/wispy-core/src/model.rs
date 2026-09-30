@@ -5,13 +5,15 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::diff::{parse_patch, FileDiff, FileStatus, LineKind, PATCH_ARGS};
+use crate::attribution::LineAttr;
+use crate::diff::{FileDiff, FileStatus, LineKind};
 use crate::error::{Error, Result};
 use crate::git::Git;
-use crate::highlight::{plain_lines, Highlighter, Language, Seg};
+use crate::highlight::{plain_lines, Language, Seg};
+use crate::highlight_cache::Lines;
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 1;
+pub const MODEL_VERSION: u32 = 2;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -35,6 +37,10 @@ pub struct Row {
     pub n: Option<u32>,
     /// Highlighted segments.
     pub s: Vec<Seg>,
+    /// Stack index of the PR that last touched this line (added/deleted rows only).
+    pub a: Option<u8>,
+    /// Every PR that shaped this line, oldest first, when more than one did.
+    pub h: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +54,8 @@ pub struct FileSummary {
     pub language: Option<Language>,
     pub first_row: u32,
     pub row_count: u32,
+    /// Stack indices of the PRs that touched this file within the range.
+    pub prs: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,18 +88,20 @@ impl DiffView {
         &self.rows[start..end]
     }
 
-    /// Builds rows for `files`, highlighting against the full old/new file contents in `blobs`.
+    /// Builds rows for `files`. `attributions` holds one entry per hunk line of each file (see
+    /// [`crate::attribution::attribute`]); `highlights` maps blob SHAs to highlighted full files.
     pub fn build(
         base_sha: &str,
         head_sha: &str,
         files: &[FileDiff],
-        blobs: &HashMap<String, Vec<u8>>,
-        highlighter: &Highlighter,
+        attributions: &[Vec<LineAttr>],
+        highlights: &HashMap<String, Lines>,
     ) -> DiffView {
         let per_file: Vec<Vec<Row>> = files
             .par_iter()
+            .zip(attributions)
             .enumerate()
-            .map(|(index, file)| file_rows(index as u32, file, blobs, highlighter))
+            .map(|(index, (file, attrs))| file_rows(index as u32, file, attrs, highlights))
             .collect();
 
         let mut rows = Vec::with_capacity(per_file.iter().map(Vec::len).sum());
@@ -101,6 +111,9 @@ impl DiffView {
         let mut max_line_number = 0u32;
         for (file, file_rows) in files.iter().zip(per_file) {
             let first_row = rows.len() as u32;
+            let mut prs: Vec<u8> = file_rows.iter().filter_map(|r| r.a).collect();
+            prs.sort_unstable();
+            prs.dedup();
             for (offset, row) in file_rows.iter().enumerate() {
                 if row.k == row_kind::HUNK {
                     hunk_rows.push(first_row + offset as u32);
@@ -119,6 +132,7 @@ impl DiffView {
                 language: Language::from_path(file.path()),
                 first_row,
                 row_count: file_rows.len() as u32,
+                prs,
             });
             rows.extend(file_rows);
         }
@@ -138,26 +152,10 @@ impl DiffView {
             rows,
         }
     }
-
-    /// Diffs `from..to` in `git` (a partial clone: missing blobs are batch-fetched by git).
-    pub fn compute(git: &Git, from: &str, to: &str, highlighter: &Highlighter) -> Result<DiffView> {
-        let mut args = PATCH_ARGS.to_vec();
-        args.extend([from, to, "--"]);
-        let patch = git.run(&args)?;
-        let files = parse_patch(&patch)?;
-        let wanted: Vec<&str> = files
-            .iter()
-            .filter(|f| !f.binary && !f.hunks.is_empty())
-            .flat_map(|f| [f.old_blob.as_deref(), f.new_blob.as_deref()])
-            .flatten()
-            .collect();
-        let blobs = read_blobs(git, &wanted)?;
-        Ok(DiffView::build(from, to, &files, &blobs, highlighter))
-    }
 }
 
-fn file_rows(index: u32, file: &FileDiff, blobs: &HashMap<String, Vec<u8>>, highlighter: &Highlighter) -> Vec<Row> {
-    let row = |k: u8, o: Option<u32>, n: Option<u32>, s: Vec<Seg>| Row { k, f: index, o, n, s };
+fn file_rows(index: u32, file: &FileDiff, attrs: &[LineAttr], highlights: &HashMap<String, Lines>) -> Vec<Row> {
+    let row = |k: u8, o: Option<u32>, n: Option<u32>, s: Vec<Seg>| Row { k, f: index, o, n, s, a: None, h: Vec::new() };
     let mut rows = vec![row(row_kind::FILE, None, None, vec![(0, file.path().to_string())])];
 
     if file.binary {
@@ -176,14 +174,9 @@ fn file_rows(index: u32, file: &FileDiff, blobs: &HashMap<String, Vec<u8>>, high
         return rows;
     }
 
-    let language = Language::from_path(file.path());
-    let has_kind = |kind: LineKind| file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind == kind);
-    let side = |blob: &Option<String>, needed: bool| -> Option<Vec<Vec<Seg>>> {
-        let content = blobs.get(blob.as_deref()?)?;
-        needed.then(|| highlighter.highlight(language, &String::from_utf8_lossy(content)))
-    };
-    let old_lines = side(&file.old_blob, has_kind(LineKind::Deleted));
-    let new_lines = side(&file.new_blob, has_kind(LineKind::Added) || has_kind(LineKind::Context));
+    let old_lines = file.old_blob.as_ref().and_then(|b| highlights.get(b));
+    let new_lines = file.new_blob.as_ref().and_then(|b| highlights.get(b));
+    let mut attrs = attrs.iter();
 
     for hunk in &file.hunks {
         rows.push(row(row_kind::HUNK, None, None, vec![(0, hunk.header())]));
@@ -195,12 +188,12 @@ fn file_rows(index: u32, file: &FileDiff, blobs: &HashMap<String, Vec<u8>>, high
             };
             let text = line.text.strip_suffix('\r').unwrap_or(&line.text);
             let segments = source
-                .as_ref()
                 .and_then(|lines| lines.get(number? as usize - 1))
                 .filter(|segs| segs_match(segs, text))
                 .cloned()
                 .unwrap_or_else(|| plain_lines(text).pop().unwrap_or_default());
-            rows.push(row(kind, line.old_no, line.new_no, segments));
+            let attr = attrs.next().cloned().unwrap_or_default();
+            rows.push(Row { a: attr.pr, h: attr.history, ..row(kind, line.old_no, line.new_no, segments) });
         }
     }
     rows

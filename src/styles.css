@@ -32,6 +32,14 @@
   --t-attribute: #9a6700;
   --t-escape: #0f7b6c;
 
+  /* Per-PR colors, cycled by stack index. Chosen to stay apart from add/delete green/red. */
+  --pr0: #5b6cf0;
+  --pr1: #d4852a;
+  --pr2: #1f9aa5;
+  --pr3: #b9509e;
+  --pr4: #7d8a1d;
+  --pr5: #8a63d2;
+
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
   color-scheme: light dark;
@@ -71,6 +79,13 @@
     --t-tag: #f07178;
     --t-attribute: #e8c47a;
     --t-escape: #6ed4c4;
+
+    --pr0: #8b97ff;
+    --pr1: #f0a44b;
+    --pr2: #4cc7d1;
+    --pr3: #e07cc7;
+    --pr4: #b6c24a;
+    --pr5: #b08cf5;
   }
 }
 
@@ -153,6 +168,97 @@ body,
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* ---------- stack bar ---------- */
+
+.stack-bar {
+  height: 34px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.stack-base {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding-right: 8px;
+}
+.stack-base::after {
+  content: " ›";
+}
+.stack-chip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.stack-chip:hover {
+  color: var(--fg);
+}
+.stack-chip.selected {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--pr) 14%, transparent);
+  border-color: color-mix(in srgb, var(--pr) 45%, transparent);
+}
+.stack-chip.selected:not(.first) {
+  border-left-color: transparent;
+}
+.stack-chip.selected:not(.last) {
+  border-right-color: transparent;
+}
+.stack-chip.first {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+.stack-chip.last {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.stack-chip:not(.selected) {
+  border-radius: 6px;
+}
+.stack-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pr);
+}
+.stack-number {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.stack-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stack-warn {
+  color: var(--pr1);
+}
+.stack-pending {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  opacity: 0.5;
 }
 
 .content {
@@ -383,6 +489,36 @@ body,
   background: var(--del-gutter);
   color: var(--del-fg);
 }
+/* Which PR a changed line came from: a bar at the gutter's left edge. */
+.row.attributed .gutter {
+  box-shadow: inset 3px 0 0 var(--pr);
+}
+.pr-tag {
+  position: sticky;
+  right: 8px;
+  margin-left: auto;
+  padding: 0 6px;
+  height: 16px;
+  line-height: 16px;
+  align-self: center;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--pr);
+  background: color-mix(in srgb, var(--pr) 16%, var(--bg));
+  user-select: none;
+  -webkit-user-select: none;
+}
+.file-prs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+.file-pr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
 .row-hunk,
 .row-hunk .gutter {
   background: var(--hunk-bg);
