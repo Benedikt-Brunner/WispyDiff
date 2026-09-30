@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+
 /**
  * The embedded macOS WebDriver is fast for `execute`/`keys` but very slow (or hangs) for element
  * lookups (`$`, `$$`, `waitFor*`). All helpers therefore query the DOM through `execute`.
@@ -131,4 +134,26 @@ export const setOffline = async (offline: boolean) => {
 export async function goHome() {
   await browser.keys(["Meta", "i"]);
   await waitFor(() => exists('[data-testid="inbox"]'), 60_000);
+}
+
+/** Runs git in the fixture's "GitHub-side" origin repository (to push, rebase, ...). */
+export function originGit(...args: string[]): string {
+  const origin = new URL("../.fixtures/stack/origin", import.meta.url).pathname;
+  return execFileSync("git", ["-C", origin, "-c", "user.email=e2e@wispydiff.invalid", "-c", "user.name=E2E", ...args], {
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    encoding: "utf8",
+  }).trim();
+}
+
+/** A file's exact content at a revision of the origin (`rev:path`), untrimmed. */
+export function originShow(spec: string): string {
+  const origin = new URL("../.fixtures/stack/origin", import.meta.url).pathname;
+  return execFileSync("git", ["-C", origin, "show", spec], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }, encoding: "utf8" });
+}
+
+/** Writes a file in the origin's working tree. */
+export function originWrite(path: string, content: string) {
+  const full = new URL(`../.fixtures/stack/origin/${path}`, import.meta.url).pathname;
+  mkdirSync(full.slice(0, full.lastIndexOf("/")), { recursive: true });
+  writeFileSync(full, content);
 }

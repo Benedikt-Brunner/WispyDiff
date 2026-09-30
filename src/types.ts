@@ -60,6 +60,8 @@ export interface FileSummary {
   new_lines: number;
   /** [stack index, path] where a PR knew the file under another path. */
   pr_paths: [number, string][];
+  /** Identifies the file's change by content: viewed marks survive rebases that don't touch it. */
+  content_key: string;
 }
 
 export interface DiffSummary {
@@ -101,6 +103,17 @@ export interface OpenedRange {
   range: Range;
   ignoreWhitespace: boolean;
   summary: DiffSummary;
+  /** Set for "changes since checkpoint" views. */
+  since: { checkpointId: string; createdAt: number; conflicts: boolean } | null;
+}
+
+/** "Reviewed these PRs at these heads" (local only). */
+export interface Checkpoint {
+  id: string;
+  repo: string;
+  createdAt: number;
+  source: "manual" | "submit";
+  entries: { pr: number; head: string; base: string }[];
 }
 
 export interface OpenedStack extends OpenedRange {

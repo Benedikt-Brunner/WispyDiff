@@ -32,6 +32,18 @@ export const config: WebdriverIO.Config = {
   outputDir: path.join(root, "e2e/logs"),
   waitforTimeout: 30_000,
 
+  async afterTest(test, _context, result) {
+    if (result.passed) return;
+    const report = await browser
+      .execute(() => ({
+        errors: window.__wispyErrors ?? [],
+        title: document.querySelector(".pr-title")?.textContent ?? null,
+        palette: document.querySelector(".palette") !== null,
+        inserts: document.querySelectorAll(".insert").length,
+      }))
+      .catch((e) => ({ unavailable: String(e) }));
+    console.log(`[failure] ${test.title}: ${JSON.stringify(report)}`);
+  },
   onPrepare() {
     execFileSync(fixturesBin, ["generate", "--out", fixtureDir, "--seed", "42"], { stdio: "ignore" });
     fakeGitHub = spawn(fixturesBin, ["serve", "--fixture", fixtureDir, "--port", String(apiPort)], { stdio: "inherit" });

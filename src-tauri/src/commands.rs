@@ -9,6 +9,7 @@ use wispy_core::service::PrService;
 use wispy_core::anchors::{locate, Anchor, Location};
 use wispy_core::drafts::Draft;
 use wispy_core::github::{ReviewThread, Side, Verdict};
+use wispy_core::progress::Checkpoint;
 use wispy_core::review::{Outcome, Planned};
 use wispy_core::service::{NewDraft, ShownDraft};
 use wispy_core::split::SplitRow;
@@ -44,6 +45,17 @@ pub struct OpenedRange {
     pub range: Range,
     pub ignore_whitespace: bool,
     pub summary: DiffSummary,
+    /// Set when this is "changes since checkpoint" rather than the range's full diff.
+    pub since: Option<Since>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Since {
+    pub checkpoint_id: String,
+    pub created_at: i64,
+    /// Replaying the old version onto the new base conflicted: a raw diff is shown.
+    pub conflicts: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -122,7 +134,67 @@ pub async fn select_range(
             view
         }
     };
-    Ok(OpenedRange { view_id: id, range: Range { lo, hi }, ignore_whitespace, summary: view.summary.clone() })
+    Ok(OpenedRange { view_id: id, range: Range { lo, hi }, ignore_whitespace, summary: view.summary.clone(), since: None })
+}
+
+/// Shows only what changed in `lo..=hi` since a checkpoint (rebase-aware).
+#[tauri::command]
+pub async fn select_since(
+    stack_id: String,
+    lo: usize,
+    hi: usize,
+    checkpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<OpenedRange, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
+    let (view, checkpoint, conflicts) = blocking({
+        let (service, snapshot) = (service.clone(), snapshot.clone());
+        move || {
+            let checkpoint = service
+                .checkpoints(&snapshot, lo, hi)?
+                .into_iter()
+                .find(|c| c.id == checkpoint_id)
+                .ok_or_else(|| wispy_core::Error::GitHub("checkpoint not found for this range".into()))?;
+            let (view, conflicts) = service.interdiff(&snapshot, lo, hi, &checkpoint)?;
+            Ok((view, checkpoint, conflicts))
+        }
+    })
+    .await?;
+    let id = format!("{}:since:{}", view_id(&stack_id, lo, hi, false), checkpoint.id);
+    state.register_view(&id, &stack_id, hi, view.clone());
+    Ok(OpenedRange {
+        view_id: id,
+        range: Range { lo, hi },
+        ignore_whitespace: false,
+        summary: view.summary.clone(),
+        since: Some(Since { checkpoint_id: checkpoint.id, created_at: checkpoint.created_at, conflicts }),
+    })
+}
+
+#[tauri::command]
+pub async fn list_checkpoints(stack_id: String, lo: usize, hi: usize, state: State<'_, AppState>) -> Result<Vec<Checkpoint>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.checkpoints(&snapshot, lo, hi.min(snapshot.len() - 1))).await
+}
+
+/// Records the current heads of `lo..=hi` as reviewed (local only).
+#[tauri::command]
+pub async fn mark_reviewed(stack_id: String, lo: usize, hi: usize, state: State<'_, AppState>) -> Result<Checkpoint, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.mark_reviewed(&snapshot, lo, hi, "manual")).await
+}
+
+#[tauri::command]
+pub async fn get_viewed(repo: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let service = state.service()?;
+    blocking(move || service.viewed(&repo)).await
+}
+
+#[tauri::command]
+pub async fn set_viewed(repo: String, key: String, viewed: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let service = state.service()?;
+    blocking(move || service.set_viewed(&repo, &key, viewed)).await
 }
 
 /// Unified rows `start..end` of file `file` (offsets within the file; 0 is its header).
@@ -300,7 +372,12 @@ pub async fn submit_review(
     state: State<'_, AppState>,
 ) -> Result<Outcome, String> {
     let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
-    service.submit(&snapshot, pr_index, verdict, summary).await.map_err(|e| e.to_string())
+    let outcome = service.submit(&snapshot, pr_index, verdict, summary).await.map_err(|e| e.to_string())?;
+    if outcome.failed.is_empty() {
+        // Submitting counts as having reviewed this PR at its current head.
+        let _ = service.mark_reviewed(&snapshot, pr_index, pr_index, "submit");
+    }
+    Ok(outcome)
 }
 
 // ---------- inbox ----------

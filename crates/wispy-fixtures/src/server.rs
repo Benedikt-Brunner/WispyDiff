@@ -205,7 +205,8 @@ fn search_nodes(fixture: &Fixture, numbers: &[u64]) -> Vec<Value> {
                 "number": pr.number, "title": pr.title, "isDraft": false,
                 "url": format!("https://github.com/{}/{}/pull/{}", fixture.owner, fixture.repo, pr.number),
                 "updatedAt": format!("2026-09-{:02}T10:00:00Z", 10 + i),
-                "headRefName": pr.head_ref, "baseRefName": pr.base_ref, "headRefOid": pr.head_sha,
+                "headRefName": pr.head_ref, "baseRefName": pr.base_ref,
+                "headRefOid": run_git(&fixture.origin, &["rev-parse", &format!("refs/pull/{}/head", pr.number)]),
                 "author": { "login": if pr.number == 1 { "you" } else { "fixture-bot" } },
                 "repository": { "nameWithOwner": format!("{}/{}", fixture.owner, fixture.repo) }
             })
@@ -252,6 +253,8 @@ fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
         "default_branch": "main",
     });
     let base_sha = run_git(&fixture.origin, &["rev-parse", &pr.base_ref]);
+    // Live, so tests can push to the fixture origin while the app runs.
+    let head_sha = run_git(&fixture.origin, &["rev-parse", &format!("refs/pull/{}/head", pr.number)]);
     json!({
         "number": pr.number,
         "title": pr.title,
@@ -261,7 +264,7 @@ fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
         "html_url": format!("https://github.com/{}/{}/pull/{}", fixture.owner, fixture.repo, pr.number),
         "user": { "login": "fixture-bot" },
         "base": { "ref": pr.base_ref, "sha": base_sha, "repo": repo },
-        "head": { "ref": pr.head_ref, "sha": pr.head_sha, "repo": repo },
+        "head": { "ref": pr.head_ref, "sha": head_sha, "repo": repo },
     })
 }
 

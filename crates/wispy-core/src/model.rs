@@ -15,7 +15,7 @@ use crate::noise::path_noise;
 use crate::split::align;
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 4;
+pub const MODEL_VERSION: u32 = 5;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -76,6 +76,9 @@ pub struct FileSummary {
     pub new_lines: u32,
     /// The file's path in a PR of the range, where it differs from `path` (renamed later).
     pub pr_paths: Vec<(u8, String)>,
+    /// Identifies this file's change by content (paths and changed/context text, not line
+    /// numbers or SHAs), so a "viewed" mark survives rebases that don't touch it.
+    pub content_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +186,7 @@ impl DiffView {
                 old_lines,
                 new_lines,
                 pr_paths: renamed_in.remove(&(summaries.len())).unwrap_or_default(),
+                content_key: content_key(file),
             });
             rows.extend(file_rows);
         }
@@ -218,6 +222,31 @@ fn line_counts(file: &FileDiff, highlights: &HashMap<String, Lines>) -> Option<(
         (None, None) => return None,
     };
     Some((old.max(0) as u32, new.max(0) as u32))
+}
+
+/// FNV-1a over the file's paths and diff text: stable across Rust versions and processes.
+fn content_key(file: &FileDiff) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    feed(file.old_path.as_deref().unwrap_or("").as_bytes());
+    feed(b"\0");
+    feed(file.new_path.as_deref().unwrap_or("").as_bytes());
+    feed(if file.binary { b"\0binary" } else { b"\0text" });
+    for line in file.hunks.iter().flat_map(|h| &h.lines) {
+        feed(match line.kind {
+            LineKind::Context => b" ",
+            LineKind::Added => b"+",
+            LineKind::Deleted => b"-",
+        });
+        feed(line.text.as_bytes());
+        feed(b"\n");
+    }
+    format!("{hash:016x}")
 }
 
 /// The rows of file `index` (header first) as a slice of `rows`.

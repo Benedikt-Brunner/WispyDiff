@@ -46,6 +46,11 @@ pub fn run() {
             commands::locate_anchors,
             commands::prepare_submit,
             commands::submit_review,
+            commands::select_since,
+            commands::list_checkpoints,
+            commands::mark_reviewed,
+            commands::get_viewed,
+            commands::set_viewed,
             commands::get_inbox,
             commands::refresh_inbox])
         .run(tauri::generate_context!())

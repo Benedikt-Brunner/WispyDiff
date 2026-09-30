@@ -10,6 +10,7 @@ use crate::highlight::Seg;
 use crate::highlight_cache::{BlobStore, Lines};
 use crate::model::DiffView;
 use crate::pr_ref::PrRef;
+use crate::progress::Checkpoint;
 use crate::range::RangeSpec;
 use crate::stack::StackSnapshot;
 
@@ -57,6 +58,18 @@ impl Cache {
                  data TEXT NOT NULL,
                  fetched_at INTEGER NOT NULL DEFAULT (unixepoch()),
                  PRIMARY KEY (repo, pr)
+             );
+             CREATE TABLE IF NOT EXISTS viewed (
+                 repo TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 PRIMARY KEY (repo, key)
+             );
+             CREATE TABLE IF NOT EXISTS checkpoints (
+                 id TEXT PRIMARY KEY,
+                 repo TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 data TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS app_state (
                  key TEXT PRIMARY KEY,
@@ -189,6 +202,43 @@ impl Cache {
             .query_row("SELECT data FROM threads WHERE repo = ?1 AND pr = ?2", params![repo, pr as i64], |row| row.get(0))
             .optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+    }
+
+    pub fn viewed_keys(&self, repo: &str) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut statement = conn.prepare("SELECT key FROM viewed WHERE repo = ?1")?;
+        let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn set_viewed(&self, repo: &str, key: &str, viewed: bool) -> Result<()> {
+        if viewed {
+            self.conn().execute("INSERT OR IGNORE INTO viewed (repo, key) VALUES (?1, ?2)", params![repo, key])?;
+        } else {
+            self.conn().execute("DELETE FROM viewed WHERE repo = ?1 AND key = ?2", params![repo, key])?;
+        }
+        Ok(())
+    }
+
+    pub fn put_checkpoint(&self, checkpoint: &Checkpoint) -> Result<()> {
+        let data = serde_json::to_string(checkpoint).map_err(Error::codec)?;
+        self.conn().execute(
+            "INSERT OR REPLACE INTO checkpoints (id, repo, created_at, data) VALUES (?1, ?2, ?3, ?4)",
+            params![checkpoint.id, checkpoint.repo, checkpoint.created_at, data],
+        )?;
+        Ok(())
+    }
+
+    /// All checkpoints of a repo, newest first.
+    pub fn checkpoints(&self, repo: &str) -> Result<Vec<Checkpoint>> {
+        let conn = self.conn();
+        let mut statement = conn.prepare("SELECT data FROM checkpoints WHERE repo = ?1 ORDER BY created_at DESC, id DESC")?;
+        let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
+        let mut checkpoints = Vec::new();
+        for data in rows {
+            checkpoints.push(serde_json::from_str(&data?).map_err(Error::codec)?);
+        }
+        Ok(checkpoints)
     }
 
     /// A small app-wide JSON value (e.g. the last inbox), `None` if never stored.

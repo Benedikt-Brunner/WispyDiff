@@ -28,6 +28,13 @@ impl Git {
         Self::check(args, output.status.success(), output.stdout, &output.stderr)
     }
 
+    /// Runs git and returns whether it succeeded plus stdout, for commands whose non-zero exit
+    /// is an answer rather than a failure (e.g. `merge-tree` reporting conflicts).
+    pub fn run_status(&self, args: &[&str]) -> Result<(bool, Vec<u8>)> {
+        let output = self.command(args).output()?;
+        Ok((output.status.success(), output.stdout))
+    }
+
     pub fn run_string(&self, args: &[&str]) -> Result<String> {
         let out = self.run(args)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())

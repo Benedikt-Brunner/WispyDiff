@@ -24,6 +24,11 @@ describe("opening a pull request", () => {
   });
 
   it("navigates hunks with j/k and files with n/p", async () => {
+    // Start from the top (the reading position is remembered across opens).
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop = 0;
+    });
+    await waitFor(async () => (await scrollTop()) === 0);
     const start = await scrollTop();
     await browser.keys("j");
     await browser.keys("j");

@@ -48,11 +48,14 @@ interface Props {
   onDefaultModeChange: (mode: BaseMode) => void;
   /** Files the user asked to collapse in this repo (ignore patterns). */
   isIgnored: (path: string) => boolean;
+  /** Viewed marks, by file content key. */
+  isViewed: (key: string) => boolean;
+  onToggleViewed: (key: string, viewed: boolean) => void;
 }
 
 export function DiffViewer(props: Props) {
   const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, isIgnored } = props;
-  const { stackId, lo, hi, drafts, threads, onDraftsChanged } = props;
+  const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -74,12 +77,13 @@ export function DiffViewer(props: Props) {
   const modeOf = useCallback(
     (index: number): Mode => {
       const file = summary.files[index];
-      const hidden = collapsed.has(file.path) || ((file.noise !== null || isIgnored(file.path)) && !expanded.has(file.path));
+      const hidden =
+        collapsed.has(file.path) || ((file.noise !== null || isIgnored(file.path) || isViewed(file.content_key)) && !expanded.has(file.path));
       if (hidden) return "collapsed";
       const wanted = overrides.get(file.path) ?? defaultMode;
       return wanted === "split" && file.split_rows > 0 ? "split" : "unified";
     },
-    [summary, overrides, expanded, collapsed, defaultMode, isIgnored],
+    [summary, overrides, expanded, collapsed, defaultMode, isIgnored, isViewed],
   );
   const baseLayout = useMemo(() => new Layout(summary, modeOf), [summary, modeOf]);
 
@@ -308,7 +312,8 @@ export function DiffViewer(props: Props) {
     if (offset === 0) {
       rendered.push(<FileHeader key={key} y={y} file={file} mode={segment.mode} onComment={() => openFileComposer(segment.file)} />);
     } else if (segment.mode === "collapsed") {
-      rendered.push(<CollapsedNotice key={key} y={y} file={file} onExpand={() => setExpanded((s) => new Set(s).add(file.path))} />);
+      const why = file.noise ?? (isViewed(file.content_key) ? "viewed" : isIgnored(file.path) ? "ignored" : "collapsed");
+      rendered.push(<CollapsedNotice key={key} y={y} file={file} why={why} onExpand={() => setExpanded((s) => new Set(s).add(file.path))} />);
     } else if (segment.mode === "split") {
       const split = store.split(segment.file, offset);
       if (!split) visibleLoaded = false;
@@ -462,6 +467,16 @@ export function DiffViewer(props: Props) {
           if (hovered.current) openComposer(hovered.current, hovered.current);
           else openFileComposer(here.file);
           break;
+        case "v": {
+          const file = summary.files[here.file];
+          const viewed = !isViewed(file.content_key);
+          changeLayout(() => {
+            onToggleViewed(file.content_key, viewed);
+            setExpanded((s) => withOut(s, file.path));
+            if (!viewed) setCollapsed((s) => withOut(s, file.path));
+          });
+          break;
+        }
         default:
           return;
       }
@@ -470,7 +485,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer]);
+  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -479,6 +494,7 @@ export function DiffViewer(props: Props) {
       {showFiles && (
         <FileList
           files={summary.files}
+          isViewed={isViewed}
           segments={layout.segments}
           current={current.file}
           showPrs={multiPr}
@@ -528,13 +544,12 @@ const FileHeader = memo(function FileHeader({ y, file, mode, onComment }: { y: n
   );
 });
 
-function CollapsedNotice({ y, file, onExpand }: { y: number; file: FileSummary; onExpand: () => void }) {
-  const why = file.noise ?? "collapsed";
+function CollapsedNotice({ y, file, why, onExpand }: { y: number; file: FileSummary; why: string; onExpand: () => void }) {
   return (
     <div className="row row-collapsed" style={at(y)} onClick={onExpand}>
       <span className="gutter" />
       <span className="code">
-        {why} · +{file.additions} −{file.deletions} · click or press e to expand
+        {why} · +{file.additions} −{file.deletions} · click or press {why === "viewed" ? "v" : "e"} to expand
       </span>
     </div>
   );
@@ -676,13 +691,14 @@ const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selec
 
 interface FileListProps {
   files: FileSummary[];
+  isViewed: (key: string) => boolean;
   segments: Segment[];
   current: number;
   showPrs: boolean;
   onSelect: (index: number) => void;
 }
 
-function FileList({ files, segments, current, showPrs, onSelect }: FileListProps) {
+function FileList({ files, isViewed, segments, current, showPrs, onSelect }: FileListProps) {
   const activeRef = useRef<HTMLLIElement>(null);
   useEffect(() => activeRef.current?.scrollIntoView({ block: "nearest" }), [current]);
   return (
@@ -692,11 +708,13 @@ function FileList({ files, segments, current, showPrs, onSelect }: FileListProps
           <li
             key={f.path + i}
             ref={i === current ? activeRef : undefined}
-            className={[i === current && "active", segments[i]?.mode === "collapsed" && "muted"].filter(Boolean).join(" ")}
+            className={[i === current && "active", segments[i]?.mode === "collapsed" && "muted", isViewed(f.content_key) && "viewed"]
+              .filter(Boolean)
+              .join(" ")}
             onClick={() => onSelect(i)}
             title={f.path}
           >
-            <span className={`file-status status-${f.status}`}>{statusLetter(f.status)}</span>
+            <span className={`file-status status-${f.status}`}>{isViewed(f.content_key) ? "✓" : statusLetter(f.status)}</span>
             <span className="file-name">
               <span className="file-dir">{dirname(f.path)}</span>
               {basename(f.path)}

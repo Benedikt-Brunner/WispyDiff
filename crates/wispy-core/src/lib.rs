@@ -14,6 +14,7 @@ pub mod inbox;
 pub mod model;
 pub mod noise;
 pub mod pr_ref;
+pub mod progress;
 pub mod range;
 pub mod repo_store;
 pub mod review;
