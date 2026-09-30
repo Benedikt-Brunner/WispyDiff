@@ -655,3 +655,305 @@ body,
   font-family: var(--sans);
   font-size: 13px;
 }
+
+/* ---------- comments ---------- */
+
+.insert {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--vw, 100%);
+  padding: 6px 16px 6px calc(var(--gutter-ch) * 2ch + 52px);
+  font-family: var(--sans);
+  font-size: 13px;
+  z-index: 2;
+}
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-width: 820px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+}
+.card.draft {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.card.failed {
+  border-color: var(--del-fg);
+}
+.card.thread.collapsed {
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 12px;
+}
+.card.thread.resolved {
+  opacity: 0.8;
+}
+.card-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.card-title {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.card-body {
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+.card-error {
+  color: var(--del-fg);
+  font-size: 12px;
+  margin-top: 6px;
+}
+.card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.comment + .comment {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.comment.pending .card-body {
+  color: var(--fg-muted);
+}
+.comment-meta {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 3px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.comment-author {
+  font-weight: 600;
+  color: var(--fg);
+}
+.badge {
+  font-size: 11px;
+  padding: 0 6px;
+  line-height: 17px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+.badge.warn {
+  background: color-mix(in srgb, var(--pr1) 18%, transparent);
+  color: var(--pr1);
+}
+.composer-input,
+.sheet-summary {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  resize: vertical;
+  outline: none;
+}
+.composer-input:focus,
+.sheet-summary:focus {
+  border-color: var(--accent);
+}
+.button {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.link {
+  font: inherit;
+  font-size: 12px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+.gutter.commentable {
+  cursor: pointer;
+}
+.row:hover .gutter.commentable .sign::before,
+.row-split .half:hover .gutter.commentable::after {
+  content: "+";
+  color: var(--accent);
+  font-weight: 700;
+}
+.row:hover .gutter.commentable .sign {
+  color: transparent;
+}
+.row:hover .gutter.commentable .sign::before {
+  position: absolute;
+}
+.row.selected,
+.row.selected .gutter {
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.file-comment {
+  margin-left: auto;
+  font: inherit;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+}
+.row-file:hover .file-comment {
+  opacity: 1;
+  border-color: var(--border);
+}
+.review-button {
+  margin-left: auto;
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+/* ---------- submit sheet ---------- */
+
+.sheet {
+  width: min(760px, calc(100vw - 32px));
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.25);
+}
+.sheet-head,
+.sheet-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+.sheet-head {
+  border-bottom: 1px solid var(--border);
+}
+.sheet-foot {
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+}
+.sheet-title {
+  font-weight: 600;
+}
+.sheet-body {
+  overflow-y: auto;
+  padding: 8px 16px;
+}
+.sheet-status,
+.sheet-error {
+  padding: 16px;
+  color: var(--fg-muted);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.sheet-error {
+  color: var(--del-fg);
+}
+.sheet-pr {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sheet-pr:last-child {
+  border-bottom: 0;
+}
+.sheet-pr-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.sheet-pr-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-count {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.verdict {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.sheet-items {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.sheet-items li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.sheet-items li.outdated .sheet-item-kind {
+  color: var(--pr1);
+}
+.sheet-item-kind {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.sheet-item-body {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-item-actions {
+  display: flex;
+  gap: 4px;
+}
+.sheet-note {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 6px;
+}
+.sheet-done {
+  font-size: 12px;
+  color: var(--add-fg);
+  margin-top: 6px;
+}

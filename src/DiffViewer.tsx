@@ -1,5 +1,19 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Layout, type Mode, type Segment } from "./layout";
+import { acceptsLineComment, createDraft, deleteDraft, locateAnchors, updateDraft } from "./api";
+import {
+  anchorKey,
+  fileIndexFor,
+  lineLabel,
+  pathInPr,
+  type Anchor,
+  type Location,
+  type NewDraft,
+  type PrThreads,
+  type ReviewThread,
+  type ShownDraft,
+} from "./comments";
+import { Composer, DraftCard, InsertBox, ThreadCard } from "./Inserts";
+import { Layout, type Insert, type Mode, type Segment } from "./layout";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
@@ -11,6 +25,14 @@ const JUMP_MARGIN = 3;
 export type BaseMode = "unified" | "split";
 
 interface Props {
+  stackId: string;
+  /** Stack indices of the selected range. */
+  lo: number;
+  hi: number;
+  drafts: ShownDraft[];
+  threads: PrThreads[];
+  /** Call after creating, editing or deleting drafts. */
+  onDraftsChanged: () => void;
   viewId: string;
   summary: DiffSummary;
   /** The whole stack, bottom to top (row attributions index into it). */
@@ -30,6 +52,7 @@ interface Props {
 
 export function DiffViewer(props: Props) {
   const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, isIgnored } = props;
+  const { stackId, lo, hi, drafts, threads, onDraftsChanged } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -58,7 +81,97 @@ export function DiffViewer(props: Props) {
     },
     [summary, overrides, expanded, collapsed, defaultMode, isIgnored],
   );
-  const layout = useMemo(() => new Layout(summary, modeOf), [summary, modeOf]);
+  const baseLayout = useMemo(() => new Layout(summary, modeOf), [summary, modeOf]);
+
+  // ---------- comments: what goes where ----------
+  const [composer, setComposer] = useState<ComposerState | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [heights, setHeights] = useState<Map<string, number>>(new Map());
+  const [locations, setLocations] = useState<Map<string, Location | null>>(new Map());
+  const hovered = useRef<Target | null>(null);
+  const dragging = useRef<Target | null>(null);
+
+  const saveDraft = useCallback(
+    async (draft: NewDraft) => {
+      await createDraft(stackId, draft);
+      onDraftsChanged();
+    },
+    [stackId, onDraftsChanged],
+  );
+  const removeDraft = useCallback(
+    async (id: string) => {
+      await deleteDraft(id);
+      onDraftsChanged();
+    },
+    [onDraftsChanged],
+  );
+  const editDraft = useCallback(
+    async (id: string, body: string) => {
+      await updateDraft(id, { body });
+      onDraftsChanged();
+    },
+    [onDraftsChanged],
+  );
+
+  const items = useMemo(
+    () => commentItems({ drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, closeComposer: () => setComposer(null) }),
+    [drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft],
+  );
+  const anchorList = useMemo(() => {
+    const unique = new Map<string, Anchor>();
+    for (const item of items) if (item.anchor) unique.set(anchorKey(item.anchor), item.anchor);
+    return [...unique.values()];
+  }, [items]);
+  const anchorsSignature = anchorList.map(anchorKey).join(",");
+  useEffect(() => {
+    if (anchorList.length === 0) return;
+    let cancelled = false;
+    locateAnchors(viewId, anchorList)
+      .then((found) => {
+        if (cancelled) return;
+        setLocations(new Map(anchorList.map((a, i) => [anchorKey(a), found[i]])));
+      })
+      .catch((e) => console.error("locate failed", e));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewId, anchorsSignature]);
+
+  const placed = useMemo(() => {
+    const out: (Insert & { item: CommentItem })[] = [];
+    for (const item of items) {
+      let file: number;
+      let offset: number | null = null;
+      if (item.anchor) {
+        const location = locations.get(anchorKey(item.anchor));
+        if (!location) continue;
+        file = location.file;
+        const segment = baseLayout.segments[file];
+        offset = segment.mode === "split" ? location.split : segment.mode === "unified" ? location.unified : 1;
+      } else {
+        file = fileIndexFor(summary.files, item.path);
+        if (file < 0) continue;
+      }
+      const segment = baseLayout.segments[file];
+      const after = segment.start + (offset ?? (segment.mode === "collapsed" ? 1 : 0));
+      out.push({ key: item.key, after, height: heights.get(item.key) ?? 72, item });
+    }
+    return out;
+  }, [items, locations, baseLayout, summary, heights]);
+
+  const layout = useMemo(() => new Layout(summary, modeOf, placed), [summary, modeOf, placed]);
+  const placedItems = useMemo(() => new Map(placed.map((p) => [p.key, p.item])), [placed]);
+  const reportHeight = useRef(new Map<string, (h: number) => void>());
+  const heightReporter = useCallback((key: string) => {
+    let report = reportHeight.current.get(key);
+    if (!report) {
+      report = (h: number) =>
+        setHeights((current) => (Math.abs((current.get(key) ?? -1) - h) < 1 ? current : new Map(current).set(key, h)));
+      reportHeight.current.set(key, report);
+    }
+    return report;
+  }, []);
 
   // Keep the reader's place when the view or the layout changes.
   const previousView = useRef<string | null>(null);
@@ -97,6 +210,83 @@ export function DiffViewer(props: Props) {
   const first = Math.max(0, layout.rowAt(scrollTop) - OVERSCAN);
   const last = Math.min(layout.totalRows, layout.rowAt(scrollTop + viewportHeight) + 1 + OVERSCAN);
 
+  /** The comment target for a row side (null for fillers and headers). */
+  const targetAt = useCallback(
+    (file: number, mode: "unified" | "split", offset: number, side: "old" | "new" | null): Target | null => {
+      const summaryFile = summary.files[file];
+      let anchor: Anchor | null = null;
+      if (mode === "unified") {
+        const row = store.unified(file, offset);
+        if (row) anchor = unifiedAnchor(row, summaryFile, hi);
+      } else {
+        const row = store.split(file, offset);
+        if (row) anchor = splitAnchor(row, summaryFile, hi, side ?? "new");
+      }
+      return anchor ? { file, mode, offset, anchor } : null;
+    },
+    [summary, store, hi],
+  );
+
+  const openComposer = useCallback(
+    (start: Target, end: Target) => {
+      const same = start.anchor.pr === end.anchor.pr && start.anchor.side === end.anchor.side && start.anchor.path === end.anchor.path;
+      const from = same ? start : end;
+      const lines = [from.anchor.line, end.anchor.line].sort((a, b) => a - b);
+      const state: ComposerState = {
+        key: `composer:${anchorKey(end.anchor)}`,
+        kind: "line",
+        prIndex: end.anchor.pr,
+        path: end.anchor.path,
+        side: end.anchor.side,
+        line: lines[1],
+        startLine: lines[0] !== lines[1] ? lines[0] : null,
+        fallback: null,
+      };
+      setComposer(state);
+      setSelection(null);
+      acceptsLineComment(stackId, state.prIndex, state.path, state.side!, lines[0], lines[1])
+        .then((accepted) => setComposer((c) => (c?.key === state.key ? { ...c, fallback: !accepted } : c)))
+        .catch(() => undefined);
+    },
+    [stackId],
+  );
+
+  const openFileComposer = useCallback(
+    (file: number) => {
+      const summaryFile = summary.files[file];
+      const touched = summaryFile.prs.filter((p) => p >= lo && p <= hi);
+      const pr = touched.length ? Math.max(...touched) : hi;
+      setComposer({ key: `composer:file:${summaryFile.path}`, kind: "file", prIndex: pr, path: pathInPr(summaryFile, pr, "RIGHT"), side: null, line: null, startLine: null, fallback: false });
+    },
+    [summary, lo, hi],
+  );
+
+  /** Gutter interactions: click = comment on the line, drag = comment on a range. */
+  const onGutter = useCallback(
+    (event: "down" | "enter" | "up" | "hover", file: number, mode: "unified" | "split", offset: number, side: "old" | "new" | null) => {
+      const target = targetAt(file, mode, offset, side);
+      if (event === "hover") {
+        hovered.current = target;
+        return;
+      }
+      if (event === "down") {
+        dragging.current = target;
+        if (target) setSelection({ file, mode, from: offset, to: offset });
+        return;
+      }
+      const start = dragging.current;
+      if (!start || !target || start.file !== file || start.mode !== mode) return;
+      if (event === "enter") {
+        setSelection({ file, mode, from: Math.min(start.offset, offset), to: Math.max(start.offset, offset) });
+      } else {
+        dragging.current = null;
+        const [first, last] = start.offset <= offset ? [start, target] : [target, start];
+        openComposer(first, last);
+      }
+    },
+    [targetAt, openComposer],
+  );
+
   // Load what's visible, per file segment.
   for (let row = first; row < last; ) {
     const segment = layout.segmentAt(row);
@@ -105,7 +295,7 @@ export function DiffViewer(props: Props) {
     row = end;
   }
 
-  const items: React.ReactNode[] = [];
+  const rendered: React.ReactNode[] = [];
   let visibleLoaded = true;
   for (let row = first; row < last; row++) {
     const segment = layout.segmentAt(row);
@@ -113,20 +303,44 @@ export function DiffViewer(props: Props) {
     const file = summary.files[segment.file];
     const y = layout.rowY(row);
     const key = `${segment.file}:${segment.mode}:${offset}`;
+    const selected =
+      selection !== null && selection.file === segment.file && selection.mode === segment.mode && offset >= selection.from && offset <= selection.to;
     if (offset === 0) {
-      items.push(<FileHeader key={key} y={y} file={file} mode={segment.mode} />);
+      rendered.push(<FileHeader key={key} y={y} file={file} mode={segment.mode} onComment={() => openFileComposer(segment.file)} />);
     } else if (segment.mode === "collapsed") {
-      items.push(<CollapsedNotice key={key} y={y} file={file} onExpand={() => setExpanded((s) => new Set(s).add(file.path))} />);
+      rendered.push(<CollapsedNotice key={key} y={y} file={file} onExpand={() => setExpanded((s) => new Set(s).add(file.path))} />);
     } else if (segment.mode === "split") {
       const split = store.split(segment.file, offset);
       if (!split) visibleLoaded = false;
-      items.push(<SplitRowView key={key} y={y} row={split} showAttribution={showAttribution} />);
+      rendered.push(
+        <SplitRowView key={key} y={y} row={split} showAttribution={showAttribution} selected={selected} file={segment.file} offset={offset} onGutter={onGutter} />,
+      );
     } else {
       const unified = store.unified(segment.file, offset);
       if (!unified) visibleLoaded = false;
       const tag = multiPr && unified !== undefined && startsRun(unified, store.unified(segment.file, offset - 1));
-      items.push(<DiffRow key={key} y={y} row={unified} prs={prs} showAttribution={showAttribution} tag={tag} />);
+      rendered.push(
+        <DiffRow
+          key={key}
+          y={y}
+          row={unified}
+          prs={prs}
+          showAttribution={showAttribution}
+          tag={tag}
+          selected={selected}
+          file={segment.file}
+          offset={offset}
+          onGutter={onGutter}
+        />,
+      );
     }
+  }
+  for (const insert of layout.insertsBetween(first - 1, last)) {
+    rendered.push(
+      <InsertBox key={`insert:${insert.key}`} y={insert.y} onHeight={heightReporter(insert.key)}>
+        {placedItems.get(insert.key)?.render()}
+      </InsertBox>,
+    );
   }
 
   useEffect(() => {
@@ -244,6 +458,10 @@ export function DiffViewer(props: Props) {
         case "e":
           toggleCollapsed(here);
           break;
+        case "c":
+          if (hovered.current) openComposer(hovered.current, hovered.current);
+          else openFileComposer(here.file);
+          break;
         default:
           return;
       }
@@ -252,7 +470,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange]);
+  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -280,7 +498,7 @@ export function DiffViewer(props: Props) {
               } as React.CSSProperties
             }
           >
-            {items}
+            {rendered}
           </div>
         </div>
       </div>
@@ -290,7 +508,7 @@ export function DiffViewer(props: Props) {
 
 const at = (y: number): React.CSSProperties => ({ transform: `translateY(${y}px)` });
 
-const FileHeader = memo(function FileHeader({ y, file, mode }: { y: number; file: FileSummary; mode: Mode }) {
+const FileHeader = memo(function FileHeader({ y, file, mode, onComment }: { y: number; file: FileSummary; mode: Mode; onComment: () => void }) {
   return (
     <div className="row row-file" style={at(y)} data-file={file.path} data-mode={mode}>
       <span className={`file-status status-${file.status}`}>{statusLetter(file.status)}</span>
@@ -303,6 +521,9 @@ const FileHeader = memo(function FileHeader({ y, file, mode }: { y: number; file
       </span>
       {file.noise && <span className="file-badge">{file.noise}</span>}
       <span className="file-mode">{mode === "split" ? "side by side" : mode === "collapsed" ? "collapsed" : ""}</span>
+      <button className="file-comment" title="Comment on this file" onClick={onComment}>
+        Comment
+      </button>
     </div>
   );
 });
@@ -335,6 +556,8 @@ function Segments({ segs }: { segs: Seg[] }) {
   );
 }
 
+type GutterHandler = (event: "down" | "enter" | "up" | "hover", file: number, mode: "unified" | "split", offset: number, side: "old" | "new" | null) => void;
+
 interface RowProps {
   y: number;
   row?: Row;
@@ -342,9 +565,22 @@ interface RowProps {
   showAttribution: boolean;
   /** Show the PR tag: this row starts a run of lines from one PR. */
   tag: boolean;
+  selected: boolean;
+  file: number;
+  offset: number;
+  onGutter: GutterHandler;
 }
 
-const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag }: RowProps) {
+const gutterEvents = (onGutter: GutterHandler, file: number, mode: "unified" | "split", offset: number, side: "old" | "new" | null) => ({
+  onMouseDown: (e: React.MouseEvent) => {
+    e.preventDefault();
+    onGutter("down", file, mode, offset, side);
+  },
+  onMouseEnter: () => onGutter("enter", file, mode, offset, side),
+  onMouseUp: () => onGutter("up", file, mode, offset, side),
+});
+
+const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag, selected, file, offset, onGutter }: RowProps) {
   const style = at(y);
   if (!row) return <div className="row row-loading" style={style} />;
   switch (row.k) {
@@ -369,8 +605,13 @@ const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag }: Row
       const attributed = showAttribution && row.a !== null;
       if (attributed) (style as Record<string, string>)["--pr"] = prColor(row.a!);
       return (
-        <div className={`row row-${kind}${attributed ? " attributed" : ""}`} style={style} title={attributed ? lineHistory(row, prs) : undefined}>
-          <span className="gutter">
+        <div
+          className={`row row-${kind}${attributed ? " attributed" : ""}${selected ? " selected" : ""}`}
+          style={style}
+          title={attributed ? lineHistory(row, prs) : undefined}
+          onMouseEnter={() => onGutter("hover", file, "unified", offset, null)}
+        >
+          <span className="gutter commentable" {...gutterEvents(onGutter, file, "unified", offset, null)}>
             <span className="ln">{row.o ?? ""}</span>
             <span className="ln">{row.n ?? ""}</span>
             <span className="sign">{kind === "add" ? "+" : kind === "del" ? "−" : ""}</span>
@@ -388,7 +629,17 @@ const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag }: Row
 const sideClass = (kind: number) =>
   kind === RowKind.Added ? "add" : kind === RowKind.Deleted ? "del" : kind === RowKind.Filler ? "filler" : "ctx";
 
-const SplitRowView = memo(function SplitRowView({ y, row, showAttribution }: { y: number; row?: SplitRow; showAttribution: boolean }) {
+interface SplitProps {
+  y: number;
+  row?: SplitRow;
+  showAttribution: boolean;
+  selected: boolean;
+  file: number;
+  offset: number;
+  onGutter: GutterHandler;
+}
+
+const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selected, file, offset, onGutter }: SplitProps) {
   if (!row) return <div className="row row-loading" style={at(y)} />;
   const side = (no: number | null, kind: number, segs: Seg[], pr: number | null, left: boolean) => {
     const cls = sideClass(kind);
@@ -398,7 +649,11 @@ const SplitRowView = memo(function SplitRowView({ y, row, showAttribution }: { y
         className={`half half-${cls}${left ? " half-left" : ""}${attributed ? " attributed" : ""}`}
         style={attributed ? ({ "--pr": prColor(pr!) } as React.CSSProperties) : undefined}
       >
-        <span className="gutter half-gutter">
+        <span
+          className={`gutter half-gutter${cls === "filler" ? "" : " commentable"}`}
+          {...(cls === "filler" ? {} : gutterEvents(onGutter, file, "split", offset, left ? "old" : "new"))}
+          onMouseEnter={() => cls !== "filler" && onGutter("enter", file, "split", offset, left ? "old" : "new")}
+        >
           <span className="ln">{no ?? ""}</span>
         </span>
         <span className="code">
@@ -408,7 +663,11 @@ const SplitRowView = memo(function SplitRowView({ y, row, showAttribution }: { y
     );
   };
   return (
-    <div className="row row-split" style={{ transform: `translate(var(--split-x, 0px), ${y}px)` }}>
+    <div
+      className={`row row-split${selected ? " selected" : ""}`}
+      style={{ transform: `translate(var(--split-x, 0px), ${y}px)` }}
+      onMouseEnter={() => onGutter("hover", file, "split", offset, "new")}
+    >
       {side(row.o, row.ok, row.os, row.oa, true)}
       {side(row.n, row.nk, row.ns, row.na, false)}
     </div>
@@ -490,3 +749,171 @@ const dirname = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") 
 const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+
+// ---------- comment helpers ----------
+
+interface Target {
+  file: number;
+  mode: "unified" | "split";
+  offset: number;
+  anchor: Anchor;
+}
+
+interface Selection {
+  file: number;
+  mode: Mode;
+  from: number;
+  to: number;
+}
+
+interface ComposerState {
+  key: string;
+  kind: "line" | "file";
+  prIndex: number;
+  path: string;
+  side: Anchor["side"] | null;
+  line: number | null;
+  startLine: number | null;
+  /** Whether it'll go out as a file comment (null while checking). */
+  fallback: boolean | null;
+}
+
+/** Where a comment on this unified row goes: the PR that last touched it, at its line there. */
+function unifiedAnchor(row: Row, file: FileSummary, top: number): Anchor | null {
+  if (row.k === RowKind.Added && row.a !== null && row.l !== null) return { pr: row.a, side: "RIGHT", line: row.l, path: pathInPr(file, row.a, "RIGHT") };
+  if (row.k === RowKind.Deleted && row.a !== null && row.l !== null) return { pr: row.a, side: "LEFT", line: row.l, path: pathInPr(file, row.a, "LEFT") };
+  if (row.k === RowKind.Context && row.n !== null) return { pr: top, side: "RIGHT", line: row.n, path: file.path };
+  return null;
+}
+
+function splitAnchor(row: SplitRow, file: FileSummary, top: number, side: "old" | "new"): Anchor | null {
+  if (side === "old") {
+    if (row.ok === RowKind.Deleted && row.oa !== null && row.ol !== null) return { pr: row.oa, side: "LEFT", line: row.ol, path: pathInPr(file, row.oa, "LEFT") };
+    if (row.ok === RowKind.Context && row.n !== null) return { pr: top, side: "RIGHT", line: row.n, path: file.path };
+    return null;
+  }
+  if (row.nk === RowKind.Added && row.na !== null && row.nl !== null) return { pr: row.na, side: "RIGHT", line: row.nl, path: pathInPr(file, row.na, "RIGHT") };
+  if (row.nk === RowKind.Context && row.n !== null) return { pr: top, side: "RIGHT", line: row.n, path: file.path };
+  return null;
+}
+
+interface CommentItem {
+  key: string;
+  /** Line items are placed at their anchor; file items under their file's header. */
+  anchor: Anchor | null;
+  path: string;
+  render: () => React.ReactNode;
+}
+
+interface ItemSources {
+  drafts: ShownDraft[];
+  threads: PrThreads[];
+  composer: ComposerState | null;
+  lo: number;
+  hi: number;
+  prs: PullRequest[];
+  saveDraft: (draft: NewDraft) => Promise<void>;
+  removeDraft: (id: string) => Promise<void>;
+  editDraft: (id: string, body: string) => Promise<void>;
+  closeComposer: () => void;
+}
+
+/** Threads, drafts and the open composer of the PRs in the range, as placeable items. */
+function commentItems(src: ItemSources): CommentItem[] {
+  const { drafts, threads, composer, lo, hi, prs } = src;
+  const inRange = (i: number) => i >= lo && i <= hi;
+  const items: CommentItem[] = [];
+  const byThread = new Map<string, ShownDraft[]>();
+  for (const d of drafts) if (d.draft.threadId) byThread.set(d.draft.threadId, [...(byThread.get(d.draft.threadId) ?? []), d]);
+
+  for (const { prIndex, threads: list } of threads) {
+    if (!inRange(prIndex)) continue;
+    for (const thread of list) {
+      const pending = byThread.get(thread.id) ?? [];
+      const anchor: Anchor | null =
+        thread.file_level || thread.line === null ? null : { pr: prIndex, path: thread.path, side: thread.side, line: thread.line };
+      items.push({
+        key: `thread:${thread.id}`,
+        anchor,
+        path: thread.path,
+        render: () => (
+          <ThreadCard
+            thread={thread}
+            label={threadLabel(thread, prs[prIndex].number)}
+            replies={pending.filter((d) => d.draft.kind === "reply")}
+            resolving={pending.find((d) => d.draft.kind === "resolve")}
+            onReply={(body) =>
+              void src.saveDraft({ prIndex, kind: "reply", path: thread.path, side: null, line: null, startLine: null, body, threadId: thread.id, replyTo: thread.comments[0]?.database_id ?? null })
+            }
+            onResolve={() =>
+              void src.saveDraft({ prIndex, kind: "resolve", path: thread.path, side: null, line: null, startLine: null, body: "", threadId: thread.id, replyTo: null })
+            }
+            onDeleteDraft={(id) => void src.removeDraft(id)}
+          />
+        ),
+      });
+    }
+  }
+
+  for (const shown of drafts) {
+    const { draft, prIndex } = shown;
+    if (!inRange(prIndex) || (draft.kind !== "line" && draft.kind !== "file")) continue;
+    const path = shown.path ?? draft.path ?? "";
+    const anchor: Anchor | null =
+      draft.kind === "line" && shown.line !== null && draft.side ? { pr: prIndex, path, side: draft.side, line: shown.line } : null;
+    const where = draft.kind === "file" ? "file" : lineLabel(shown.startLine, shown.line) || lineLabel(draft.startLine, draft.line);
+    items.push({
+      key: `draft:${draft.id}`,
+      anchor,
+      path,
+      render: () => (
+        <DraftCard
+          shown={shown}
+          label={`#${prs[prIndex].number} · ${where}`}
+          onEdit={(body) => void src.editDraft(draft.id, body)}
+          onDelete={() => void src.removeDraft(draft.id)}
+        />
+      ),
+    });
+  }
+
+  if (composer) {
+    const anchor: Anchor | null =
+      composer.kind === "line" && composer.line !== null && composer.side
+        ? { pr: composer.prIndex, path: composer.path, side: composer.side, line: composer.line }
+        : null;
+    const where = composer.kind === "file" ? composer.path : `${composer.path} ${lineLabel(composer.startLine, composer.line)}`;
+    items.push({
+      key: composer.key,
+      anchor,
+      path: composer.path,
+      render: () => (
+        <Composer
+          title={`Comment on #${prs[composer.prIndex].number} · ${where}`}
+          fileFallback={composer.fallback}
+          onSave={(body) => {
+            src.closeComposer();
+            void src.saveDraft({
+              prIndex: composer.prIndex,
+              kind: composer.kind,
+              path: composer.path,
+              side: composer.side,
+              line: composer.line,
+              startLine: composer.startLine,
+              body,
+              threadId: null,
+              replyTo: null,
+            });
+          }}
+          onCancel={src.closeComposer}
+        />
+      ),
+    });
+  }
+  return items;
+}
+
+function threadLabel(thread: ReviewThread, prNumber: number) {
+  const where = thread.file_level ? "file" : thread.line !== null ? lineLabel(thread.start_line, thread.line) : `was ${lineLabel(null, thread.original_line)}`;
+  return `#${prNumber} · ${thread.path.split("/").pop()} ${where}`;
+}

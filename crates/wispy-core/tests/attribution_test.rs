@@ -143,3 +143,47 @@ fn ranges_are_ordered_focus_first_then_whole_stack() {
     snapshot.stack.focus = 1;
     assert_eq!(snapshot.ranges_by_priority(), vec![(1, 1), (0, 2), (0, 0), (2, 2), (0, 1), (1, 2)]);
 }
+
+#[test]
+fn records_each_line_number_in_the_diff_of_the_pr_it_belongs_to() {
+    let (_origin, snapshot, root) = three_pr_stack();
+    let view = view(&snapshot, &root, 0, 2);
+
+    // Line 21 on PR 1's head; PR 2 deleted a line above it, so it's line 20 in the view.
+    let added = find(&view, row_kind::ADDED, "added by pr1");
+    assert_eq!((added.n, added.l), (Some(20), Some(21)));
+    // Deleted lines are numbered on the old side of the deleting PR's diff.
+    assert_eq!(find(&view, row_kind::DELETED, "line 4").l, Some(4));
+    assert_eq!(find(&view, row_kind::DELETED, "line 1").l, Some(1));
+    // PR 1 and 2 knew the file as lib.php; the view shows src/lib.php (renamed by PR 3).
+    let file = &view.summary.files[1];
+    assert_eq!(file.pr_paths, vec![(0, "lib.php".to_string()), (1, "lib.php".to_string())]);
+}
+
+#[test]
+fn locates_pr_level_anchors_in_a_range_view() {
+    use wispy_core::anchors::{locate, Anchor};
+    use wispy_core::github::Side;
+    let (_origin, snapshot, root) = three_pr_stack();
+    let view = view(&snapshot, &root, 0, 2);
+    let anchor = |pr: u8, path: &str, side, line| Anchor { pr, path: path.into(), side, line };
+
+    let added = locate(&view, 2, &anchor(0, "lib.php", Side::Right, 21)).expect("found");
+    assert_eq!(added.file, 1);
+    let rows = wispy_core::model::file_slice(&view, 1);
+    assert_eq!(support::row_text(&rows[added.unified.unwrap() as usize]), "added by pr1");
+    assert!(added.split.is_some());
+
+    let deleted = locate(&view, 2, &anchor(1, "lib.php", Side::Left, 4)).expect("found");
+    assert_eq!(support::row_text(&rows[deleted.unified.unwrap() as usize]), "line 4");
+
+    // An unchanged line far from any hunk exists only in the side-by-side rows.
+    let unchanged = locate(&view, 2, &anchor(2, "src/lib.php", Side::Right, 10)).expect("found");
+    assert_eq!(unchanged.unified, None);
+    let file = &view.summary.files[1];
+    let pairs = wispy_core::split::align(rows, file.old_lines, file.new_lines).pairs;
+    let pair = pairs[unchanged.split.unwrap() as usize - 1];
+    assert_eq!((pair.n, pair.nk), (Some(10), row_kind::CONTEXT));
+
+    assert_eq!(locate(&view, 2, &anchor(0, "nope.php", Side::Right, 1)), None);
+}

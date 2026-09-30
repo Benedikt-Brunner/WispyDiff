@@ -17,6 +17,8 @@ process.env.WISPY_GITHUB_TOKEN = "fixture-token";
 
 let fakeGitHub: ChildProcess | undefined;
 
+// Note: spec files share one app process (the embedded driver keeps it running), so specs must
+// not assume a freshly launched UI.
 export const config: WebdriverIO.Config = {
   runner: "local",
   specs: ["./specs/**/*.e2e.ts"],

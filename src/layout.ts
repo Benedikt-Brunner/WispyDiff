@@ -71,8 +71,15 @@ export class Layout {
     return lo;
   }
 
-  insertsBetween(first: number, last: number) {
-    return this.inserts.filter((i) => i.after >= first && i.after <= last);
+  /** Inserts below rows `first..=last`, with the top of each (stacked in order under their row). */
+  insertsBetween(first: number, last: number): (Insert & { y: number })[] {
+    const out: (Insert & { y: number })[] = [];
+    this.inserts.forEach((insert, i) => {
+      if (insert.after >= first && insert.after <= last) {
+        out.push({ ...insert, y: (insert.after + 1) * ROW_HEIGHT + this.cumulative[i] });
+      }
+    });
+    return out;
   }
 
   segmentAt(row: number): Segment {

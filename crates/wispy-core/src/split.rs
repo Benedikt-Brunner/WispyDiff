@@ -30,6 +30,9 @@ pub struct SplitRow {
     /// Stack index of the PR that last touched the old / new line (changed sides only).
     pub oa: Option<u8>,
     pub na: Option<u8>,
+    /// The old / new line's number in that PR's own diff (changed sides only).
+    pub ol: Option<u32>,
+    pub nl: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -130,15 +133,15 @@ pub fn align(rows: &[Row], old_len: u32, new_len: u32) -> Alignment {
 /// file's unified rows.
 pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg>]) -> Vec<SplitRow> {
     use std::collections::HashMap;
-    let mut old_attr: HashMap<u32, u8> = HashMap::new();
-    let mut new_attr: HashMap<u32, u8> = HashMap::new();
+    let mut old_attr: HashMap<u32, (u8, Option<u32>)> = HashMap::new();
+    let mut new_attr: HashMap<u32, (u8, Option<u32>)> = HashMap::new();
     let mut old_text: HashMap<u32, &Vec<Seg>> = HashMap::new();
     let mut new_text: HashMap<u32, &Vec<Seg>> = HashMap::new();
     for row in rows {
         match row.k {
             row_kind::DELETED => {
                 if let (Some(o), Some(a)) = (row.o, row.a) {
-                    old_attr.insert(o, a);
+                    old_attr.insert(o, (a, row.l));
                 }
                 if let Some(o) = row.o {
                     old_text.insert(o, &row.s);
@@ -146,7 +149,7 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
             }
             row_kind::ADDED => {
                 if let (Some(n), Some(a)) = (row.n, row.a) {
-                    new_attr.insert(n, a);
+                    new_attr.insert(n, (a, row.l));
                 }
                 if let Some(n) = row.n {
                     new_text.insert(n, &row.s);
@@ -166,15 +169,22 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
     };
     pairs
         .iter()
-        .map(|p| SplitRow {
+        .map(|p| {
+            let old_pr = p.o.and_then(|o| old_attr.get(&o).copied()).filter(|_| p.ok == row_kind::DELETED);
+            let new_pr = p.n.and_then(|n| new_attr.get(&n).copied()).filter(|_| p.nk == row_kind::ADDED);
+            (p, old_pr, new_pr)
+        })
+        .map(|(p, old_pr, new_pr)| SplitRow {
             o: p.o,
             n: p.n,
             ok: p.ok,
             nk: p.nk,
             os: line(old, &old_text, p.o),
             ns: line(new, &new_text, p.n),
-            oa: p.o.and_then(|o| old_attr.get(&o).copied()).filter(|_| p.ok == row_kind::DELETED),
-            na: p.n.and_then(|n| new_attr.get(&n).copied()).filter(|_| p.nk == row_kind::ADDED),
+            oa: old_pr.map(|a| a.0),
+            na: new_pr.map(|a| a.0),
+            ol: old_pr.and_then(|a| a.1),
+            nl: new_pr.and_then(|a| a.1),
         })
         .collect()
 }

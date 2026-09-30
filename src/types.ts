@@ -15,6 +15,8 @@ export interface Row {
   a: number | null;
   /** Stack indices of every PR that shaped this line, when more than one did. */
   h: number[];
+  /** The line's number in PR `a`'s own diff. */
+  l: number | null;
 }
 
 /** One aligned side-by-side row: old line opposite new line (either may be a filler). */
@@ -27,6 +29,8 @@ export interface SplitRow {
   ns: Seg[];
   oa: number | null;
   na: number | null;
+  ol: number | null;
+  nl: number | null;
 }
 
 export type FileStatus = "added" | "deleted" | "modified" | "renamed" | "copied";
@@ -52,6 +56,10 @@ export interface FileSummary {
   split_blocks: number[];
   /** Why the file is collapsed by default, if it is. */
   noise: string | null;
+  old_lines: number;
+  new_lines: number;
+  /** [stack index, path] where a PR knew the file under another path. */
+  pr_paths: [number, string][];
 }
 
 export interface DiffSummary {

@@ -123,3 +123,72 @@ async fn serves_side_by_side_rows_and_remembers_ignore_patterns_across_restarts(
     let cached_view = restarted.cached_range(&cached, 0, 0).unwrap().unwrap();
     assert_eq!(restarted.split_rows(&cached, &cached_view, 0).unwrap(), rows);
 }
+
+#[tokio::test]
+async fn drafts_follow_their_lines_to_the_current_head() {
+    use wispy_core::drafts::DraftKind;
+    use wispy_core::github::Side;
+    use wispy_core::service::NewDraft;
+
+    let origin = OriginRepo::init();
+    let lines: String = (1..=20).map(|i| format!("$v{i} = {i};\n")).collect();
+    origin.write("src/Order.php", &format!("<?php\n{lines}"));
+    origin.commit("base");
+    origin.checkout_new("stack/1");
+    origin.write("src/Order.php", &format!("<?php\n{}", lines.replace("$v5 = 5;", "$v5 = 50;")));
+    let head = origin.commit("change");
+    origin.publish_pr(9, "stack/1");
+
+    let url = origin.url();
+    let server = MockServer::start().await;
+    mount(&server, "/repos/acme/shop/pulls", Some(("base", "stack/1")), serde_json::json!([])).await;
+    let pr_mock = Mock::given(path("/repos/acme/shop/pulls/9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::pull_request_json(9, "main", "stack/1", &head, &url)));
+    pr_mock.mount(&server).await;
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new(server.uri(), "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let pr = PrRef::parse("acme/shop#9").unwrap();
+    let snapshot = service.fetch(service.discover(&pr).await.unwrap()).unwrap();
+
+    assert!(service.accepts_line_comment(&snapshot, 0, "src/Order.php", Side::Right, 6, 6).unwrap());
+    assert!(!service.accepts_line_comment(&snapshot, 0, "src/Order.php", Side::Right, 18, 18).unwrap());
+
+    let draft = service
+        .create_draft(
+            &snapshot,
+            NewDraft {
+                pr_index: 0,
+                kind: DraftKind::Line,
+                path: Some("src/Order.php".into()),
+                side: Some(Side::Right),
+                line: Some(6),
+                start_line: None,
+                body: "why 50?".into(),
+                thread_id: None,
+                reply_to: None,
+            },
+        )
+        .unwrap();
+    assert_eq!((draft.pr, draft.commit.as_str()), (9, head.as_str()));
+
+    // Two lines inserted at the top: the draft's line moves from 6 to 8.
+    origin.checkout("stack/1");
+    origin.write("src/Order.php", &format!("<?php\n// a\n// b\n{}", lines.replace("$v5 = 5;", "$v5 = 50;")));
+    origin.commit("prepend");
+    origin.publish_pr(9, "stack/1");
+    let fresh = service.fetch(snapshot.stack.clone()).unwrap();
+    let shown = service.shown_drafts(&fresh).unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!((shown[0].pr_index, shown[0].line), (0, Some(8)));
+
+    service.update_draft(&draft.id, Some("why fifty?".into()), None).unwrap();
+    assert_eq!(service.shown_drafts(&fresh).unwrap()[0].draft.body, "why fifty?");
+    service.delete_draft(&draft.id).unwrap();
+    assert!(service.shown_drafts(&fresh).unwrap().is_empty());
+}

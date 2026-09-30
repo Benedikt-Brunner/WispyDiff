@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getIgnorePatterns, openPr, refreshPr, selectRange, setIgnorePatterns } from "./api";
+import { getIgnorePatterns, listDrafts, listThreads, openPr, refreshPr, selectRange, setIgnorePatterns } from "./api";
+import type { PrThreads, ShownDraft } from "./comments";
+import { SubmitSheet } from "./SubmitSheet";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { DiffViewer, type BaseMode } from "./DiffViewer";
 import { globMatcher } from "./glob";
@@ -25,6 +27,9 @@ export default function App() {
   const [showFiles, setShowFiles] = useState(true);
   const [defaultMode, setDefaultMode] = useState<BaseMode>(() => loadPref("defaultMode", ["unified", "split"] as const, "unified"));
   const [ignorePatterns, setIgnore] = useState<string[]>([]);
+  const [drafts, setDrafts] = useState<ShownDraft[]>([]);
+  const [threads, setThreads] = useState<PrThreads[]>([]);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [, setReadyVersion] = useState(0);
   const rangeRequest = useRef(0);
 
@@ -50,6 +55,27 @@ export default function App() {
     setShown(opened);
     setNewerVersion(null);
   }, []);
+
+  const stackId = stack?.stackId ?? null;
+  const refreshDrafts = useCallback(() => {
+    if (!stackId) return;
+    listDrafts(stackId)
+      .then(setDrafts)
+      .catch((e) => console.error("drafts", e));
+  }, [stackId]);
+  useEffect(() => {
+    if (!stackId) return;
+    setDrafts([]);
+    setThreads([]);
+    refreshDrafts();
+    // Cached threads first (offline-friendly), then GitHub's current state.
+    listThreads(stackId, false)
+      .then(setThreads)
+      .catch(() => undefined);
+    listThreads(stackId, true)
+      .then(setThreads)
+      .catch(() => undefined);
+  }, [stackId, refreshDrafts]);
 
   const repo = stack?.prs[0].base_repo ?? null;
   useEffect(() => {
@@ -131,6 +157,7 @@ export default function App() {
         run: toggleWhitespace,
       });
     }
+    if (stack) list.push({ id: "submit", label: "Submit review…", run: () => setSheetOpen(true) });
     list.push({
       id: "mode",
       label: defaultMode === "split" ? "Show all files unified" : "Show all files side by side",
@@ -148,7 +175,7 @@ export default function App() {
       }
     }
     return list.map((c) => ({ ...c, run: (arg: string) => (c.run(arg), setPaletteOpen(false)) }));
-  }, [shown, repo, ignorePatterns, defaultMode, toggleWhitespace, changeDefaultMode, updateIgnore]);
+  }, [shown, stack, repo, ignorePatterns, defaultMode, toggleWhitespace, changeDefaultMode, updateIgnore]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -159,7 +186,7 @@ export default function App() {
       } else if (e.metaKey && e.key === "b") {
         e.preventDefault();
         setShowFiles((s) => !s);
-      } else if (!paletteOpen && stack && shown && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if (!paletteOpen && !sheetOpen && stack && shown && !e.metaKey && !e.ctrlKey && !e.altKey && !isTypingIn(e.target)) {
         if (e.key === "w") {
           e.preventDefault();
           toggleWhitespace();
@@ -174,7 +201,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, stack, shown, chooseRange, toggleWhitespace]);
+  }, [paletteOpen, sheetOpen, stack, shown, chooseRange, toggleWhitespace]);
 
   const isStack = stack !== null && stack.prs.length > 1;
   const ready = (lo: number, hi: number) => (stack ? (readyRanges.get(stack.stackId)?.has(`${lo}-${hi}`) ?? false) : false);
@@ -184,6 +211,11 @@ export default function App() {
       <header className="titlebar" data-tauri-drag-region>
         {stack && <Mark className="titlebar-mark" />}
         {stack && shown ? <RangeHeader stack={stack} shown={shown} /> : <span className="titlebar-hint" data-tauri-drag-region />}
+        {stack && (
+          <button className="review-button" onClick={() => setSheetOpen(true)} data-testid="review-button">
+            Submit review{drafts.length ? ` · ${drafts.length}` : ""}
+          </button>
+        )}
         {newerVersion && (
           <button className="update-banner" onClick={() => show(newerVersion)}>
             New commits pushed · load latest
@@ -197,13 +229,19 @@ export default function App() {
         {stack && shown ? (
           <DiffViewer
             key={stack.stackId}
+            stackId={stack.stackId}
+            lo={shown.range.lo}
+            hi={shown.range.hi}
+            drafts={drafts}
+            threads={threads}
+            onDraftsChanged={refreshDrafts}
             viewId={shown.viewId}
             summary={shown.summary}
             prs={stack.prs}
             showAttribution={isStack}
             multiPr={shown.range.hi > shown.range.lo}
             showFiles={showFiles}
-            keyboardEnabled={!paletteOpen}
+            keyboardEnabled={!paletteOpen && !sheetOpen}
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}
             isIgnored={isIgnored}
@@ -215,6 +253,19 @@ export default function App() {
           </div>
         )}
       </main>
+      {sheetOpen && stack && (
+        <SubmitSheet
+          stackId={stack.stackId}
+          onClose={() => setSheetOpen(false)}
+          onSubmitted={(fresh) => {
+            refreshDrafts();
+            listThreads(stack.stackId, false)
+              .then(setThreads)
+              .catch(() => undefined);
+            if (fresh.stackId !== stack.stackId) setNewerVersion(fresh);
+          }}
+        />
+      )}
       {paletteOpen && (
         <CommandPalette busy={busy} error={error} commands={commands} onOpen={open} onClose={stack ? () => setPaletteOpen(false) : null} />
       )}
@@ -240,3 +291,6 @@ function RangeHeader({ stack, shown }: { stack: OpenedStack; shown: OpenedRange 
     </div>
   );
 }
+
+const isTypingIn = (t: EventTarget | null) =>
+  t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
