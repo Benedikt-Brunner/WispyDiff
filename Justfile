@@ -26,8 +26,9 @@ bench: build-e2e
     cargo run --release -q -p wispy-core --example core_timings -- e2e/.fixtures/stack/origin
     pnpm exec wdio run e2e/wdio.conf.ts --spec e2e/specs/perf.e2e.ts
 
+# All functional specs (everything but the performance budgets).
 e2e-functional: build-e2e
-    pnpm exec wdio run e2e/wdio.conf.ts --spec e2e/specs/open.e2e.ts
+    pnpm exec wdio run e2e/wdio.conf.ts --exclude e2e/specs/perf.e2e.ts
 
 # Release build with the embedded WebDriver server, plus the fixture generator.
 build-e2e:

@@ -118,3 +118,24 @@ fn rows_window_is_clamped() {
     assert!(view.rows(total + 5, total + 10).is_empty());
     assert!(view.rows(5, 2).is_empty());
 }
+
+#[test]
+fn concurrent_setup_and_fetches_of_one_repo_do_not_collide() {
+    let (origin, head) = origin_with_pr();
+    let root = tempfile::tempdir().unwrap();
+    let store = RepoStore::new(root.path(), None);
+    let url = origin.url();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let git = store.ensure_repo("acme", "shop", &url).unwrap();
+                    store.fetch_pr(&git, 7, "main").unwrap().head_sha
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap(), head);
+        }
+    });
+}

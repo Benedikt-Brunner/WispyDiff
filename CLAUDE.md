@@ -11,7 +11,7 @@ behaviour, performance budgets and milestones — read it before changing anythi
 - `e2e` — WebdriverIO suites against the real release build (`open.e2e.ts` functional, `perf.e2e.ts` budgets).
 
 ## Commands
-- `just test` — core tests, type-check, functional e2e.
+- `just test` — core tests, type-check, all functional e2e specs.
 - `just bench` — performance budgets on this machine. Run it before merging anything touching rendering or the core.
 - `just dev` — run the app.
 
@@ -20,4 +20,6 @@ behaviour, performance budgets and milestones — read it before changing anythi
 - Core tests use real throwaway git repos (`tests/support`) and wiremock for GitHub. Construct services under test directly in each test — never through factory helpers (fixture builders are fine).
 - git always runs through `wispy_core::git::Git` (isolated from the user's global git config).
 - Never touch the user's own working copies; the app only uses its blobless clones under the data dir.
-- Env overrides (tests only): `WISPY_DATA_DIR`, `WISPY_GITHUB_API`, `WISPY_GITHUB_TOKEN`.
+- Env overrides (tests only): `WISPY_DATA_DIR`, `WISPY_GITHUB_API`, `WISPY_GITHUB_TOKEN`, `WISPY_PREFETCH_INTERVAL`.
+- e2e: spec files share one app process (don't assume a fresh UI); the embedded macOS driver is slow/lossy for element lookups and typed spaces, so helpers go through `browser.execute`. Failing tests print frontend errors (`[failure] …`).
+- git writes (repo setup, fetches) are serialized per repo in `RepoStore`; reads stay concurrent.

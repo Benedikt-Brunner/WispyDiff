@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getIgnorePatterns, listDrafts, listThreads, openPr, refreshPr, selectRange, setIgnorePatterns } from "./api";
+import {
+  getIgnorePatterns,
+  getViewed,
+  listCheckpoints,
+  listDrafts,
+  listThreads,
+  markReviewed,
+  openPr,
+  refreshPr,
+  selectRange,
+  selectSince,
+  setIgnorePatterns,
+  setViewed,
+} from "./api";
 import type { PrThreads, ShownDraft } from "./comments";
 import { SubmitSheet } from "./SubmitSheet";
 import { CommandPalette, type Command } from "./CommandPalette";
@@ -13,7 +26,7 @@ import { mark } from "./perf";
 import { loadPref, savePref } from "./prefs";
 import { rememberPr } from "./recent";
 import { rangeForKey, StackBar } from "./StackBar";
-import { prLabel, type OpenedRange, type OpenedStack, type Range } from "./types";
+import { prLabel, type Checkpoint, type OpenedRange, type OpenedStack, type Range } from "./types";
 import "./styles.css";
 
 /** Which ranges the backend has precomputed, per stack (`"lo-hi"` keys). */
@@ -35,6 +48,15 @@ export default function App() {
   const [drafts, setDrafts] = useState<ShownDraft[]>([]);
   const [threads, setThreads] = useState<PrThreads[]>([]);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [viewed, setViewedKeys] = useState<Set<string>>(new Set());
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const say = useCallback((message: string) => {
+    setToast(message);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
+  }, []);
   const [, setReadyVersion] = useState(0);
   const rangeRequest = useRef(0);
 
@@ -104,6 +126,27 @@ export default function App() {
   }, [repo]);
   const isIgnored = useMemo(() => globMatcher(ignorePatterns), [ignorePatterns]);
 
+  useEffect(() => {
+    if (!repo) return;
+    getViewed(repo)
+      .then((keys) => setViewedKeys(new Set(keys)))
+      .catch(() => setViewedKeys(new Set()));
+  }, [repo]);
+  const isViewed = useCallback((key: string) => viewed.has(key), [viewed]);
+  const toggleViewed = useCallback(
+    (key: string, value: boolean) => {
+      if (!repo) return;
+      setViewedKeys((current) => {
+        const next = new Set(current);
+        if (value) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+      void setViewed(repo, key, value);
+    },
+    [repo],
+  );
+
   const updateIgnore = useCallback(
     (patterns: string[]) => {
       if (!repo) return;
@@ -167,6 +210,39 @@ export default function App() {
     if (shown) void chooseRange(shown.range, !shown.ignoreWhitespace);
   }, [shown, chooseRange]);
 
+  const markRangeReviewed = useCallback(async () => {
+    if (!stack || !shown) return;
+    const { lo, hi } = shown.range;
+    await markReviewed(stack.stackId, lo, hi);
+    const which = lo === hi ? `#${stack.prs[lo].number}` : `#${stack.prs[lo].number}–#${stack.prs[hi].number}`;
+    say(`Marked ${which} as reviewed at ${stack.prs[hi].head_sha.slice(0, 7)} — press d later to see what changed`);
+  }, [stack, shown, say]);
+
+  const showSince = useCallback(
+    async (checkpointId?: string) => {
+      if (!stack || !shown) return;
+      const { lo, hi } = shown.range;
+      const available = await listCheckpoints(stack.stackId, lo, hi);
+      setCheckpoints(available);
+      const chosen = checkpointId ?? available[0]?.id;
+      if (!chosen) {
+        say("No checkpoint for this range yet — press M to mark it as reviewed");
+        return;
+      }
+      mark("range:start");
+      const request = ++rangeRequest.current;
+      const result = await selectSince(stack.stackId, lo, hi, chosen);
+      if (request === rangeRequest.current) setShown(result);
+    },
+    [stack, shown, say],
+  );
+
+  const toggleSince = useCallback(() => {
+    if (!shown) return;
+    if (shown.since) void chooseRange(shown.range, false);
+    else void showSince().catch((e) => say(String(e)));
+  }, [shown, chooseRange, showSince, say]);
+
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = [];
     if (shown) {
@@ -178,6 +254,10 @@ export default function App() {
     }
     list.push({ id: "inbox", label: "Go to inbox", run: () => setHome(true) });
     if (stack) list.push({ id: "submit", label: "Submit review…", run: () => setSheetOpen(true) });
+    if (shown) {
+      list.push({ id: "reviewed", label: "Mark as reviewed (checkpoint)", run: () => void markRangeReviewed() });
+      list.push({ id: "since", label: shown.since ? "Show the full diff" : "Show changes since last review", run: toggleSince });
+    }
     list.push({
       id: "mode",
       label: defaultMode === "split" ? "Show all files unified" : "Show all files side by side",
@@ -195,7 +275,7 @@ export default function App() {
       }
     }
     return list.map((c) => ({ ...c, run: (arg: string) => (c.run(arg), setPaletteOpen(false)) }));
-  }, [shown, stack, repo, ignorePatterns, defaultMode, toggleWhitespace, changeDefaultMode, updateIgnore]);
+  }, [shown, stack, repo, ignorePatterns, defaultMode, toggleWhitespace, changeDefaultMode, updateIgnore, markRangeReviewed, toggleSince]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -215,6 +295,16 @@ export default function App() {
           toggleWhitespace();
           return;
         }
+        if (e.key === "M") {
+          e.preventDefault();
+          void markRangeReviewed();
+          return;
+        }
+        if (e.key === "d") {
+          e.preventDefault();
+          toggleSince();
+          return;
+        }
         const next = rangeForKey(e.key, shown.range, stack.prs.length);
         if (next) {
           e.preventDefault();
@@ -224,7 +314,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, sheetOpen, home, stack, shown, chooseRange, toggleWhitespace]);
+  }, [paletteOpen, sheetOpen, home, stack, shown, chooseRange, toggleWhitespace, markRangeReviewed, toggleSince]);
 
   const isStack = stack !== null && stack.prs.length > 1;
   const showingDiff = !home && stack !== null && shown !== null;
@@ -236,7 +326,11 @@ export default function App() {
         <button className="titlebar-home" title="Inbox (⌘I)" onClick={() => setHome(true)}>
           <Mark className="titlebar-mark" />
         </button>
-        {showingDiff ? <RangeHeader stack={stack} shown={shown} /> : <span className="titlebar-hint" data-tauri-drag-region />}
+        {showingDiff ? (
+          <RangeHeader stack={stack} shown={shown} checkpoints={checkpoints} onPickCheckpoint={(id) => void showSince(id)} />
+        ) : (
+          <span className="titlebar-hint" data-tauri-drag-region />
+        )}
         {showingDiff && (
           <button className="review-button" onClick={() => setSheetOpen(true)} data-testid="review-button">
             Submit review{drafts.length ? ` · ${drafts.length}` : ""}
@@ -271,6 +365,8 @@ export default function App() {
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}
             isIgnored={isIgnored}
+            isViewed={isViewed}
+            onToggleViewed={toggleViewed}
           />
         ) : (
           <Inbox entries={inbox} online={online} keyboardEnabled={!paletteOpen} onOpen={open} onRefresh={refreshInbox} />
@@ -289,6 +385,11 @@ export default function App() {
           }}
         />
       )}
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
       {paletteOpen && (
         <CommandPalette busy={busy} error={error} commands={commands} onOpen={open} onClose={() => setPaletteOpen(false)} />
       )}
@@ -296,7 +397,14 @@ export default function App() {
   );
 }
 
-function RangeHeader({ stack, shown }: { stack: OpenedStack; shown: OpenedRange }) {
+interface RangeHeaderProps {
+  stack: OpenedStack;
+  shown: OpenedRange;
+  checkpoints: Checkpoint[];
+  onPickCheckpoint: (id: string) => void;
+}
+
+function RangeHeader({ stack, shown, checkpoints, onPickCheckpoint }: RangeHeaderProps) {
   const { lo, hi } = shown.range;
   const [bottom, top] = [stack.prs[lo], stack.prs[hi]];
   const { summary } = shown;
@@ -310,6 +418,24 @@ function RangeHeader({ stack, shown }: { stack: OpenedStack; shown: OpenedRange 
         {bottom.base_ref} ← {top.head_ref} · {summary.files.length} files ·{" "}
         <span className="add">+{summary.additions}</span> <span className="del">−{summary.deletions}</span>
         {shown.ignoreWhitespace && <span className="pr-flag"> · whitespace hidden</span>}
+        {shown.since && (
+          <span className="pr-flag since">
+            {" · changes since "}
+            <select
+              className="since-picker"
+              value={shown.since.checkpointId}
+              onChange={(e) => onPickCheckpoint(e.target.value)}
+              data-testid="since-picker"
+            >
+              {checkpoints.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {new Date(c.createdAt * 1000).toLocaleString()} ({c.source === "submit" ? "submitted" : "marked"})
+                </option>
+              ))}
+            </select>
+            {shown.since.conflicts && " · rebase conflicted, showing raw changes"}
+          </span>
+        )}
       </span>
     </div>
   );

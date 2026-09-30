@@ -1043,3 +1043,31 @@ body,
   color: var(--fg-muted);
   font-size: 12px;
 }
+
+/* ---------- progress ---------- */
+
+.file-list li.viewed .file-status {
+  color: var(--add-fg);
+}
+.since-picker {
+  font: inherit;
+  font-size: 11px;
+  color: var(--pr1);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--pr1) 40%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+  z-index: 20;
+}

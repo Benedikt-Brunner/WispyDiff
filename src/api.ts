@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Anchor, Draft, Location, NewDraft, Outcome, Planned, PrThreads, ShownDraft, Side, Verdict } from "./comments";
-import type { OpenedRange, OpenedStack, Row, SplitRow } from "./types";
+import type { Checkpoint, OpenedRange, OpenedStack, Row, SplitRow } from "./types";
 
 export const openPr = (input: string) => invoke<OpenedStack>("open_pr", { input });
 
@@ -50,3 +50,14 @@ export const prepareSubmit = (stackId: string) => invoke<SubmitPlan>("prepare_su
 
 export const submitReview = (stackId: string, prIndex: number, verdict: Verdict, summary: string | null) =>
   invoke<Outcome>("submit_review", { stackId, prIndex, verdict, summary });
+
+export const selectSince = (stackId: string, lo: number, hi: number, checkpointId: string) =>
+  invoke<OpenedRange>("select_since", { stackId, lo, hi, checkpointId });
+
+export const listCheckpoints = (stackId: string, lo: number, hi: number) => invoke<Checkpoint[]>("list_checkpoints", { stackId, lo, hi });
+
+export const markReviewed = (stackId: string, lo: number, hi: number) => invoke<Checkpoint>("mark_reviewed", { stackId, lo, hi });
+
+export const getViewed = (repo: string) => invoke<string[]>("get_viewed", { repo });
+
+export const setViewed = (repo: string, key: string, viewed: boolean) => invoke<void>("set_viewed", { repo, key, viewed });

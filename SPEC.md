@@ -30,15 +30,15 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - Two modes, toggled per file (`s`) with a global default (`S`, remembered): **unified** and **full-file side-by-side** (whole base file vs whole head file). The two sides are aligned line for line — changes sit opposite what they replaced, with hatched filler where one side has more lines — so a single scroll keeps them in sync and no connector bands are needed. Side-by-side rows always span the viewport 50/50; horizontal scrolling moves the code in both halves together. No hunk-only split view.
 - Collapsed by default: lockfiles, minified files and source maps, snapshots, `linguist-generated` (from the head's `.gitattributes`). `e` collapses/expands the current file. "Hide whitespace changes" (`w`, default off) recomputes the range with `-w`. Per-repo local ignore list via the palette (`> ignore <glob>`, `> stop ignoring …`; gitignore-style globs).
 - `⌘K` palette: PR URLs / `owner/repo#N`, recent PRs, and `>` commands.
-- Keyboard-first: `j/k` hunks, `n/p` files, `[ ] { }` stack range, `s`/`S` side-by-side (file/all), `e` collapse, `w` whitespace, `⌘K` palette, `⌘B` file list, `c` comment, `v` viewed, `a` assistant.
+- Keyboard-first: `j/k` hunks, `n/p` files, `[ ] { }` stack range, `s`/`S` side-by-side (file/all), `e` collapse, `w` whitespace, `c` comment, `v` viewed, `M` mark reviewed, `d` since checkpoint, `⌘I` inbox, `⌘K` palette, `⌘B` file list, `a` assistant.
 
 ## Offline
 - **Every inbox stack is prefetched** in the background (at launch, every 5 minutes, and on window focus): the full stack is discovered and fetched, each inbox PR alone and the whole stack are precomputed (highlighted full files included), and review threads are cached. Stacks of PRs that left the inbox because they were merged/closed are evicted unless they have unposted drafts.
 
 ## Progress tracking
-- **Viewed marks** per file, content-keyed (survive rebases).
-- **Local checkpoints**: "Mark as reviewed" records every PR head SHA in the range, local only, never touches GitHub. Submitting a review also creates one. Checkpoint history is browsable.
-- **"Only changes since checkpoint"**: rebase-aware interdiff (range-diff style) so rebase-only movement is filtered out.
+- **Viewed marks** per file (`v`), keyed by the file's diff content (paths + changed/context text, not line numbers or SHAs), so they survive rebases that don't change the file. Viewed files collapse and get a ✓ in the file list.
+- **Local checkpoints**: "Mark as reviewed" (`M`) records every PR head (and diff base) in the range, local only, never touches GitHub. Submitting a review also creates one for that PR. The header's picker lists the checkpoints covering the range.
+- **"Only changes since checkpoint"** (`d`): the checkpoint's version of the range is replayed onto the current base (`git merge-tree --merge-base`), and that tree is diffed against the current head — so changes a rebase brought in cancel out and only the author's edits remain. If replaying conflicts, a raw head-to-head diff is shown with a warning.
 
 ## Code intelligence
 - **Name-based tree-sitter** symbol matching over **full contents of touched files** at the range head. Usages in changed lines are shown separately from unchanged ones. Jump in-tool; files outside the diff open in a read-only file view.
