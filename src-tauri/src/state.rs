@@ -10,6 +10,7 @@ use wispy_core::model::DiffView;
 use wispy_core::repo_store::RepoStore;
 use wispy_core::service::PrService;
 use wispy_core::split::SplitRow;
+use wispy_core::symbols::SymbolIndex;
 use wispy_core::stack::StackSnapshot;
 use wispy_core::token::resolve_github_token;
 
@@ -55,6 +56,8 @@ pub struct AppState {
     current_stack: Mutex<Option<String>>,
     /// Stacks with a precompute worker running.
     precomputing: Mutex<HashSet<String>>,
+    /// Symbol index per view, built once (concurrent callers wait for the same build).
+    indexes: Mutex<HashMap<String, Arc<OnceLock<Arc<SymbolIndex>>>>>,
 }
 
 impl AppState {
@@ -67,6 +70,7 @@ impl AppState {
             split_files: Mutex::new(VecDeque::new()),
             current_stack: Mutex::new(None),
             precomputing: Mutex::new(HashSet::new()),
+            indexes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -128,6 +132,34 @@ impl AppState {
     /// The view and its range's top PR.
     pub fn view_with_top(&self, id: &str) -> Option<(Arc<DiffView>, u8)> {
         lock(&self.views).iter().find(|open| open.id == id).map(|open| (open.view.clone(), open.top))
+    }
+
+    /// The symbol index of an open view, building it on first use (blocking).
+    pub fn symbol_index(&self, view_id: &str) -> Result<Arc<SymbolIndex>, String> {
+        let (view, snapshot) = self.view_with_stack(view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
+        let cell = {
+            let mut indexes = lock(&self.indexes);
+            if indexes.len() > 8 && !indexes.contains_key(view_id) {
+                indexes.clear();
+            }
+            indexes.entry(view_id.to_string()).or_default().clone()
+        };
+        if let Some(index) = cell.get() {
+            return Ok(index.clone());
+        }
+        let service = self.service()?;
+        let mut failure = None;
+        let index = cell.get_or_init(|| match service.symbol_index(&snapshot, &view) {
+            Ok(index) => Arc::new(index),
+            Err(err) => {
+                failure = Some(err.to_string());
+                Arc::new(SymbolIndex::build(&view, |_| None))
+            }
+        });
+        match failure {
+            Some(err) => Err(err),
+            None => Ok(index.clone()),
+        }
     }
 
     pub fn split_file(&self, key: &str) -> Option<Arc<Vec<SplitRow>>> {

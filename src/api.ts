@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Anchor, Draft, Location, NewDraft, Outcome, Planned, PrThreads, ShownDraft, Side, Verdict } from "./comments";
 import type { Checkpoint, OpenedRange, OpenedStack, Row, SplitRow } from "./types";
 
@@ -61,3 +61,41 @@ export const markReviewed = (stackId: string, lo: number, hi: number) => invoke<
 export const getViewed = (repo: string) => invoke<string[]>("get_viewed", { repo });
 
 export const setViewed = (repo: string, key: string, viewed: boolean) => invoke<void>("set_viewed", { repo, key, viewed });
+
+export interface Hit {
+  file: number;
+  path: string;
+  line: number;
+  col: number;
+  text: string;
+}
+
+export interface Usages {
+  name: string;
+  definitions: Hit[];
+  changed: Hit[];
+  unchanged: Hit[];
+}
+
+export interface GrepHit {
+  path: string;
+  line: number;
+  text: string;
+}
+
+export type GrepEvent = { kind: "hits"; hits: GrepHit[] } | { kind: "done"; total: number } | { kind: "failed"; message: string };
+
+export const usages = (viewId: string, name: string) => invoke<Usages>("usages", { viewId, name });
+
+/** Streams whole-repo search results to `onEvent`; resolves when the search ends. */
+export function grep(stackId: string, prIndex: number, query: string, wholeWord: boolean, onEvent: (e: GrepEvent) => void) {
+  const channel = new Channel<GrepEvent>();
+  channel.onmessage = onEvent;
+  return invoke<void>("grep", { stackId, prIndex, query, wholeWord, onEvent: channel });
+}
+
+export const readFile = (stackId: string, prIndex: number, path: string) =>
+  invoke<import("./types").Seg[][]>("read_file", { stackId, prIndex, path });
+
+export const locateLine = (viewId: string, file: number, line: number) =>
+  invoke<import("./comments").Location | null>("locate_line", { viewId, file, line });

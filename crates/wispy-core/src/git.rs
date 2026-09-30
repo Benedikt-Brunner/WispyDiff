@@ -35,6 +35,11 @@ impl Git {
         Ok((output.status.success(), output.stdout))
     }
 
+    /// Starts git with stdout piped, for streaming output (e.g. `grep`).
+    pub fn spawn(&self, args: &[&str]) -> Result<std::process::Child> {
+        Ok(self.command(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?)
+    }
+
     pub fn run_string(&self, args: &[&str]) -> Result<String> {
         let out = self.run(args)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())

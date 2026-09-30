@@ -51,6 +51,10 @@ pub fn run() {
             commands::mark_reviewed,
             commands::get_viewed,
             commands::set_viewed,
+            commands::usages,
+            commands::grep,
+            commands::read_file,
+            commands::locate_line,
             commands::get_inbox,
             commands::refresh_inbox])
         .run(tauri::generate_context!())

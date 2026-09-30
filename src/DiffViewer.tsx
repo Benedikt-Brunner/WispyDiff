@@ -1,5 +1,19 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { acceptsLineComment, createDraft, deleteDraft, locateAnchors, updateDraft } from "./api";
+import {
+  acceptsLineComment,
+  createDraft,
+  deleteDraft,
+  grep,
+  locateAnchors,
+  locateLine,
+  readFile,
+  updateDraft,
+  usages as fetchUsages,
+  type GrepHit,
+  type Usages,
+} from "./api";
+import { CodePanel, type PanelState } from "./CodePanel";
+import { FileView } from "./FileView";
 import {
   anchorKey,
   fileIndexFor,
@@ -95,6 +109,58 @@ export function DiffViewer(props: Props) {
   const hovered = useRef<Target | null>(null);
   const dragging = useRef<Target | null>(null);
 
+  // ---------- code intelligence ----------
+  const [panel, setPanel] = useState<PanelState | null>(null);
+  const [usageResult, setUsageResult] = useState<Usages | null>(null);
+  const [grepHits, setGrepHits] = useState<GrepHit[]>([]);
+  const [grepStatus, setGrepStatus] = useState<string>("idle");
+  const [fileView, setFileView] = useState<{ path: string; line: number; lines: Seg[][] | null; error: string | null } | null>(null);
+  const [flash, setFlash] = useState<{ file: number; offset: number } | null>(null);
+  const pendingJump = useRef<{ file: number; line: number } | null>(null);
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const grepRun = useRef(0);
+
+  const openUsages = useCallback(
+    (name: string) => {
+      const clean = name.replace(/^\$/, "");
+      if (!clean) return;
+      mark("usages:start");
+      setPanel({ kind: "usages", name: clean });
+      setGrepHits([]);
+      setGrepStatus("idle");
+      fetchUsages(viewId, clean)
+        .then((result) => {
+          setUsageResult(result);
+          requestAnimationFrame(() => mark("usages:visible"));
+        })
+        .catch((e) => console.error("usages failed", e));
+    },
+    [viewId],
+  );
+
+  const search = useCallback(
+    (query: string) => {
+      const run = ++grepRun.current;
+      mark("grep:start");
+      setPanel((p) => (p?.kind === "usages" ? p : { kind: "search", query }));
+      setGrepHits([]);
+      setGrepStatus("running");
+      let first = true;
+      grep(stackId, hi, query, /^[A-Za-z0-9_$]+$/.test(query), (event) => {
+        if (run !== grepRun.current) return;
+        if (event.kind === "hits") {
+          setGrepHits((current) => [...current, ...event.hits]);
+          if (first) {
+            first = false;
+            requestAnimationFrame(() => mark("grep:first-hit"));
+          }
+        } else if (event.kind === "done") setGrepStatus("done");
+        else setGrepStatus(event.message);
+      }).catch((e) => setGrepStatus(String(e)));
+    },
+    [stackId, hi],
+  );
+
   const saveDraft = useCallback(
     async (draft: NewDraft) => {
       await createDraft(stackId, draft);
@@ -166,6 +232,58 @@ export function DiffViewer(props: Props) {
 
   const layout = useMemo(() => new Layout(summary, modeOf, placed), [summary, modeOf, placed]);
   const placedItems = useMemo(() => new Map(placed.map((p) => [p.key, p.item])), [placed]);
+
+  /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
+   * full file has that line; flashes the row. */
+  const jumpToLine = useCallback(
+    async (file: number, line: number) => {
+      const location = await locateLine(viewId, file, line);
+      if (!location) return;
+      const path = summary.files[file].path;
+      const segment = layout.segments[file];
+      const needsSplit = segment.mode === "collapsed" || (segment.mode === "unified" && location.unified === null);
+      if (needsSplit) {
+        pendingJump.current = { file, line };
+        setExpanded((s) => new Set(s).add(path));
+        setCollapsed((s) => withOut(s, path));
+        if (location.unified === null) setOverrides((m) => new Map(m).set(path, "split"));
+        return;
+      }
+      const offset = (segment.mode === "split" ? location.split : location.unified) ?? 0;
+      const el = scrollRef.current;
+      if (el) el.scrollTop = Math.max(0, layout.rowY(segment.start + offset) - el.clientHeight / 3);
+      setFlash({ file, offset });
+    },
+    [viewId, summary, layout],
+  );
+
+  useEffect(() => {
+    const jump = pendingJump.current;
+    if (!jump) return;
+    pendingJump.current = null;
+    void jumpToLine(jump.file, jump.line);
+  }, [layout, jumpToLine]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const timer = window.setTimeout(() => setFlash(null), 1400);
+    return () => window.clearTimeout(timer);
+  }, [flash]);
+
+  const jump = useCallback(
+    (target: { path: string; line: number; file?: number }) => {
+      const file = target.file ?? summary.files.findIndex((f) => f.path === target.path);
+      if (file >= 0 && summary.files[file].new_blob) {
+        void jumpToLine(file, target.line);
+        return;
+      }
+      setFileView({ path: target.path, line: target.line, lines: null, error: null });
+      readFile(stackId, hi, target.path)
+        .then((lines) => setFileView((v) => (v?.path === target.path ? { ...v, lines } : v)))
+        .catch((e) => setFileView((v) => (v?.path === target.path ? { ...v, error: String(e) } : v)));
+    },
+    [summary, jumpToLine, stackId, hi],
+  );
   const reportHeight = useRef(new Map<string, (h: number) => void>());
   const heightReporter = useCallback((key: string) => {
     let report = reportHeight.current.get(key);
@@ -308,7 +426,8 @@ export function DiffViewer(props: Props) {
     const y = layout.rowY(row);
     const key = `${segment.file}:${segment.mode}:${offset}`;
     const selected =
-      selection !== null && selection.file === segment.file && selection.mode === segment.mode && offset >= selection.from && offset <= selection.to;
+      (selection !== null && selection.file === segment.file && selection.mode === segment.mode && offset >= selection.from && offset <= selection.to) ||
+      (flash !== null && flash.file === segment.file && flash.offset === offset);
     if (offset === 0) {
       rendered.push(<FileHeader key={key} y={y} file={file} mode={segment.mode} onComment={() => openFileComposer(segment.file)} />);
     } else if (segment.mode === "collapsed") {
@@ -467,6 +586,19 @@ export function DiffViewer(props: Props) {
           if (hovered.current) openComposer(hovered.current, hovered.current);
           else openFileComposer(here.file);
           break;
+        case "u": {
+          const point = lastPointer.current;
+          const word = point && wordAt(point.x, point.y);
+          if (word) openUsages(word);
+          break;
+        }
+        case "/":
+          setPanel({ kind: "search", query: "" });
+          break;
+        case "Escape":
+          if (!panel) return;
+          setPanel(null);
+          break;
         case "v": {
           const file = summary.files[here.file];
           const viewed = !isViewed(file.content_key);
@@ -485,7 +617,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed]);
+  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -502,7 +634,21 @@ export function DiffViewer(props: Props) {
         />
       )}
       <div className="diff-main">
-        <div className="diff-scroll" ref={scrollRef} onScroll={onScroll} data-testid="diff-scroll">
+        <div
+          className="diff-scroll"
+          ref={scrollRef}
+          onScroll={onScroll}
+          data-testid="diff-scroll"
+          onMouseMove={(e) => (lastPointer.current = { x: e.clientX, y: e.clientY })}
+          onClick={(e) => {
+            if (!e.metaKey) return;
+            const word = wordAt(e.clientX, e.clientY);
+            if (word) {
+              e.preventDefault();
+              openUsages(word);
+            }
+          }}
+        >
           <div
             ref={canvasRef}
             className="diff-canvas"
@@ -518,8 +664,35 @@ export function DiffViewer(props: Props) {
           </div>
         </div>
       </div>
+      {panel && (
+        <CodePanel
+          state={panel}
+          usages={panel.kind === "usages" ? usageResult : null}
+          grepHits={grepHits}
+          grepStatus={grepStatus}
+          onSearch={search}
+          onJump={jump}
+          onClose={() => setPanel(null)}
+        />
+      )}
+      {fileView && <FileView {...fileView} onClose={() => setFileView(null)} />}
     </div>
   );
+}
+
+/** The identifier under a screen position (for ⌘-click and `u`). */
+function wordAt(x: number, y: number): string | null {
+  const range = document.caretRangeFromPoint?.(x, y);
+  const node = range?.startContainer;
+  if (!range || !node || node.nodeType !== Node.TEXT_NODE || !node.parentElement?.closest(".code")) return null;
+  const text = node.textContent ?? "";
+  const isWord = (c: string | undefined) => c !== undefined && /[A-Za-z0-9_$]/.test(c);
+  let start = range.startOffset;
+  let end = start;
+  while (start > 0 && isWord(text[start - 1])) start--;
+  while (end < text.length && isWord(text[end])) end++;
+  const word = text.slice(start, end).replace(/^\$/, "");
+  return /^[A-Za-z_]/.test(word) ? word : null;
 }
 
 const at = (y: number): React.CSSProperties => ({ transform: `translateY(${y}px)` });

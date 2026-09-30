@@ -61,6 +61,18 @@ pub struct InboxEntry {
 
 const INBOX_KEY: &str = "inbox";
 
+/// One `git grep` hit on the head of a range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrepHit {
+    pub path: String,
+    pub line: u32,
+    pub text: String,
+}
+
+/// Whole-repo search stops after this many hits.
+pub const MAX_GREP_HITS: usize = 1000;
+
 /// What a new draft is attached to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -389,6 +401,71 @@ impl PrService {
             evicted += 1;
         }
         Ok(evicted)
+    }
+
+    // ---------- code intelligence ----------
+
+    /// The symbol index of a view (the head side of every file it touches).
+    pub fn symbol_index(&self, snapshot: &StackSnapshot, view: &DiffView) -> Result<crate::symbols::SymbolIndex> {
+        let git = self.git(snapshot)?;
+        Ok(crate::symbols::SymbolIndex::build(view, |file| {
+            let blob = file.new_blob.as_ref()?;
+            blob_lines(&git, blob, Language::from_path(&file.path), &self.highlighter, &self.highlights).ok()
+        }))
+    }
+
+    /// Streams `git grep` hits for `query` (fixed string) on the head of stack PR `index`,
+    /// in batches to `on_hits` (return `false` to stop). The first search of a head downloads
+    /// its missing blobs in one batch. Returns the number of hits.
+    pub fn grep(&self, snapshot: &StackSnapshot, index: usize, query: &str, whole_word: bool, mut on_hits: impl FnMut(Vec<GrepHit>) -> bool) -> Result<usize> {
+        use std::io::{BufRead, BufReader};
+        let head = &snapshot.heads[index];
+        let git = self.git(snapshot)?;
+        self.store.hydrate(&git, head)?;
+        let mut args = vec!["grep", "-z", "-n", "-I", "--fixed-strings", "--max-count=50"];
+        if whole_word {
+            args.push("-w");
+        }
+        args.extend(["-e", query, head.as_str(), "--"]);
+        let mut child = git.spawn(&args)?;
+        let reader = BufReader::new(child.stdout.take().expect("stdout is piped"));
+        let prefix = format!("{head}:");
+        let (mut batch, mut total, mut last_flush) = (Vec::new(), 0usize, std::time::Instant::now());
+        for line in reader.split(b'\n') {
+            let line = line?;
+            let mut fields = line.splitn(3, |b| *b == 0);
+            let (Some(path), Some(number), Some(text)) = (fields.next(), fields.next(), fields.next()) else { continue };
+            let path = String::from_utf8_lossy(path);
+            batch.push(GrepHit {
+                path: path.strip_prefix(&prefix).unwrap_or(&path).to_string(),
+                line: String::from_utf8_lossy(number).parse().unwrap_or(0),
+                text: String::from_utf8_lossy(text).trim().chars().take(200).collect(),
+            });
+            total += 1;
+            // First hits go out immediately; later ones in batches.
+            if total == 1 || batch.len() >= 50 || last_flush.elapsed().as_millis() > 40 {
+                if !on_hits(std::mem::take(&mut batch)) {
+                    break;
+                }
+                last_flush = std::time::Instant::now();
+            }
+            if total >= MAX_GREP_HITS {
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        if !batch.is_empty() {
+            on_hits(batch);
+        }
+        Ok(total)
+    }
+
+    /// The highlighted contents of `path` on the head of stack PR `index` (read-only file view).
+    pub fn read_file(&self, snapshot: &StackSnapshot, index: usize, path: &str) -> Result<crate::highlight_cache::Lines> {
+        let git = self.git(snapshot)?;
+        let blob = git.run_string(&["rev-parse", &format!("{}:{path}", snapshot.heads[index])])?;
+        blob_lines(&git, &blob, Language::from_path(path), &self.highlighter, &self.highlights)
     }
 
     // ---------- progress ----------
