@@ -45,3 +45,32 @@ export async function openViaPalette(label: string) {
   await typeInPalette(label);
   await waitFor(async () => !(await exists(".palette")) && (await exists(".row-file")), 60_000);
 }
+
+/** Clicks a stack chip; `extend` is a shift-click (extends the selected range). */
+export const clickChip = (index: number, extend = false) =>
+  browser.execute(
+    (i: number, shiftKey: boolean) => {
+      const chip = document.querySelector<HTMLElement>(`.stack-chip[data-index="${i}"]`)!;
+      chip.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey }));
+    },
+    index,
+    extend,
+  );
+
+/** Selected chip indices, e.g. [1, 2]. */
+export const selectedChips = () =>
+  browser.execute(() =>
+    [...document.querySelectorAll<HTMLElement>(".stack-chip.selected")].map((c) => Number(c.dataset.index)),
+  );
+
+/** Waits until the backend has precomputed `count` ranges of the open stack. */
+export const waitForRanges = (count: number, timeout = 60_000) =>
+  waitFor(
+    () =>
+      browser.execute((n: number) => {
+        const ranges = window.__wispyRanges!;
+        const id = ranges.current();
+        return id !== null && ranges.readyCount(id) >= n;
+      }, count),
+    timeout,
+  );

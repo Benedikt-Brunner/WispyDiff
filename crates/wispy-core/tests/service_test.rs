@@ -1,7 +1,7 @@
 mod support;
 
 use support::OriginRepo;
-use wiremock::matchers::path;
+use wiremock::matchers::{path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wispy_core::cache::Cache;
 use wispy_core::github::GitHubClient;
@@ -10,27 +10,35 @@ use wispy_core::pr_ref::PrRef;
 use wispy_core::repo_store::RepoStore;
 use wispy_core::service::PrService;
 
+async fn mount(server: &MockServer, route: &str, query: Option<(&str, &str)>, body: serde_json::Value) {
+    let mut mock = Mock::given(path(route));
+    if let Some((key, value)) = query {
+        mock = mock.and(query_param(key, value));
+    }
+    mock.respond_with(ResponseTemplate::new(200).set_body_json(body)).mount(server).await;
+}
+
 #[tokio::test]
-async fn loads_a_pr_and_reopens_it_from_the_cache_offline() {
+async fn opens_a_stack_and_reopens_any_member_offline() {
     let origin = OriginRepo::init();
     origin.write("src/Order.php", "<?php\n$state = 'open';\n");
     origin.commit("base");
-    origin.checkout_new("feature");
+    origin.checkout_new("stack/1");
     origin.write("src/Order.php", "<?php\n$state = 'picked';\n");
-    let head = origin.commit("pick");
-    origin.publish_pr(42, "feature");
+    let head1 = origin.commit("pick");
+    origin.publish_pr(41, "stack/1");
+    origin.checkout_new("stack/2");
+    origin.write("src/Bin.php", "<?php\n$bin = 'A-1';\n");
+    let head2 = origin.commit("bins");
+    origin.publish_pr(42, "stack/2");
 
+    let url = origin.url();
+    let pr41 = support::pull_request_json(41, "main", "stack/1", &head1, &url);
+    let pr42 = support::pull_request_json(42, "stack/1", "stack/2", &head2, &url);
     let server = MockServer::start().await;
-    Mock::given(path("/repos/acme/shop/pulls/42"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(support::pull_request_json(
-            42,
-            "main",
-            "feature",
-            &head,
-            &origin.url(),
-        )))
-        .mount(&server)
-        .await;
+    mount(&server, "/repos/acme/shop/pulls/42", None, pr42.clone()).await;
+    mount(&server, "/repos/acme/shop/pulls", Some(("head", "acme:stack/1")), serde_json::json!([pr41])).await;
+    mount(&server, "/repos/acme/shop/pulls", Some(("base", "stack/2")), serde_json::json!([])).await;
 
     let data = tempfile::tempdir().unwrap();
     let service = PrService::new(
@@ -39,55 +47,25 @@ async fn loads_a_pr_and_reopens_it_from_the_cache_offline() {
         Cache::open(&data.path().join("cache.sqlite")).unwrap(),
         Highlighter::new(),
     );
-    let pr = PrRef::parse("acme/shop#42").unwrap();
+    let pr42_ref = PrRef::parse("acme/shop#42").unwrap();
+    assert!(service.cached_stack(&pr42_ref).unwrap().is_none());
 
-    assert!(service.cached(&pr).unwrap().is_none());
+    let stack = service.discover(&pr42_ref).await.unwrap();
+    let snapshot = service.fetch(stack).unwrap();
+    assert_eq!(snapshot.heads, vec![head1.clone(), head2.clone()]);
+    assert_eq!(snapshot.stack.focus, 1);
 
-    let pull_request = service.fetch_pull_request(&pr).await.unwrap();
-    let loaded = service.load(&pr, pull_request).unwrap();
-    assert_eq!(loaded.pull_request.head_sha, head);
-    assert_eq!(loaded.view.summary.head_sha, head);
-    assert_eq!(loaded.view.summary.files.len(), 1);
+    let whole = service.range(&snapshot, 0, 1).unwrap();
+    assert_eq!(whole.summary.files.len(), 2);
+    assert!(service.precompute(&snapshot, 1, 1).unwrap(), "not cached yet");
+    assert!(!service.precompute(&snapshot, 1, 1).unwrap(), "cached now");
 
-    // Offline: no server needed, same view comes back from SQLite.
+    // Offline: the stack is known from either PR, focused on the one asked for.
     drop(server);
-    let cached = service.cached(&pr).unwrap().expect("cached after load");
-    assert_eq!(cached.pull_request, loaded.pull_request);
-    assert_eq!(*cached.view, *loaded.view);
-}
-
-#[test]
-fn cache_round_trips_snapshots_and_views_by_sha() {
-    use wispy_core::cache::PrSnapshot;
-    use wispy_core::github::PullRequest;
-    use wispy_core::model::DiffView;
-
-    let cache = Cache::open_in_memory().unwrap();
-    let pr = PrRef::parse("acme/shop#1").unwrap();
-    let view = DiffView::build("aaa", "bbb", &[], &Default::default(), &Highlighter::new());
-    let snapshot = PrSnapshot {
-        pull_request: PullRequest {
-            number: 1,
-            title: "t".into(),
-            state: "open".into(),
-            draft: false,
-            html_url: "u".into(),
-            author: "me".into(),
-            base_ref: "main".into(),
-            base_sha: "aaa".into(),
-            head_ref: "f".into(),
-            head_sha: "bbb".into(),
-            clone_url: "c".into(),
-        },
-        diff_from: "aaa".into(),
-        diff_to: "bbb".into(),
-    };
-
-    cache.put_diff_view("acme/shop", &view).unwrap();
-    cache.put_snapshot(&pr, &snapshot).unwrap();
-
-    assert_eq!(cache.snapshot(&pr).unwrap(), Some(snapshot));
-    assert_eq!(cache.diff_view("acme/shop", "aaa", "bbb").unwrap(), Some(view));
-    assert_eq!(cache.diff_view("acme/shop", "aaa", "ccc").unwrap(), None);
-    assert_eq!(cache.diff_view("other/repo", "aaa", "bbb").unwrap(), None);
+    let from_41 = service.cached_stack(&PrRef::parse("acme/shop#41").unwrap()).unwrap().unwrap();
+    assert_eq!(from_41.stack.focus, 0);
+    assert_eq!(from_41.heads, snapshot.heads);
+    let cached = service.cached_range(&from_41, 0, 1).unwrap().expect("cached range");
+    assert_eq!(cached, *whole);
+    assert!(service.cached_range(&from_41, 0, 0).unwrap().is_none(), "never computed");
 }

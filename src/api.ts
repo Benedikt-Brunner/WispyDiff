@@ -1,10 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { OpenedPr, Row } from "./types";
+import type { OpenedRange, OpenedStack, Row } from "./types";
 
-export const openPr = (input: string) => invoke<OpenedPr>("open_pr", { input });
+export const openPr = (input: string) => invoke<OpenedStack>("open_pr", { input });
 
-export const refreshPr = (input: string, knownHeadSha: string) =>
-  invoke<OpenedPr | null>("refresh_pr", { input, knownHeadSha });
+/** Resolves to the refreshed stack only if anything changed since `knownStackId`. */
+export const refreshPr = (input: string, knownStackId: string) =>
+  invoke<OpenedStack | null>("refresh_pr", { input, knownStackId });
+
+export const selectRange = (stackId: string, lo: number, hi: number) =>
+  invoke<OpenedRange>("select_range", { stackId, lo, hi });
 
 export const getRows = (viewId: string, start: number, end: number) =>
   invoke<Row[]>("get_rows", { viewId, start, end });

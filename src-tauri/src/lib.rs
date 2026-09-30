@@ -23,7 +23,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::open_pr, commands::refresh_pr, commands::get_rows])
+        .invoke_handler(tauri::generate_handler![commands::open_pr, commands::refresh_pr, commands::select_range, commands::get_rows])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
 }

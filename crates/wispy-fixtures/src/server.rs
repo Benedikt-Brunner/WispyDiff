@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 
-use crate::{run_git, Fixture};
+use crate::{run_git, Fixture, FixturePr};
 
 pub fn serve(fixture: Fixture, port: u16) {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
@@ -28,8 +28,8 @@ fn handle(mut stream: TcpStream, fixture: &Fixture) {
         header.clear();
     }
 
-    let path = request_line.split_whitespace().nth(1).unwrap_or_default();
-    let (status, body) = route(path, fixture);
+    let target = request_line.split_whitespace().nth(1).unwrap_or_default();
+    let (status, body) = route(target, fixture);
     let body = body.to_string();
     let _ = write!(
         stream,
@@ -38,18 +38,43 @@ fn handle(mut stream: TcpStream, fixture: &Fixture) {
     );
 }
 
-fn route(path: &str, fixture: &Fixture) -> (&'static str, serde_json::Value) {
-    let prefix = format!("/repos/{}/{}/pulls/", fixture.owner, fixture.repo);
+fn route(target: &str, fixture: &Fixture) -> (&'static str, serde_json::Value) {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let param = |key: &str| {
+        query.split('&').find_map(|pair| pair.strip_prefix(key)?.strip_prefix('=')).map(decode)
+    };
+    let list = format!("/repos/{}/{}/pulls", fixture.owner, fixture.repo);
+    if path == list {
+        let owner_prefix = format!("{}:", fixture.owner);
+        let head = param("head").map(|h| h.strip_prefix(&owner_prefix).map(str::to_string).unwrap_or(h));
+        let base = param("base");
+        let matching: Vec<serde_json::Value> = fixture
+            .prs
+            .iter()
+            .filter(|pr| head.as_ref().is_none_or(|h| &pr.head_ref == h))
+            .filter(|pr| base.as_ref().is_none_or(|b| &pr.base_ref == b))
+            .map(|pr| pull_json(pr, fixture))
+            .collect();
+        return ("200 OK", serde_json::Value::Array(matching));
+    }
     let pr = path
-        .strip_prefix(&prefix)
+        .strip_prefix(&format!("{list}/"))
         .and_then(|n| n.parse::<u64>().ok())
         .and_then(|n| fixture.prs.iter().find(|pr| pr.number == n));
-    let Some(pr) = pr else {
-        return ("404 Not Found", serde_json::json!({ "message": "Not Found" }));
-    };
-    let clone_url = format!("file://{}", fixture.origin.display());
+    match pr {
+        Some(pr) => ("200 OK", pull_json(pr, fixture)),
+        None => ("404 Not Found", serde_json::json!({ "message": "Not Found" })),
+    }
+}
+
+fn pull_json(pr: &FixturePr, fixture: &Fixture) -> serde_json::Value {
+    let repo = serde_json::json!({
+        "clone_url": format!("file://{}", fixture.origin.display()),
+        "full_name": format!("{}/{}", fixture.owner, fixture.repo),
+        "default_branch": "main",
+    });
     let base_sha = run_git(&fixture.origin, &["rev-parse", &pr.base_ref]);
-    let body = serde_json::json!({
+    serde_json::json!({
         "number": pr.number,
         "title": pr.title,
         "state": "open",
@@ -57,8 +82,40 @@ fn route(path: &str, fixture: &Fixture) -> (&'static str, serde_json::Value) {
         "merged_at": null,
         "html_url": format!("https://github.com/{}/{}/pull/{}", fixture.owner, fixture.repo, pr.number),
         "user": { "login": "fixture-bot" },
-        "base": { "ref": pr.base_ref, "sha": base_sha, "repo": { "clone_url": clone_url } },
-        "head": { "ref": pr.head_ref, "sha": pr.head_sha, "repo": { "clone_url": clone_url } },
-    });
-    ("200 OK", body)
+        "base": { "ref": pr.base_ref, "sha": base_sha, "repo": repo },
+        "head": { "ref": pr.head_ref, "sha": pr.head_sha, "repo": repo },
+    })
+}
+
+/// Minimal percent-decoding for branch names in query strings (`stack%2F1` → `stack/1`).
+fn decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+                match hex {
+                    Some(b) => {
+                        out.push(b);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

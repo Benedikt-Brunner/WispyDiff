@@ -21,14 +21,15 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 
 ## Navigation
 - **Inbox** home screen: review-requested + authored-by-me PRs, **grouped into stacks**. `Cmd+K` opens any PR by URL or `owner/repo#N`.
-- **Stacks** are discovered via `baseRefName` chains. Only the bottom PR targets the default branch; stacks merge bottom-up.
-- **Contiguous range selection only** (range slider). Combined diff = base of lowest selected PR → head of highest.
+- **Stacks** are discovered via `baseRefName` chains. Only the bottom PR targets the default branch; stacks merge bottom-up. Forks never join a stack; if several PRs branch off one head, the oldest is followed. A PR not based on the latest head of the PR below is flagged ⚠.
+- **Contiguous range selection only.** Opening a PR shows that PR alone. In the stack bar, click selects one PR, shift-click extends to a range; `[`/`]` move the selection down/up the stack, `{`/`}` extend it. Combined diff = base of lowest selected PR → head of highest.
+- Every range of the open stack is **precomputed in the background** (focused PR, then whole stack, then the rest), so switching is a cache read.
 - **Per-PR color** used everywhere (gutter bar, file list, chips). Each line is attributed to the **last PR that touched it**; hover shows its history ("added in #2, modified in #3").
 
 ## Reading
 - Two modes, toggled per file with a global default: **unified** and **full-file side-by-side** (whole base file vs whole head file, synced scroll, connector bands). No hunk-only split view.
 - Collapsed by default: lockfiles, generated/minified files, snapshots, `linguist-generated`. Global "hide whitespace changes" toggle (default off). Per-repo local ignore list.
-- Keyboard-first: `j/k` hunks, `n/p` files, `c` comment, `s` toggle mode, `v` viewed, `a` assistant.
+- Keyboard-first: `j/k` hunks, `n/p` files, `[ ] { }` stack range, `⌘K` open, `⌘B` file list, `c` comment, `s` toggle mode, `v` viewed, `a` assistant.
 
 ## Offline
 - **Every inbox stack is prefetched** in the background (interval + on window focus): git objects, full base/head files, threads, metadata. Evicted after merge/close unless unposted drafts exist.

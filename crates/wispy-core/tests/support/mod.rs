@@ -84,7 +84,36 @@ pub fn pull_request_json(number: u64, base_ref: &str, head_ref: &str, head_sha: 
         "merged_at": null,
         "html_url": format!("https://github.com/acme/shop/pull/{number}"),
         "user": { "login": "octocat" },
-        "base": { "ref": base_ref, "sha": "0000000000000000000000000000000000000000", "repo": { "clone_url": clone_url } },
-        "head": { "ref": head_ref, "sha": head_sha, "repo": { "clone_url": clone_url } }
+        "base": { "ref": base_ref, "sha": "0000000000000000000000000000000000000000", "repo": repo_json(clone_url, "acme/shop") },
+        "head": { "ref": head_ref, "sha": head_sha, "repo": repo_json(clone_url, "acme/shop") }
     })
+}
+
+pub fn repo_json(clone_url: &str, full_name: &str) -> serde_json::Value {
+    serde_json::json!({ "clone_url": clone_url, "full_name": full_name, "default_branch": "main" })
+}
+
+/// A PR of `acme/shop` as the app sees it (for tests that don't go through GitHub).
+pub fn pull_request(number: u64, base_ref: &str, head_ref: &str, clone_url: &str) -> wispy_core::github::PullRequest {
+    wispy_core::github::PullRequest {
+        number,
+        title: format!("PR {number}"),
+        state: "open".into(),
+        draft: false,
+        html_url: format!("https://github.com/acme/shop/pull/{number}"),
+        author: "octocat".into(),
+        base_ref: base_ref.into(),
+        base_sha: String::new(),
+        head_ref: head_ref.into(),
+        head_sha: String::new(),
+        clone_url: clone_url.into(),
+        base_repo: "acme/shop".into(),
+        head_repo: Some("acme/shop".into()),
+        default_branch: "main".into(),
+    }
+}
+
+/// Concatenated text of a row's segments.
+pub fn row_text(row: &wispy_core::model::Row) -> String {
+    row.s.iter().map(|(_, t)| t.as_str()).collect()
 }

@@ -1,8 +1,9 @@
-import { click, exists, openViaPalette, waitFor } from "./helpers";
+import { click, clickChip, exists, openViaPalette, waitFor, waitForRanges } from "./helpers";
 
 /** Binding budgets from SPEC.md. */
 const BUDGET = {
   cachedOpenMs: 150,
+  rangeSwitchMs: 100,
   frameP95Ms: 20, // 60 fps with a little jitter tolerance
   longFrameShare: 0.02, // frames > 33 ms
   blankFrameShare: 0.05, // frames showing unloaded rows
@@ -15,7 +16,7 @@ async function measureOpen(label: string) {
   let duration: number | null | undefined;
   await waitFor(async () => {
     // `execute` serializes undefined as null.
-    duration = await browser.execute(() => window.__wispyPerf!.sinceLast("open:start", "open:first-file-visible"));
+    duration = await browser.execute(() => window.__wispyPerf!.sinceLast("open:start", "view:first-visible"));
     return duration != null;
   });
   return duration!;
@@ -96,8 +97,27 @@ describe("performance budgets (synthetic worst case)", () => {
     console.log(`[perf] 40 file jumps settled in ${Date.now() - start} ms`);
   });
 
+  it(`switches the PR range in < ${BUDGET.rangeSwitchMs} ms once the stack is precomputed`, async () => {
+    await openViaPalette(WORST_CASE);
+    await waitForRanges(10); // 4 PRs → 10 contiguous ranges
+    // Plain click = single PR, shift-click = extend from it. Every step changes the range.
+    const clicks: [number, boolean][] = [[3, false], [0, true], [1, false], [2, true], [0, false], [1, true], [2, false], [3, true], [0, false]];
+    const samples: number[] = [];
+    for (const [index, extend] of clicks) {
+      await clickChip(index, extend);
+      let duration: number | null | undefined;
+      await waitFor(async () => {
+        duration = await browser.execute(() => window.__wispyPerf!.sinceLast("range:start", "view:first-visible"));
+        return duration != null;
+      });
+      samples.push(duration!);
+    }
+    const median = percentile(samples, 0.5);
+    console.log(`[perf] range switch: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
+    expect(median).toBeLessThan(BUDGET.rangeSwitchMs);
+  });
+
   // Budgets whose features arrive in later milestones.
-  it.skip("switches PR range in < 100 ms (milestone 2)");
   it.skip("toggles unified ↔ side-by-side in < 100 ms (milestone 3)");
   it.skip("finds usages in < 50 ms (milestone 7)");
   it.skip("streams first git grep hits in < 300 ms (milestone 7)");
