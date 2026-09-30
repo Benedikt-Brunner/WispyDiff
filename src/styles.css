@@ -161,6 +161,36 @@ body,
 }
 .empty {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  padding-bottom: 18vh;
+  color: var(--fg-muted);
+}
+.empty-wordmark {
+  height: 40px;
+  color: var(--fg);
+  opacity: 0.9;
+}
+.empty-hint {
+  font-size: 12px;
+}
+
+.logo {
+  display: inline-flex;
+}
+.logo svg {
+  height: 100%;
+  width: auto;
+  display: block;
+}
+.titlebar-mark {
+  flex: none;
+  height: 13px;
+  color: var(--fg);
+  opacity: 0.85;
 }
 
 /* ---------- palette ---------- */
