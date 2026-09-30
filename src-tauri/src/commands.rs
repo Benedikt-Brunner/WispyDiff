@@ -6,6 +6,11 @@ use wispy_core::github::PullRequest;
 use wispy_core::model::{DiffSummary, DiffView, Row};
 use wispy_core::pr_ref::PrRef;
 use wispy_core::service::PrService;
+use wispy_core::anchors::{locate, Anchor, Location};
+use wispy_core::drafts::Draft;
+use wispy_core::github::{ReviewThread, Side, Verdict};
+use wispy_core::review::{Outcome, Planned};
+use wispy_core::service::{NewDraft, ShownDraft};
 use wispy_core::split::SplitRow;
 use wispy_core::stack::StackSnapshot;
 
@@ -113,7 +118,7 @@ pub async fn select_range(
         None => {
             let service = state.service()?;
             let view = blocking(move || service.range_with(&snapshot, lo, hi, ignore_whitespace)).await?;
-            state.register_view(&id, &stack_id, view.clone());
+            state.register_view(&id, &stack_id, hi, view.clone());
             view
         }
     };
@@ -166,6 +171,138 @@ pub async fn set_ignore_patterns(repo: String, patterns: Vec<String>, state: Sta
     blocking(move || service.set_ignore_patterns(&repo, &patterns)).await
 }
 
+// ---------- comments ----------
+
+fn snapshot_of(state: &AppState, stack_id: &str) -> Result<Arc<StackSnapshot>, String> {
+    state.stack(stack_id).ok_or_else(|| format!("stack {stack_id} is no longer open"))
+}
+
+/// Pending drafts of the stack, anchored to each PR's current head.
+#[tauri::command]
+pub async fn list_drafts(stack_id: String, state: State<'_, AppState>) -> Result<Vec<ShownDraft>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.shown_drafts(&snapshot)).await
+}
+
+#[tauri::command]
+pub async fn create_draft(stack_id: String, draft: NewDraft, state: State<'_, AppState>) -> Result<Draft, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.create_draft(&snapshot, draft)).await
+}
+
+#[tauri::command]
+pub async fn update_draft(id: String, body: Option<String>, as_file: Option<bool>, state: State<'_, AppState>) -> Result<Option<Draft>, String> {
+    let service = state.service()?;
+    blocking(move || service.update_draft(&id, body, as_file)).await
+}
+
+#[tauri::command]
+pub async fn delete_draft(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let service = state.service()?;
+    blocking(move || service.delete_draft(&id)).await
+}
+
+/// Whether a line comment on these lines would be accepted as such (else: file comment).
+#[tauri::command]
+pub async fn accepts_line_comment(
+    stack_id: String,
+    pr_index: usize,
+    path: String,
+    side: Side,
+    start: u32,
+    end: u32,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.accepts_line_comment(&snapshot, pr_index, &path, side, start, end)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrThreads {
+    pub pr_index: usize,
+    pub threads: Vec<ReviewThread>,
+}
+
+/// Review threads of every stack PR from the cache; with `refresh`, fetched from GitHub first.
+#[tauri::command]
+pub async fn list_threads(stack_id: String, refresh: bool, state: State<'_, AppState>) -> Result<Vec<PrThreads>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    if refresh {
+        service.refresh_threads(&snapshot).await.map_err(|e| e.to_string())?;
+    }
+    blocking(move || {
+        (0..snapshot.len())
+            .map(|pr_index| Ok(PrThreads { pr_index, threads: service.cached_threads(&snapshot, pr_index)? }))
+            .collect()
+    })
+    .await
+}
+
+/// Where each anchor shows up in a view (see [`locate`]).
+#[tauri::command]
+pub fn locate_anchors(view_id: String, anchors: Vec<Anchor>, state: State<'_, AppState>) -> Result<Vec<Option<Location>>, String> {
+    let (view, top) = state.view_with_top(&view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
+    Ok(anchors.iter().map(|anchor| locate(&view, top, anchor)).collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitPlan {
+    /// The stack as it is on GitHub right now (drafts are planned against it).
+    pub stack: OpenedStack,
+    pub prs: Vec<PrPlan>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrPlan {
+    pub pr_index: usize,
+    pub planned: Vec<Planned>,
+}
+
+/// Re-fetches the stack, settles interrupted submits, and plans every PR's pending drafts.
+#[tauri::command]
+pub async fn prepare_submit(stack_id: String, app: AppHandle, state: State<'_, AppState>) -> Result<SubmitPlan, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    let pr = snapshot.pr_ref(snapshot.stack.focus);
+    let stack = service.discover(&pr).await.map_err(|e| e.to_string())?;
+    let fresh = Arc::new(blocking({
+        let service = service.clone();
+        move || service.fetch(stack)
+    })
+    .await?);
+    for index in 0..fresh.len() {
+        service.reconcile(&fresh, index).await.map_err(|e| e.to_string())?;
+    }
+    let (plans, fresh) = blocking({
+        let (service, fresh) = (service.clone(), fresh.clone());
+        move || {
+            let plans = (0..fresh.len())
+                .map(|pr_index| Ok(PrPlan { pr_index, planned: service.plan(&fresh, pr_index)? }))
+                .collect::<wispy_core::Result<Vec<_>>>()?;
+            Ok((plans, fresh))
+        }
+    })
+    .await?;
+    let (fresh, view) = load_focus(&service, fresh).await?;
+    let opened = open_stack(&app, &state, fresh, view, false);
+    Ok(SubmitPlan { stack: opened, prs: plans.into_iter().filter(|p| !p.planned.is_empty()).collect() })
+}
+
+/// Posts one review for a stack PR (after [`prepare_submit`]).
+#[tauri::command]
+pub async fn submit_review(
+    stack_id: String,
+    pr_index: usize,
+    verdict: Verdict,
+    summary: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Outcome, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    service.submit(&snapshot, pr_index, verdict, summary).await.map_err(|e| e.to_string())
+}
+
 async fn discover_and_load(service: &Arc<PrService>, pr: &PrRef) -> Result<(Arc<StackSnapshot>, Arc<DiffView>), String> {
     let stack = service.discover(pr).await.map_err(|e| e.to_string())?;
     let snapshot = blocking({
@@ -191,7 +328,7 @@ fn open_stack(app: &AppHandle, state: &AppState, snapshot: Arc<StackSnapshot>, v
     let stack_id = state.register_stack(snapshot.clone());
     let focus = snapshot.stack.focus;
     let id = view_id(&stack_id, focus, focus, false);
-    state.register_view(&id, &stack_id, view.clone());
+    state.register_view(&id, &stack_id, focus, view.clone());
     spawn_precompute(app.clone(), stack_id.clone(), snapshot.clone());
     OpenedStack {
         stack_id,

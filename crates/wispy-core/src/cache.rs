@@ -3,7 +3,9 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::drafts::Draft;
 use crate::error::{Error, Result};
+use crate::github::ReviewThread;
 use crate::highlight::Seg;
 use crate::highlight_cache::{BlobStore, Lines};
 use crate::model::DiffView;
@@ -41,6 +43,20 @@ impl Cache {
              CREATE TABLE IF NOT EXISTS highlighted_blobs (
                  key TEXT PRIMARY KEY,
                  data BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS drafts (
+                 id TEXT PRIMARY KEY,
+                 repo TEXT NOT NULL,
+                 pr INTEGER NOT NULL,
+                 data TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS drafts_by_pr ON drafts (repo, pr);
+             CREATE TABLE IF NOT EXISTS threads (
+                 repo TEXT NOT NULL,
+                 pr INTEGER NOT NULL,
+                 data TEXT NOT NULL,
+                 fetched_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 PRIMARY KEY (repo, pr)
              );
              CREATE TABLE IF NOT EXISTS repo_settings (
                  repo TEXT PRIMARY KEY,
@@ -112,6 +128,63 @@ impl Cache {
             .query_row("SELECT 1 FROM diff_views WHERE key = ?1", [spec.cache_key(repo_slug)], |row| row.get(0))
             .optional()?;
         Ok(found.is_some())
+    }
+
+    pub fn put_draft(&self, draft: &Draft) -> Result<()> {
+        let data = serde_json::to_string(draft).map_err(Error::codec)?;
+        self.conn().execute(
+            "INSERT OR REPLACE INTO drafts (id, repo, pr, data) VALUES (?1, ?2, ?3, ?4)",
+            params![draft.id, draft.repo, draft.pr as i64, data],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_draft(&self, id: &str) -> Result<()> {
+        self.conn().execute("DELETE FROM drafts WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn draft(&self, id: &str) -> Result<Option<Draft>> {
+        let data: Option<String> =
+            self.conn().query_row("SELECT data FROM drafts WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+        data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+    }
+
+    /// Drafts of the given PRs of `repo`, oldest first.
+    pub fn drafts(&self, repo: &str, prs: &[u64]) -> Result<Vec<Draft>> {
+        let conn = self.conn();
+        let mut statement = conn.prepare("SELECT data FROM drafts WHERE repo = ?1 AND pr = ?2")?;
+        let mut drafts = Vec::new();
+        for pr in prs {
+            let rows = statement.query_map(params![repo, *pr as i64], |row| row.get::<_, String>(0))?;
+            for data in rows {
+                drafts.push(serde_json::from_str::<Draft>(&data?).map_err(Error::codec)?);
+            }
+        }
+        drafts.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(drafts)
+    }
+
+    /// Whether any PR of `repo` in `prs` has something not yet posted.
+    pub fn has_pending_drafts(&self, repo: &str, prs: &[u64]) -> Result<bool> {
+        Ok(self.drafts(repo, prs)?.iter().any(Draft::is_pending))
+    }
+
+    pub fn put_threads(&self, repo: &str, pr: u64, threads: &[ReviewThread]) -> Result<()> {
+        let data = serde_json::to_string(threads).map_err(Error::codec)?;
+        self.conn().execute(
+            "INSERT OR REPLACE INTO threads (repo, pr, data) VALUES (?1, ?2, ?3)",
+            params![repo, pr as i64, data],
+        )?;
+        Ok(())
+    }
+
+    pub fn threads(&self, repo: &str, pr: u64) -> Result<Option<Vec<ReviewThread>>> {
+        let data: Option<String> = self
+            .conn()
+            .query_row("SELECT data FROM threads WHERE repo = ?1 AND pr = ?2", params![repo, pr as i64], |row| row.get(0))
+            .optional()?;
+        data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
     }
 
     /// Per-repo settings (a JSON value); `None` if never set.

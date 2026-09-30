@@ -15,7 +15,7 @@ use crate::noise::path_noise;
 use crate::split::align;
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 3;
+pub const MODEL_VERSION: u32 = 4;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -43,6 +43,8 @@ pub struct Row {
     pub a: Option<u8>,
     /// Every PR that shaped this line, oldest first, when more than one did.
     pub h: Vec<u8>,
+    /// The line's number in PR `a`'s own diff (where a comment on it must point).
+    pub l: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +71,11 @@ pub struct FileSummary {
     pub split_blocks: Vec<u32>,
     /// Why the file is collapsed by default ("lockfile", "generated", ...), if it is.
     pub noise: Option<String>,
+    /// Line counts of the base and head versions (0 when not a text file with hunks).
+    pub old_lines: u32,
+    pub new_lines: u32,
+    /// The file's path in a PR of the range, where it differs from `path` (renamed later).
+    pub pr_paths: Vec<(u8, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +123,17 @@ impl DiffView {
             .enumerate()
             .map(|(index, (file, attrs))| file_rows(index as u32, file, attrs, highlights))
             .collect();
+        // Per file: the path each PR knew it under, where that differs from the shown path.
+        let mut renamed_in: HashMap<usize, Vec<(u8, String)>> = HashMap::new();
+        for (index, attrs) in attributions.iter().enumerate() {
+            let mut paths: Vec<(u8, String)> =
+                attrs.iter().filter_map(|a| Some((a.pr?, a.path.clone()?))).collect();
+            paths.sort();
+            paths.dedup();
+            if !paths.is_empty() {
+                renamed_in.insert(index, paths);
+            }
+        }
 
         let mut rows = Vec::with_capacity(per_file.iter().map(Vec::len).sum());
         let mut summaries = Vec::with_capacity(files.len());
@@ -135,13 +153,15 @@ impl DiffView {
                 max_line_chars = max_line_chars.max(chars as u32);
                 max_line_number = max_line_number.max(row.o.unwrap_or(0)).max(row.n.unwrap_or(0));
             }
-            let (split_rows, split_blocks) = match line_counts(file, highlights) {
+            let counts = line_counts(file, highlights);
+            let (split_rows, split_blocks) = match counts {
                 Some((old_len, new_len)) => {
                     let alignment = align(&file_rows, old_len, new_len);
                     (alignment.pairs.len() as u32 + 1, alignment.blocks.iter().map(|b| b + 1).collect())
                 }
                 None => (0, Vec::new()),
             };
+            let (old_lines, new_lines) = counts.unwrap_or((0, 0));
             let noise = if generated.contains(file.path()) { Some("generated") } else { path_noise(file.path()) };
             summaries.push(FileSummary {
                 path: file.path().to_string(),
@@ -160,6 +180,9 @@ impl DiffView {
                 split_rows,
                 split_blocks,
                 noise: noise.map(str::to_string),
+                old_lines,
+                new_lines,
+                pr_paths: renamed_in.remove(&(summaries.len())).unwrap_or_default(),
             });
             rows.extend(file_rows);
         }
@@ -204,7 +227,7 @@ pub fn file_slice<'a>(view: &'a DiffView, index: usize) -> &'a [Row] {
 }
 
 fn file_rows(index: u32, file: &FileDiff, attrs: &[LineAttr], highlights: &HashMap<String, Lines>) -> Vec<Row> {
-    let row = |k: u8, o: Option<u32>, n: Option<u32>, s: Vec<Seg>| Row { k, f: index, o, n, s, a: None, h: Vec::new() };
+    let row = |k: u8, o: Option<u32>, n: Option<u32>, s: Vec<Seg>| Row { k, f: index, o, n, s, a: None, h: Vec::new(), l: None };
     let mut rows = vec![row(row_kind::FILE, None, None, vec![(0, file.path().to_string())])];
 
     if file.binary {
@@ -242,7 +265,7 @@ fn file_rows(index: u32, file: &FileDiff, attrs: &[LineAttr], highlights: &HashM
                 .cloned()
                 .unwrap_or_else(|| plain_lines(text).pop().unwrap_or_default());
             let attr = attrs.next().cloned().unwrap_or_default();
-            rows.push(Row { a: attr.pr, h: attr.history, ..row(kind, line.old_no, line.new_no, segments) });
+            rows.push(Row { a: attr.pr, h: attr.history, l: attr.line, ..row(kind, line.old_no, line.new_no, segments) });
         }
     }
     rows

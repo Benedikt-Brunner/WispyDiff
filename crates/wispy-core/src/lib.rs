@@ -1,8 +1,10 @@
 //! WispyDiff core: everything except the UI shell.
 
+pub mod anchors;
 pub mod attribution;
 pub mod cache;
 pub mod diff;
+pub mod drafts;
 pub mod error;
 pub mod git;
 pub mod github;
@@ -13,6 +15,7 @@ pub mod noise;
 pub mod pr_ref;
 pub mod range;
 pub mod repo_store;
+pub mod review;
 pub mod service;
 pub mod split;
 pub mod stack;

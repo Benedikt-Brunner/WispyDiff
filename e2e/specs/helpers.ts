@@ -76,3 +76,48 @@ export const waitForRanges = (count: number, timeout = 60_000) =>
       }, count),
     timeout,
   );
+
+/** Sets a textarea's value through React's input path. */
+export const setTextarea = (selector: string, value: string) =>
+  browser.execute(
+    (s: string, v: string) => {
+      const el = document.querySelector<HTMLTextAreaElement>(s)!;
+      el.focus();
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    selector,
+    value,
+  );
+
+/** Presses the mouse on the gutter of the `index`-th element matching `rowSelector` (React sees
+ * mouseover as enter), optionally dragging to another row before releasing. */
+export const gutterDrag = (rowSelector: string, fromIndex: number, toIndex = fromIndex, gutter = ".gutter") =>
+  browser.execute(
+    (s: string, from: number, to: number, g: string) => {
+      const rows = [...document.querySelectorAll<HTMLElement>(s)];
+      const at = (i: number) => rows[i].querySelector<HTMLElement>(g)!;
+      const fire = (el: HTMLElement, type: string) =>
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: document.body }));
+      fire(at(from), "mouseover");
+      fire(at(from), "mousedown");
+      if (to !== from) fire(at(to), "mouseover");
+      fire(at(to), "mouseup");
+    },
+    rowSelector,
+    fromIndex,
+    toIndex,
+    gutter,
+  );
+
+/** Clicks the first button inside `scope` whose text contains `label`. */
+export const clickButton = (scope: string, label: string) =>
+  browser.execute(
+    (s: string, l: string) => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>(`${s} button`)].find((b) => b.textContent?.includes(l));
+      button?.click();
+      return button !== undefined;
+    },
+    scope,
+    label,
+  );

@@ -27,7 +27,16 @@ pub fn run() {
             commands::get_rows,
             commands::get_split_rows,
             commands::get_ignore_patterns,
-            commands::set_ignore_patterns])
+            commands::set_ignore_patterns,
+            commands::list_drafts,
+            commands::create_draft,
+            commands::update_draft,
+            commands::delete_draft,
+            commands::accepts_line_comment,
+            commands::list_threads,
+            commands::locate_anchors,
+            commands::prepare_submit,
+            commands::submit_review])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
 }

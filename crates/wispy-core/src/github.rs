@@ -34,6 +34,78 @@ impl PullRequest {
     }
 }
 
+/// Which side of a diff a line comment is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Verdict {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadComment {
+    pub id: String,
+    pub database_id: u64,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+/// A review thread as GitHub has it. `line` is on the PR's current head (`None` once outdated).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewThread {
+    pub id: String,
+    pub resolved: bool,
+    pub outdated: bool,
+    pub path: String,
+    pub line: Option<u32>,
+    pub start_line: Option<u32>,
+    pub original_line: Option<u32>,
+    pub side: Side,
+    /// A comment on the whole file rather than on lines.
+    pub file_level: bool,
+    pub comments: Vec<ThreadComment>,
+}
+
+/// A line comment inside a new review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewReviewComment {
+    pub path: String,
+    pub line: u32,
+    pub side: Side,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_side: Option<Side>,
+    pub body: String,
+}
+
+const THREADS_QUERY: &str = "query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line startLine originalLine diffSide subjectType
+          comments(first: 100) { nodes { id databaseId body createdAt url author { login } } }
+        }
+      }
+    }
+  }
+}";
+
+const RESOLVE_MUTATION: &str =
+    "mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }";
+
 pub struct GitHubClient {
     api_base: String,
     token: String,
@@ -77,11 +149,108 @@ impl GitHubClient {
         Ok(raw.into_iter().map(PullRequest::from).collect())
     }
 
+    /// All review threads of a PR (paginated).
+    pub async fn review_threads(&self, pr: &PrRef) -> Result<Vec<ReviewThread>> {
+        let mut threads = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let data = self
+                .graphql(
+                    THREADS_QUERY,
+                    serde_json::json!({ "owner": pr.owner, "repo": pr.repo, "number": pr.number, "after": after }),
+                )
+                .await?;
+            let page = &data["repository"]["pullRequest"]["reviewThreads"];
+            for node in page["nodes"].as_array().into_iter().flatten() {
+                threads.push(parse_thread(node));
+            }
+            if page["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
+                return Ok(threads);
+            }
+            after = page["pageInfo"]["endCursor"].as_str().map(str::to_string);
+        }
+    }
+
+    /// Creates a submitted review with line comments; returns the review id.
+    pub async fn create_review(
+        &self,
+        pr: &PrRef,
+        commit_id: &str,
+        body: &str,
+        verdict: Verdict,
+        comments: &[NewReviewComment],
+    ) -> Result<u64> {
+        let path = format!("/repos/{}/{}/pulls/{}/reviews", pr.owner, pr.repo, pr.number);
+        let payload = serde_json::json!({ "commit_id": commit_id, "body": body, "event": verdict, "comments": comments });
+        let created: serde_json::Value = self.send(reqwest::Method::POST, &path, &payload).await?;
+        Ok(created["id"].as_u64().unwrap_or_default())
+    }
+
+    /// A comment on a whole file (not part of a review; GitHub has no file comments in reviews).
+    pub async fn create_file_comment(&self, pr: &PrRef, commit_id: &str, path: &str, body: &str) -> Result<u64> {
+        let route = format!("/repos/{}/{}/pulls/{}/comments", pr.owner, pr.repo, pr.number);
+        let payload = serde_json::json!({ "commit_id": commit_id, "path": path, "body": body, "subject_type": "file" });
+        let created: serde_json::Value = self.send(reqwest::Method::POST, &route, &payload).await?;
+        Ok(created["id"].as_u64().unwrap_or_default())
+    }
+
+    /// Replies to the thread containing review comment `comment_id`.
+    pub async fn reply(&self, pr: &PrRef, comment_id: u64, body: &str) -> Result<u64> {
+        let route = format!("/repos/{}/{}/pulls/{}/comments/{comment_id}/replies", pr.owner, pr.repo, pr.number);
+        let created: serde_json::Value = self.send(reqwest::Method::POST, &route, &serde_json::json!({ "body": body })).await?;
+        Ok(created["id"].as_u64().unwrap_or_default())
+    }
+
+    pub async fn resolve_thread(&self, thread_id: &str) -> Result<()> {
+        self.graphql(RESOLVE_MUTATION, serde_json::json!({ "id": thread_id })).await.map(|_| ())
+    }
+
+    /// Bodies of the PR's reviews (used to recognise a review whose creation outcome is unknown).
+    pub async fn review_bodies(&self, pr: &PrRef) -> Result<Vec<String>> {
+        let path = format!("/repos/{}/{}/pulls/{}/reviews", pr.owner, pr.repo, pr.number);
+        let reviews: Vec<serde_json::Value> = self.get(&path, &[("per_page", "100".into())]).await?;
+        Ok(reviews.iter().filter_map(|r| r["body"].as_str().map(str::to_string)).collect())
+    }
+
+    /// Bodies of the PR's most recent review comments (for recognising unknown outcomes).
+    pub async fn review_comment_bodies(&self, pr: &PrRef) -> Result<Vec<String>> {
+        let path = format!("/repos/{}/{}/pulls/{}/comments", pr.owner, pr.repo, pr.number);
+        let query = [("per_page", "100".to_string()), ("sort", "created".into()), ("direction", "desc".into())];
+        let comments: Vec<serde_json::Value> = self.get(&path, &query).await?;
+        Ok(comments.iter().filter_map(|c| c["body"].as_str().map(str::to_string)).collect())
+    }
+
+    /// The login of the token's user.
+    pub async fn viewer(&self) -> Result<String> {
+        let user: serde_json::Value = self.get("/user", &[]).await?;
+        Ok(user["login"].as_str().unwrap_or_default().to_string())
+    }
+
+    async fn graphql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
+        let response: serde_json::Value =
+            self.send(reqwest::Method::POST, "/graphql", &serde_json::json!({ "query": query, "variables": variables })).await?;
+        if let Some(errors) = response["errors"].as_array().filter(|e| !e.is_empty()) {
+            let messages: Vec<&str> = errors.iter().filter_map(|e| e["message"].as_str()).collect();
+            return Err(Error::GitHub(format!("GraphQL: {}", messages.join("; "))));
+        }
+        Ok(response["data"].clone())
+    }
+
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str, query: &[(&str, String)]) -> Result<T> {
-        let response = self
-            .http
-            .get(format!("{}{path}", self.api_base))
-            .query(query)
+        let request = self.http.get(format!("{}{path}", self.api_base)).query(query);
+        self.execute(request, "GET", path).await
+    }
+
+    async fn send<T: serde::de::DeserializeOwned>(&self, method: reqwest::Method, path: &str, body: &serde_json::Value) -> Result<T> {
+        let name = method.to_string();
+        let request = self.http.request(method, format!("{}{path}", self.api_base)).json(body);
+        self.execute(request, &name, path).await
+    }
+
+    /// An HTTP error status becomes [`Error::GitHub`] (the request was definitely rejected);
+    /// a transport failure stays [`Error::Http`] (the outcome is unknown).
+    async fn execute<T: serde::de::DeserializeOwned>(&self, request: reqwest::RequestBuilder, method: &str, path: &str) -> Result<T> {
+        let response = request
             .bearer_auth(&self.token)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
@@ -91,9 +260,37 @@ impl GitHubClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let message = serde_json::from_str::<ApiError>(&body).map(|e| e.message).unwrap_or(body);
-            return Err(Error::GitHub(format!("GET {path}: {status} {message}")));
+            return Err(Error::GitHub(format!("{method} {path}: {status} {message}")));
         }
         Ok(response.json().await?)
+    }
+}
+
+fn parse_thread(node: &serde_json::Value) -> ReviewThread {
+    let number = |v: &serde_json::Value| v.as_u64().map(|n| n as u32);
+    ReviewThread {
+        id: node["id"].as_str().unwrap_or_default().to_string(),
+        resolved: node["isResolved"].as_bool().unwrap_or(false),
+        outdated: node["isOutdated"].as_bool().unwrap_or(false),
+        path: node["path"].as_str().unwrap_or_default().to_string(),
+        line: number(&node["line"]),
+        start_line: number(&node["startLine"]),
+        original_line: number(&node["originalLine"]),
+        side: if node["diffSide"].as_str() == Some("LEFT") { Side::Left } else { Side::Right },
+        file_level: node["subjectType"].as_str() == Some("FILE"),
+        comments: node["comments"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| ThreadComment {
+                id: c["id"].as_str().unwrap_or_default().to_string(),
+                database_id: c["databaseId"].as_u64().unwrap_or_default(),
+                author: c["author"]["login"].as_str().unwrap_or("ghost").to_string(),
+                body: c["body"].as_str().unwrap_or_default().to_string(),
+                created_at: c["createdAt"].as_str().unwrap_or_default().to_string(),
+                url: c["url"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect(),
     }
 }
 

@@ -40,6 +40,8 @@ pub fn view_id(stack_id: &str, lo: usize, hi: usize, ignore_whitespace: bool) ->
 struct OpenView {
     id: String,
     stack_id: String,
+    /// Stack index of the range's top PR.
+    top: u8,
     view: Arc<DiffView>,
 }
 
@@ -106,10 +108,10 @@ impl AppState {
         lock(&self.precomputing).remove(id);
     }
 
-    pub fn register_view(&self, id: &str, stack_id: &str, view: Arc<DiffView>) {
+    pub fn register_view(&self, id: &str, stack_id: &str, top: usize, view: Arc<DiffView>) {
         let mut views = lock(&self.views);
         views.retain(|open| open.id != id);
-        views.push_front(OpenView { id: id.to_string(), stack_id: stack_id.to_string(), view });
+        views.push_front(OpenView { id: id.to_string(), stack_id: stack_id.to_string(), top: top as u8, view });
         views.truncate(MAX_OPEN_VIEWS);
     }
 
@@ -121,6 +123,11 @@ impl AppState {
     pub fn view_with_stack(&self, id: &str) -> Option<(Arc<DiffView>, Arc<StackSnapshot>)> {
         let (view, stack_id) = lock(&self.views).iter().find(|open| open.id == id).map(|o| (o.view.clone(), o.stack_id.clone()))?;
         Some((view, self.stack(&stack_id)?))
+    }
+
+    /// The view and its range's top PR.
+    pub fn view_with_top(&self, id: &str) -> Option<(Arc<DiffView>, u8)> {
+        lock(&self.views).iter().find(|open| open.id == id).map(|open| (open.view.clone(), open.top))
     }
 
     pub fn split_file(&self, key: &str) -> Option<Arc<Vec<SplitRow>>> {

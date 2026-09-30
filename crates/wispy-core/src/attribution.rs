@@ -17,6 +17,11 @@ pub struct LineAttr {
     /// Every PR that shaped this change, oldest first, when more than one did
     /// (e.g. "added in #2, modified in #3" → `[1, 2]`).
     pub history: Vec<u8>,
+    /// The line's number in that PR's own diff (new side for added lines, old side for
+    /// deleted ones) — where a review comment on that PR has to point.
+    pub line: Option<u32>,
+    /// The file's path in that PR, when it differs from the path shown (renamed later).
+    pub path: Option<String>,
 }
 
 /// One PR's contribution: the diff from the previous head to this PR's head.
@@ -32,8 +37,14 @@ pub fn attribute(combined: &[FileDiff], steps: &[Step]) -> Vec<Vec<LineAttr>> {
         return combined
             .iter()
             .map(|file| {
-                lines(file)
-                    .map(|kind| LineAttr { pr: (kind != LineKind::Context).then_some(only.pr), history: Vec::new() })
+                file.hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .map(|line| match line.kind {
+                        LineKind::Context => LineAttr::default(),
+                        LineKind::Added => LineAttr { pr: Some(only.pr), line: line.new_no, ..LineAttr::default() },
+                        LineKind::Deleted => LineAttr { pr: Some(only.pr), line: line.old_no, ..LineAttr::default() },
+                    })
                     .collect()
             })
             .collect();
@@ -52,23 +63,35 @@ pub fn attribute(combined: &[FileDiff], steps: &[Step]) -> Vec<Vec<LineAttr>> {
                     LineKind::Added => {
                         let path = file.new_path.as_deref().unwrap_or_default();
                         match origin_of_new(&indexed, indexed.len(), path, line.new_no.unwrap_or(0)) {
-                            Some(origin) => LineAttr { pr: Some(indexed[origin.step].pr), history: history(&indexed, &origin) },
-                            None => LineAttr { pr: fallback, history: Vec::new() },
+                            Some(origin) => {
+                                let at = &indexed[origin.step].files[origin.file].file;
+                                let origin_path = at.new_path.clone().filter(|p| p != path);
+                                LineAttr {
+                                    pr: Some(indexed[origin.step].pr),
+                                    history: history(&indexed, &origin),
+                                    line: at.hunks[origin.hunk].lines[origin.line].new_no,
+                                    path: origin_path,
+                                }
+                            }
+                            None => LineAttr { pr: fallback, ..LineAttr::default() },
                         }
                     }
                     LineKind::Deleted => {
                         let path = file.old_path.as_deref().unwrap_or_default();
-                        let step = fate_of_old(&indexed, path, line.old_no.unwrap_or(0));
-                        LineAttr { pr: step.map(|s| indexed[s].pr).or(fallback), history: Vec::new() }
+                        match fate_of_old(&indexed, path, line.old_no.unwrap_or(0)) {
+                            Some(fate) => LineAttr {
+                                pr: Some(indexed[fate.step].pr),
+                                line: Some(fate.line),
+                                path: Some(fate.path).filter(|p| p != path),
+                                ..LineAttr::default()
+                            },
+                            None => LineAttr { pr: fallback, ..LineAttr::default() },
+                        }
                     }
                 })
                 .collect()
         })
         .collect()
-}
-
-fn lines(file: &FileDiff) -> impl Iterator<Item = LineKind> + '_ {
-    file.hunks.iter().flat_map(|h| &h.lines).map(|l| l.kind)
 }
 
 /// Where a line was added: step, file within that step, hunk and line within that file.
@@ -98,13 +121,20 @@ fn origin_of_new(steps: &[StepIndex], version: usize, path: &str, n: u32) -> Opt
     None
 }
 
+/// Where a base line was deleted: the step, and the line's number and path in that step's diff.
+struct Fate {
+    step: usize,
+    line: u32,
+    path: String,
+}
+
 /// Traces base line `o` of `path` forwards to the step that deleted it.
-fn fate_of_old(steps: &[StepIndex], path: &str, o: u32) -> Option<usize> {
+fn fate_of_old(steps: &[StepIndex], path: &str, o: u32) -> Option<Fate> {
     let (mut path, mut o) = (path.to_string(), o);
     for (index, step) in steps.iter().enumerate() {
         let Some(file) = step.by_old_path(&path) else { continue };
         match step.files[file].map_forward(o) {
-            Forward::Deleted => return Some(index),
+            Forward::Deleted => return Some(Fate { step: index, line: o, path }),
             Forward::New(new) => {
                 o = new;
                 if let Some(new_path) = &step.files[file].file.new_path {
@@ -273,5 +303,13 @@ impl<'a> FileIndex<'a> {
             delta += i64::from(hunk.new_count) - i64::from(hunk.old_count);
         }
         Forward::New((i64::from(o) + delta).max(1) as u32)
+    }
+}
+
+/// Where line `o` (old side) of `file`'s diff is on the new side, if it wasn't deleted or changed.
+pub(crate) fn map_line_forward(file: &FileDiff, o: u32) -> Option<u32> {
+    match FileIndex::new(file).map_forward(o) {
+        Forward::New(n) => Some(n),
+        Forward::Deleted => None,
     }
 }
