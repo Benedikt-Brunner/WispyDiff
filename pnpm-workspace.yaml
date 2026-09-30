@@ -1,0 +1,5 @@
+allowBuilds:
+  esbuild: true
+  # Browser drivers for other platforms; the embedded Tauri WebDriver is used instead.
+  edgedriver: false
+  geckodriver: false

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+src-tauri/gen/
+.DS_Store
+*.log
+/e2e/.fixtures/
+/e2e/logs/
+/.worst-case.env
+
+# Apps pin their dependency graph (overrides a global *.lock ignore).
+!Cargo.lock

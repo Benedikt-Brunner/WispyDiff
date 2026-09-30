@@ -1,0 +1,37 @@
+{
+  "name": "wispydiff",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:e2e": "VITE_E2E=1 tsc && VITE_E2E=1 vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@wdio/tauri-plugin": "^1.4.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@wdio/cli": "^9.32.0",
+    "@wdio/globals": "^9.31.3",
+    "@wdio/local-runner": "^9.32.0",
+    "@wdio/mocha-framework": "^9.32.0",
+    "@wdio/spec-reporter": "^9.32.0",
+    "@wdio/tauri-service": "^1.4.0",
+    "expect-webdriverio": "^7.0.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "webdriverio": "^9.32.0"
+  }
+}
