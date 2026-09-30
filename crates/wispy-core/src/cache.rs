@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{Error, Result};
+use crate::highlight::Seg;
+use crate::highlight_cache::{BlobStore, Lines};
 use crate::model::DiffView;
 use crate::pr_ref::PrRef;
 use crate::range::RangeSpec;
@@ -35,6 +37,14 @@ impl Cache {
                  pr TEXT PRIMARY KEY,
                  data TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS highlighted_blobs (
+                 key TEXT PRIMARY KEY,
+                 data BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS repo_settings (
+                 repo TEXT PRIMARY KEY,
+                 data TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS diff_views (
                  key TEXT PRIMARY KEY,
@@ -104,7 +114,48 @@ impl Cache {
         Ok(found.is_some())
     }
 
+    /// Per-repo settings (a JSON value); `None` if never set.
+    pub fn repo_settings(&self, repo_slug: &str) -> Result<Option<serde_json::Value>> {
+        let data: Option<String> = self
+            .conn()
+            .query_row("SELECT data FROM repo_settings WHERE repo = ?1", [repo_slug], |row| row.get(0))
+            .optional()?;
+        data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+    }
+
+    pub fn put_repo_settings(&self, repo_slug: &str, settings: &serde_json::Value) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO repo_settings (repo, data) VALUES (?1, ?2)",
+            params![repo_slug, settings.to_string()],
+        )?;
+        Ok(())
+    }
+
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl BlobStore for Cache {
+    fn get(&self, key: &str) -> Option<Vec<Vec<Seg>>> {
+        let data: Vec<u8> = self
+            .conn()
+            .query_row("SELECT data FROM highlighted_blobs WHERE key = ?1", [key], |row| row.get(0))
+            .optional()
+            .ok()??;
+        rmp_serde::from_slice(&data).ok()
+    }
+
+    fn put_many(&self, items: &[(String, Lines)]) {
+        let encoded: Vec<(&String, Vec<u8>)> = items
+            .iter()
+            .filter_map(|(key, lines)| Some((key, rmp_serde::to_vec(lines.as_ref()).ok()?)))
+            .collect();
+        let mut conn = self.conn();
+        let Ok(tx) = conn.transaction() else { return };
+        for (key, data) in &encoded {
+            let _ = tx.execute("INSERT OR IGNORE INTO highlighted_blobs (key, data) VALUES (?1, ?2)", params![key, data]);
+        }
+        let _ = tx.commit();
     }
 }

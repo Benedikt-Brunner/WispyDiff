@@ -9,11 +9,14 @@ use wispy_core::highlight::Highlighter;
 use wispy_core::model::DiffView;
 use wispy_core::repo_store::RepoStore;
 use wispy_core::service::PrService;
+use wispy_core::split::SplitRow;
 use wispy_core::stack::StackSnapshot;
 use wispy_core::token::resolve_github_token;
 
 /// Diff views kept in memory; others are re-read from SQLite (~25 ms for the worst case).
 const MAX_OPEN_VIEWS: usize = 4;
+/// Side-by-side files kept in memory.
+const MAX_SPLIT_FILES: usize = 32;
 
 /// `WISPY_DATA_DIR` overrides the location (tests); default `~/Library/Application Support/WispyDiff`.
 pub fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -30,15 +33,22 @@ pub fn stack_id(snapshot: &StackSnapshot) -> String {
     format!("{}:{}", snapshot.repo_slug(), prs.join(","))
 }
 
-pub fn view_id(stack_id: &str, lo: usize, hi: usize) -> String {
-    format!("{stack_id}:{lo}-{hi}")
+pub fn view_id(stack_id: &str, lo: usize, hi: usize, ignore_whitespace: bool) -> String {
+    format!("{stack_id}:{lo}-{hi}{}", if ignore_whitespace { ":w" } else { "" })
+}
+
+struct OpenView {
+    id: String,
+    stack_id: String,
+    view: Arc<DiffView>,
 }
 
 pub struct AppState {
     data_dir: PathBuf,
     service: OnceLock<Result<Arc<PrService>, String>>,
     stacks: Mutex<HashMap<String, Arc<StackSnapshot>>>,
-    views: Mutex<VecDeque<(String, Arc<DiffView>)>>,
+    views: Mutex<VecDeque<OpenView>>,
+    split_files: Mutex<VecDeque<(String, Arc<Vec<SplitRow>>)>>,
     /// The stack whose ranges the background worker should be precomputing.
     current_stack: Mutex<Option<String>>,
     /// Stacks with a precompute worker running.
@@ -52,6 +62,7 @@ impl AppState {
             service: OnceLock::new(),
             stacks: Mutex::new(HashMap::new()),
             views: Mutex::new(VecDeque::new()),
+            split_files: Mutex::new(VecDeque::new()),
             current_stack: Mutex::new(None),
             precomputing: Mutex::new(HashSet::new()),
         }
@@ -95,15 +106,32 @@ impl AppState {
         lock(&self.precomputing).remove(id);
     }
 
-    pub fn register_view(&self, id: &str, view: Arc<DiffView>) {
+    pub fn register_view(&self, id: &str, stack_id: &str, view: Arc<DiffView>) {
         let mut views = lock(&self.views);
-        views.retain(|(existing, _)| existing != id);
-        views.push_front((id.to_string(), view));
+        views.retain(|open| open.id != id);
+        views.push_front(OpenView { id: id.to_string(), stack_id: stack_id.to_string(), view });
         views.truncate(MAX_OPEN_VIEWS);
     }
 
     pub fn view(&self, id: &str) -> Option<Arc<DiffView>> {
-        lock(&self.views).iter().find(|(existing, _)| existing == id).map(|(_, v)| v.clone())
+        lock(&self.views).iter().find(|open| open.id == id).map(|open| open.view.clone())
+    }
+
+    /// The view and the stack it belongs to.
+    pub fn view_with_stack(&self, id: &str) -> Option<(Arc<DiffView>, Arc<StackSnapshot>)> {
+        let (view, stack_id) = lock(&self.views).iter().find(|open| open.id == id).map(|o| (o.view.clone(), o.stack_id.clone()))?;
+        Some((view, self.stack(&stack_id)?))
+    }
+
+    pub fn split_file(&self, key: &str) -> Option<Arc<Vec<SplitRow>>> {
+        lock(&self.split_files).iter().find(|(k, _)| k == key).map(|(_, rows)| rows.clone())
+    }
+
+    pub fn remember_split_file(&self, key: &str, rows: Arc<Vec<SplitRow>>) {
+        let mut files = lock(&self.split_files);
+        files.retain(|(k, _)| k != key);
+        files.push_front((key.to_string(), rows));
+        files.truncate(MAX_SPLIT_FILES);
     }
 }
 

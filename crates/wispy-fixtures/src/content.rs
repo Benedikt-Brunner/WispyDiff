@@ -79,6 +79,13 @@ impl SourceFile {
         }
     }
 
+    /// Indents every statement line by two more spaces (a whitespace-only change).
+    pub fn reindent(&mut self) {
+        for line in self.lines.iter_mut().filter(|l| l.statement.is_some()) {
+            line.text.insert_str(0, "  ");
+        }
+    }
+
     pub fn write(&self, root: &Path) {
         let path = root.join(&self.path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

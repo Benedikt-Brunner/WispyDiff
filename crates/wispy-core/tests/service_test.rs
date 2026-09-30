@@ -69,3 +69,57 @@ async fn opens_a_stack_and_reopens_any_member_offline() {
     assert_eq!(cached, *whole);
     assert!(service.cached_range(&from_41, 0, 0).unwrap().is_none(), "never computed");
 }
+
+#[tokio::test]
+async fn serves_side_by_side_rows_and_remembers_ignore_patterns_across_restarts() {
+    let origin = OriginRepo::init();
+    origin.write("src/Order.php", "<?php\n$a = 1;\n$b = 2;\n$c = 3;\n");
+    origin.commit("base");
+    origin.checkout_new("stack/1");
+    origin.write("src/Order.php", "<?php\n$a = 1;\n$b = 20;\n$c = 3;\n$d = 4;\n");
+    let head = origin.commit("change");
+    origin.publish_pr(7, "stack/1");
+
+    let url = origin.url();
+    let server = MockServer::start().await;
+    mount(&server, "/repos/acme/shop/pulls/7", None, support::pull_request_json(7, "main", "stack/1", &head, &url)).await;
+    mount(&server, "/repos/acme/shop/pulls", Some(("base", "stack/1")), serde_json::json!([])).await;
+
+    let data = tempfile::tempdir().unwrap();
+    let api = server.uri();
+    let open_service = || {
+        PrService::new(
+            GitHubClient::new(api.clone(), "t").unwrap(),
+            RepoStore::new(data.path().join("repos"), None),
+            Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+            Highlighter::new(),
+        )
+    };
+    let service = open_service();
+    let pr = PrRef::parse("acme/shop#7").unwrap();
+    let snapshot = service.fetch(service.discover(&pr).await.unwrap()).unwrap();
+    let view = service.range(&snapshot, 0, 0).unwrap();
+
+    let rows = service.split_rows(&snapshot, &view, 0).unwrap();
+    assert_eq!(rows.len() as u32 + 1, view.summary.files[0].split_rows);
+    let texts: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| (r.os.iter().map(|s| s.1.as_str()).collect(), r.ns.iter().map(|s| s.1.as_str()).collect()))
+        .collect();
+    assert_eq!(texts[2], ("$b = 2;".to_string(), "$b = 20;".to_string()));
+    assert_eq!(texts[4], (String::new(), "$d = 4;".to_string()));
+    assert_eq!((rows[2].oa, rows[2].na), (Some(0), Some(0)));
+    assert!(rows[2].ns.iter().any(|(class, _)| *class != 0), "highlighted");
+
+    service.set_ignore_patterns("acme/shop", &["src/Generated/**".to_string()]).unwrap();
+    drop(service);
+
+    // A fresh service (app restart) offline: settings and highlighted files come from SQLite.
+    drop(server);
+    let restarted = open_service();
+    assert_eq!(restarted.ignore_patterns("acme/shop").unwrap(), vec!["src/Generated/**"]);
+    assert!(restarted.ignore_patterns("other/repo").unwrap().is_empty());
+    let cached = restarted.cached_stack(&pr).unwrap().unwrap();
+    let cached_view = restarted.cached_range(&cached, 0, 0).unwrap().unwrap();
+    assert_eq!(restarted.split_rows(&cached, &cached_view, 0).unwrap(), rows);
+}

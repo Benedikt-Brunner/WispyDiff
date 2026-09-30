@@ -124,15 +124,23 @@ impl Highlighter {
         Highlighter { configs: Language::ALL.into_iter().map(|lang| (lang, lang.configuration())).collect() }
     }
 
-    /// Returns one segment list per line of `source` (lines split on `\n`, `\r` stripped).
+    /// Returns one segment list per line of `source` (lines split on `\n`, `\r` stripped; a
+    /// final newline doesn't start another line, so the result has exactly one entry per line).
     /// Falls back to plain text when the file is too large or parsing fails.
     pub fn highlight(&self, language: Option<Language>, source: &str) -> Vec<Vec<Seg>> {
+        if source.is_empty() {
+            return Vec::new();
+        }
         let highlightable = source.len() <= MAX_HIGHLIGHT_BYTES
             && source.split('\n').all(|line| line.len() <= MAX_HIGHLIGHT_LINE);
-        match language.and_then(|lang| self.configs.get(&lang)).filter(|_| highlightable) {
+        let mut lines = match language.and_then(|lang| self.configs.get(&lang)).filter(|_| highlightable) {
             Some(config) => highlight_with(config, source).unwrap_or_else(|| plain_lines(source)),
             None => plain_lines(source),
+        };
+        if source.ends_with('\n') {
+            lines.pop();
         }
+        lines
     }
 }
 

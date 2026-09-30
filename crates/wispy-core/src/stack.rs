@@ -61,6 +61,7 @@ impl StackSnapshot {
             from: self.bases[lo].clone(),
             heads: self.heads[lo..=hi].to_vec(),
             prs: (lo..=hi).map(|i| i as u8).collect(),
+            ignore_whitespace: false,
         }
     }
 

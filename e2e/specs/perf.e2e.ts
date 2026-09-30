@@ -4,6 +4,7 @@ import { click, clickChip, exists, openViaPalette, waitFor, waitForRanges } from
 const BUDGET = {
   cachedOpenMs: 150,
   rangeSwitchMs: 100,
+  toggleMs: 100,
   frameP95Ms: 20, // 60 fps with a little jitter tolerance
   longFrameShare: 0.02, // frames > 33 ms
   blankFrameShare: 0.05, // frames showing unloaded rows
@@ -17,6 +18,16 @@ async function measureOpen(label: string) {
   await waitFor(async () => {
     // `execute` serializes undefined as null.
     duration = await browser.execute(() => window.__wispyPerf!.sinceLast("open:start", "view:first-visible"));
+    return duration != null;
+  });
+  return duration!;
+}
+
+/** Waits for the first `end` mark after the latest `start` mark and returns the time between them. */
+async function waitForMark(start: string, end: string) {
+  let duration: number | null | undefined;
+  await waitFor(async () => {
+    duration = await browser.execute((s: string, e: string) => window.__wispyPerf!.sinceLast(s, e), start, end);
     return duration != null;
   });
   return duration!;
@@ -117,8 +128,39 @@ describe("performance budgets (synthetic worst case)", () => {
     expect(median).toBeLessThan(BUDGET.rangeSwitchMs);
   });
 
+  it(`toggles the 20k-line file to side by side in < ${BUDGET.toggleMs} ms`, async () => {
+    await openViaPalette(WORST_CASE);
+    const samples: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await click('.file-list li[title="src/Allocation/PickListAllocator.php"]');
+      await browser.keys("s");
+      samples.push(await waitForMark("toggle:start", "layout:first-visible"));
+    }
+    const median = percentile(samples, 0.5);
+    console.log(`[perf] toggle 20k-line file: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
+    expect(median).toBeLessThan(BUDGET.toggleMs);
+  });
+
+  it("scrolls the 20k-line file side by side at 60 fps", async () => {
+    await click('.file-list li[title="src/Allocation/PickListAllocator.php"]');
+    await browser.keys("s");
+    await waitForMark("toggle:start", "layout:first-visible");
+    const { intervals, blank } = await scrollFrames(60, 600);
+    report("scroll 20k-line file side by side", intervals, blank);
+  });
+
+  it(`switches every file of the worst case between modes in < ${BUDGET.toggleMs} ms`, async () => {
+    const samples: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await browser.keys("S");
+      samples.push(await waitForMark("toggle:start", "layout:first-visible"));
+    }
+    const median = percentile(samples, 0.5);
+    console.log(`[perf] toggle all files: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
+    expect(median).toBeLessThan(BUDGET.toggleMs);
+  });
+
   // Budgets whose features arrive in later milestones.
-  it.skip("toggles unified ↔ side-by-side in < 100 ms (milestone 3)");
   it.skip("finds usages in < 50 ms (milestone 7)");
   it.skip("streams first git grep hits in < 300 ms (milestone 7)");
 });

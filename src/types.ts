@@ -3,7 +3,7 @@
 /** [token class, text]; class 0 is plain. */
 export type Seg = [number, string];
 
-export const RowKind = { File: 0, Hunk: 1, Context: 2, Added: 3, Deleted: 4, Notice: 5 } as const;
+export const RowKind = { File: 0, Hunk: 1, Context: 2, Added: 3, Deleted: 4, Notice: 5, Filler: 6 } as const;
 
 export interface Row {
   k: number;
@@ -15,6 +15,18 @@ export interface Row {
   a: number | null;
   /** Stack indices of every PR that shaped this line, when more than one did. */
   h: number[];
+}
+
+/** One aligned side-by-side row: old line opposite new line (either may be a filler). */
+export interface SplitRow {
+  o: number | null;
+  n: number | null;
+  ok: number;
+  nk: number;
+  os: Seg[];
+  ns: Seg[];
+  oa: number | null;
+  na: number | null;
 }
 
 export type FileStatus = "added" | "deleted" | "modified" | "renamed" | "copied";
@@ -31,13 +43,21 @@ export interface FileSummary {
   row_count: number;
   /** Stack indices of the PRs that touched this file within the range. */
   prs: number[];
+  old_blob: string | null;
+  new_blob: string | null;
+  /** Offsets of hunk headers within the file's unified rows (header = 0). */
+  hunks: number[];
+  /** Side-by-side row count (header included); 0 = not available. */
+  split_rows: number;
+  split_blocks: number[];
+  /** Why the file is collapsed by default, if it is. */
+  noise: string | null;
 }
 
 export interface DiffSummary {
   base_sha: string;
   head_sha: string;
   files: FileSummary[];
-  hunk_rows: number[];
   total_rows: number;
   max_line_chars: number;
   max_line_number: number;
@@ -71,6 +91,7 @@ export interface Range {
 export interface OpenedRange {
   viewId: string;
   range: Range;
+  ignoreWhitespace: boolean;
   summary: DiffSummary;
 }
 
