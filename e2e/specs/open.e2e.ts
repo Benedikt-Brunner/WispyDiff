@@ -1,4 +1,4 @@
-import { click, clickChip, count, exists, isFocused, openViaPalette, scrollTop, selectedChips, text, typeInPalette, waitFor } from "./helpers";
+import { click, clickChip, count, exists, isFocused, openViaPalette, scrollTop, selectedChips, settled, text, typeInPalette, waitFor } from "./helpers";
 
 describe("opening a pull request", () => {
   it("shows the palette focused (on launch, or with ⌘K once something is open)", async () => {
@@ -32,14 +32,15 @@ describe("opening a pull request", () => {
     const start = await scrollTop();
     await browser.keys("j");
     await browser.keys("j");
+    // j/k glide; wait for it to settle.
+    await waitFor(async () => (await scrollTop()) > start && (await settled()));
     const afterHunks = await scrollTop();
-    expect(afterHunks).toBeGreaterThan(start);
     await browser.keys("n");
     expect(await scrollTop()).toBeGreaterThan(afterHunks);
     await browser.keys("p");
     await browser.keys("p");
     await browser.keys("k");
-    expect(await scrollTop()).toBeLessThan(afterHunks);
+    await waitFor(async () => (await scrollTop()) < afterHunks);
   });
 
   it("reopens the palette with Cmd+K and closes it with Escape", async () => {
