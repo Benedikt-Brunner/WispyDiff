@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { openPr, refreshPr } from "./api";
 import { CommandPalette } from "./CommandPalette";
 import { DiffViewer } from "./DiffViewer";
+import { Mark, Wordmark } from "./Logo";
 import { mark } from "./perf";
 import { rememberPr } from "./recent";
 import { prLabel, type OpenedPr } from "./types";
@@ -59,12 +60,11 @@ export default function App() {
   return (
     <div className="app">
       <header className="titlebar" data-tauri-drag-region>
+        {opened && <Mark className="titlebar-mark" />}
         {opened ? (
           <PrHeader opened={opened} />
         ) : (
-          <span className="titlebar-hint" data-tauri-drag-region>
-            WispyDiff · ⌘K to open a pull request
-          </span>
+          <span className="titlebar-hint" data-tauri-drag-region />
         )}
         {newerVersion && (
           <button className="update-banner" onClick={() => (setOpened(newerVersion), setNewerVersion(null))}>
@@ -76,7 +76,10 @@ export default function App() {
         {opened ? (
           <DiffViewer opened={opened} showFiles={showFiles} keyboardEnabled={!paletteOpen} />
         ) : (
-          <div className="empty" />
+          <div className="empty">
+            <Wordmark className="empty-wordmark" />
+            <span className="empty-hint">⌘K to open a pull request</span>
+          </div>
         )}
       </main>
       {paletteOpen && (
