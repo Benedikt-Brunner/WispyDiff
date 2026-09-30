@@ -20,7 +20,7 @@ A distraction-free, keyboard-first macOS desktop app for reviewing **stacked Git
 Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cached in SQLite, and served to the frontend as prepared line models **for the visible window only**.
 
 ## Navigation
-- **Inbox** home screen: review-requested + authored-by-me PRs, **grouped into stacks**. `Cmd+K` opens any PR by URL or `owner/repo#N`.
+- **Inbox** home screen (shown at launch; `⌘I` or the logo returns to it): review-requested + authored-by-me PRs (GitHub search), **grouped into stacks** (a PR whose base is another inbox PR's head continues its chain). `j`/`k` + Enter to open, `r` to refresh. Each group shows whether it's "offline ready" and its unposted drafts. `Cmd+K` opens any PR by URL or `owner/repo#N`.
 - **Stacks** are discovered via `baseRefName` chains. Only the bottom PR targets the default branch; stacks merge bottom-up. Forks never join a stack; if several PRs branch off one head, the oldest is followed. A PR not based on the latest head of the PR below is flagged ⚠.
 - **Contiguous range selection only.** Opening a PR shows that PR alone. In the stack bar, click selects one PR, shift-click extends to a range; `[`/`]` move the selection down/up the stack, `{`/`}` extend it. Combined diff = base of lowest selected PR → head of highest.
 - Every range of the open stack is **precomputed in the background** (focused PR, then whole stack, then the rest), so switching is a cache read.
@@ -33,7 +33,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - Keyboard-first: `j/k` hunks, `n/p` files, `[ ] { }` stack range, `s`/`S` side-by-side (file/all), `e` collapse, `w` whitespace, `⌘K` palette, `⌘B` file list, `c` comment, `v` viewed, `a` assistant.
 
 ## Offline
-- **Every inbox stack is prefetched** in the background (interval + on window focus): git objects, full base/head files, threads, metadata. Evicted after merge/close unless unposted drafts exist.
+- **Every inbox stack is prefetched** in the background (at launch, every 5 minutes, and on window focus): the full stack is discovered and fetched, each inbox PR alone and the whole stack are precomputed (highlighted full files included), and review threads are cached. Stacks of PRs that left the inbox because they were merged/closed are evicted unless they have unposted drafts.
 
 ## Progress tracking
 - **Viewed marks** per file, content-keyed (survive rebases).

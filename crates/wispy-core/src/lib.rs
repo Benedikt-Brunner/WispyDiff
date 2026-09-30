@@ -10,6 +10,7 @@ pub mod git;
 pub mod github;
 pub mod highlight;
 pub mod highlight_cache;
+pub mod inbox;
 pub mod model;
 pub mod noise;
 pub mod pr_ref;

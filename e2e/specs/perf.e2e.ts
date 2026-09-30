@@ -1,4 +1,4 @@
-import { click, clickChip, exists, openViaPalette, waitFor, waitForRanges } from "./helpers";
+import { click, clickChip, count, exists, goHome, openViaPalette, waitFor, waitForRanges } from "./helpers";
 
 /** Binding budgets from SPEC.md. */
 const BUDGET = {
@@ -87,6 +87,24 @@ describe("performance budgets (synthetic worst case)", () => {
     }
     const median = percentile(samples, 0.5);
     console.log(`[perf] cached open: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
+    expect(median).toBeLessThan(BUDGET.cachedOpenMs);
+  });
+
+  it(`opens a prefetched stack from the inbox with the first file visible in < ${BUDGET.cachedOpenMs} ms`, async () => {
+    const samples: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      await goHome();
+      await waitFor(async () => (await count(".inbox-ready.ready")) === 2, 120_000);
+      await browser.execute(() => document.querySelector<HTMLElement>('[data-testid="inbox"] li[data-pr="1"]')!.click());
+      let duration: number | null | undefined;
+      await waitFor(async () => {
+        duration = await browser.execute(() => window.__wispyPerf!.sinceLast("open:start", "view:first-visible"));
+        return duration != null;
+      });
+      samples.push(duration!);
+    }
+    const median = percentile(samples, 0.5);
+    console.log(`[perf] open from inbox: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
     expect(median).toBeLessThan(BUDGET.cachedOpenMs);
   });
 

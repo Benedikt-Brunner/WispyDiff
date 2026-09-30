@@ -103,6 +103,18 @@ const THREADS_QUERY: &str = "query($owner: String!, $repo: String!, $number: Int
   }
 }";
 
+const SEARCH_QUERY: &str = "query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number title url isDraft updatedAt headRefName baseRefName headRefOid
+        author { login }
+        repository { nameWithOwner }
+      }
+    }
+  }
+}";
+
 const RESOLVE_MUTATION: &str =
     "mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }";
 
@@ -218,6 +230,33 @@ impl GitHubClient {
         let query = [("per_page", "100".to_string()), ("sort", "created".into()), ("direction", "desc".into())];
         let comments: Vec<serde_json::Value> = self.get(&path, &query).await?;
         Ok(comments.iter().filter_map(|c| c["body"].as_str().map(str::to_string)).collect())
+    }
+
+    /// Open PRs where the user's review is requested, and open PRs they authored.
+    pub async fn inbox(&self) -> Result<Vec<crate::inbox::InboxPr>> {
+        let mut prs = Vec::new();
+        for (query, requested) in [("is:pr is:open archived:false review-requested:@me", true), ("is:pr is:open archived:false author:@me", false)] {
+            let data = self.graphql(SEARCH_QUERY, serde_json::json!({ "q": query })).await?;
+            for node in data["search"]["nodes"].as_array().into_iter().flatten() {
+                let Some(number) = node["number"].as_u64() else { continue };
+                let text = |key: &str| node[key].as_str().unwrap_or_default().to_string();
+                prs.push(crate::inbox::InboxPr {
+                    repo: node["repository"]["nameWithOwner"].as_str().unwrap_or_default().to_string(),
+                    number,
+                    title: text("title"),
+                    url: text("url"),
+                    draft: node["isDraft"].as_bool().unwrap_or(false),
+                    author: node["author"]["login"].as_str().unwrap_or("ghost").to_string(),
+                    base_ref: text("baseRefName"),
+                    head_ref: text("headRefName"),
+                    head_sha: text("headRefOid"),
+                    updated_at: text("updatedAt"),
+                    requested,
+                    authored: !requested,
+                });
+            }
+        }
+        Ok(crate::inbox::merge(prs))
     }
 
     /// The login of the token's user.

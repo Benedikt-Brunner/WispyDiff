@@ -303,6 +303,27 @@ pub async fn submit_review(
     service.submit(&snapshot, pr_index, verdict, summary).await.map_err(|e| e.to_string())
 }
 
+// ---------- inbox ----------
+
+/// The last known inbox (instant, offline-friendly); fresh entries arrive as `inbox-updated`.
+#[tauri::command]
+pub async fn get_inbox(state: State<'_, AppState>) -> Result<Vec<wispy_core::service::InboxEntry>, String> {
+    let service = state.service()?;
+    blocking(move || {
+        let groups = service.cached_inbox()?;
+        service.inbox_entries(groups)
+    })
+    .await
+}
+
+/// Asks the background worker to refresh the inbox and prefetch now.
+#[tauri::command]
+pub fn refresh_inbox(app: AppHandle) {
+    if let Some(trigger) = app.try_state::<crate::prefetch::PrefetchTrigger>() {
+        trigger.fire();
+    }
+}
+
 async fn discover_and_load(service: &Arc<PrService>, pr: &PrRef) -> Result<(Arc<StackSnapshot>, Arc<DiffView>), String> {
     let stack = service.discover(pr).await.map_err(|e| e.to_string())?;
     let snapshot = blocking({

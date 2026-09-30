@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getIgnorePatterns, listDrafts, listThreads, openPr, refreshPr, selectRange, setIgnorePatterns } from "./api";
 import type { PrThreads, ShownDraft } from "./comments";
@@ -6,7 +7,8 @@ import { SubmitSheet } from "./SubmitSheet";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { DiffViewer, type BaseMode } from "./DiffViewer";
 import { globMatcher } from "./glob";
-import { Mark, Wordmark } from "./Logo";
+import { Inbox, type InboxEntry } from "./Inbox";
+import { Mark } from "./Logo";
 import { mark } from "./perf";
 import { loadPref, savePref } from "./prefs";
 import { rememberPr } from "./recent";
@@ -21,7 +23,10 @@ export default function App() {
   const [stack, setStack] = useState<OpenedStack | null>(null);
   const [shown, setShown] = useState<OpenedRange | null>(null);
   const [newerVersion, setNewerVersion] = useState<OpenedStack | null>(null);
-  const [paletteOpen, setPaletteOpen] = useState(true);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [home, setHome] = useState(true);
+  const [inbox, setInbox] = useState<InboxEntry[]>([]);
+  const [online, setOnline] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showFiles, setShowFiles] = useState(true);
@@ -42,6 +47,19 @@ export default function App() {
     });
     return () => void unlisten.then((f) => f());
   }, []);
+
+  useEffect(() => {
+    invoke<InboxEntry[]>("get_inbox")
+      .then(setInbox)
+      .catch(() => undefined);
+    const updates = listen<InboxEntry[]>("inbox-updated", ({ payload }) => setInbox(payload));
+    const status = listen<string>("inbox-status", ({ payload }) => setOnline(payload === "online"));
+    return () => {
+      void updates.then((f) => f());
+      void status.then((f) => f());
+    };
+  }, []);
+  const refreshInbox = useCallback(() => void invoke("refresh_inbox"), []);
 
   useEffect(() => {
     window.__wispyRanges = {
@@ -111,6 +129,7 @@ export default function App() {
         rememberPr(label);
         show(result);
         setPaletteOpen(false);
+        setHome(false);
         if (result.fromCache) {
           // Stale-while-revalidate: show the cached stack now, offer the new one if anything moved.
           refreshPr(label, result.stackId)
@@ -157,6 +176,7 @@ export default function App() {
         run: toggleWhitespace,
       });
     }
+    list.push({ id: "inbox", label: "Go to inbox", run: () => setHome(true) });
     if (stack) list.push({ id: "submit", label: "Submit review…", run: () => setSheetOpen(true) });
     list.push({
       id: "mode",
@@ -183,10 +203,13 @@ export default function App() {
         e.preventDefault();
         setError(null);
         setPaletteOpen(true);
+      } else if (e.metaKey && e.key === "i") {
+        e.preventDefault();
+        setHome(true);
       } else if (e.metaKey && e.key === "b") {
         e.preventDefault();
         setShowFiles((s) => !s);
-      } else if (!paletteOpen && !sheetOpen && stack && shown && !e.metaKey && !e.ctrlKey && !e.altKey && !isTypingIn(e.target)) {
+      } else if (!paletteOpen && !sheetOpen && !home && stack && shown && !e.metaKey && !e.ctrlKey && !e.altKey && !isTypingIn(e.target)) {
         if (e.key === "w") {
           e.preventDefault();
           toggleWhitespace();
@@ -201,17 +224,20 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, sheetOpen, stack, shown, chooseRange, toggleWhitespace]);
+  }, [paletteOpen, sheetOpen, home, stack, shown, chooseRange, toggleWhitespace]);
 
   const isStack = stack !== null && stack.prs.length > 1;
+  const showingDiff = !home && stack !== null && shown !== null;
   const ready = (lo: number, hi: number) => (stack ? (readyRanges.get(stack.stackId)?.has(`${lo}-${hi}`) ?? false) : false);
 
   return (
     <div className="app">
       <header className="titlebar" data-tauri-drag-region>
-        {stack && <Mark className="titlebar-mark" />}
-        {stack && shown ? <RangeHeader stack={stack} shown={shown} /> : <span className="titlebar-hint" data-tauri-drag-region />}
-        {stack && (
+        <button className="titlebar-home" title="Inbox (⌘I)" onClick={() => setHome(true)}>
+          <Mark className="titlebar-mark" />
+        </button>
+        {showingDiff ? <RangeHeader stack={stack} shown={shown} /> : <span className="titlebar-hint" data-tauri-drag-region />}
+        {showingDiff && (
           <button className="review-button" onClick={() => setSheetOpen(true)} data-testid="review-button">
             Submit review{drafts.length ? ` · ${drafts.length}` : ""}
           </button>
@@ -222,11 +248,11 @@ export default function App() {
           </button>
         )}
       </header>
-      {isStack && shown && (
+      {showingDiff && isStack && (
         <StackBar key={stack.stackId} prs={stack.prs} needsRebase={stack.needsRebase} range={shown.range} ready={ready} onSelect={chooseRange} />
       )}
       <main className="content">
-        {stack && shown ? (
+        {showingDiff ? (
           <DiffViewer
             key={stack.stackId}
             stackId={stack.stackId}
@@ -241,16 +267,13 @@ export default function App() {
             showAttribution={isStack}
             multiPr={shown.range.hi > shown.range.lo}
             showFiles={showFiles}
-            keyboardEnabled={!paletteOpen && !sheetOpen}
+            keyboardEnabled={!paletteOpen && !sheetOpen && !home}
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}
             isIgnored={isIgnored}
           />
         ) : (
-          <div className="empty">
-            <Wordmark className="empty-wordmark" />
-            <span className="empty-hint">⌘K to open a pull request</span>
-          </div>
+          <Inbox entries={inbox} online={online} keyboardEnabled={!paletteOpen} onOpen={open} onRefresh={refreshInbox} />
         )}
       </main>
       {sheetOpen && stack && (
@@ -267,7 +290,7 @@ export default function App() {
         />
       )}
       {paletteOpen && (
-        <CommandPalette busy={busy} error={error} commands={commands} onOpen={open} onClose={stack ? () => setPaletteOpen(false) : null} />
+        <CommandPalette busy={busy} error={error} commands={commands} onOpen={open} onClose={() => setPaletteOpen(false)} />
       )}
     </div>
   );
