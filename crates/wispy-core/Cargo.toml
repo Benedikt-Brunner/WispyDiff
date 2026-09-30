@@ -1,0 +1,27 @@
+[package]
+name = "wispy-core"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rayon = "1"
+base64 = "0.22"
+tree-sitter = "0.27"
+tree-sitter-highlight = "0.27"
+tree-sitter-php = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-yaml = "0.7"
+tree-sitter-sequel = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+tempfile = "3"
