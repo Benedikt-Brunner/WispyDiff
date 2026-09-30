@@ -23,6 +23,13 @@ export const click = (selector: string) =>
 export const scrollTop = () =>
   browser.execute(() => document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop);
 
+/** Presses a key with Shift held. (The embedded driver drops the Shift modifier on special keys.) */
+export const pressShifted = (key: string) =>
+  browser.execute((k: string) => {
+    const target = document.activeElement ?? document.body;
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: k, shiftKey: true, bubbles: true, cancelable: true }));
+  }, key);
+
 /** Whether the diff stays put over a few frames (a j/k glide has finished). */
 export const settled = () =>
   browser.executeAsync((done: (still: boolean) => void) => {
@@ -135,7 +142,7 @@ export const clickButton = (scope: string, label: string) =>
 
 /** Simulates losing (or regaining) the network to GitHub: the fake API drops every request. */
 export const setOffline = async (offline: boolean) => {
-  await fetch(`http://127.0.0.1:4600/${offline ? "__offline" : "__online"}`).catch(() => undefined);
+  await fetch(`${process.env.WISPY_GITHUB_API}/${offline ? "__offline" : "__online"}`).catch(() => undefined);
 };
 
 /** Shows the inbox (⌘I). */

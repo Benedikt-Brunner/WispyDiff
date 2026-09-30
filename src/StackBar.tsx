@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { prColor, type PullRequest, type Range } from "./types";
 
 interface Props {
@@ -12,6 +12,10 @@ interface Props {
 /** The stack, bottom to top. Click selects one PR; shift-click extends to a contiguous range. */
 export function StackBar({ prs, needsRebase, range, ready, onSelect }: Props) {
   const [anchor, setAnchor] = useState(range.lo);
+  // A single PR picked another way (Tab, [ ]) becomes the anchor for shift-click.
+  useEffect(() => {
+    if (range.lo === range.hi) setAnchor(range.lo);
+  }, [range.lo, range.hi]);
 
   const choose = (index: number, extend: boolean) => {
     if (extend) {

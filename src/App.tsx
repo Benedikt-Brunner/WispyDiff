@@ -22,6 +22,7 @@ import { DiffViewer, type BaseMode } from "./DiffViewer";
 import { globMatcher } from "./glob";
 import { Inbox, type InboxEntry } from "./Inbox";
 import { Mark } from "./Logo";
+import { ShortcutsHelp, ThemePicker } from "./Overlays";
 import { mark } from "./perf";
 import { loadPref, savePref } from "./prefs";
 import { rememberPr } from "./recent";
@@ -48,6 +49,7 @@ export default function App() {
   const [drafts, setDrafts] = useState<ShownDraft[]>([]);
   const [threads, setThreads] = useState<PrThreads[]>([]);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [overlay, setOverlay] = useState<"theme" | "shortcuts" | null>(null);
   const [viewed, setViewedKeys] = useState<Set<string>>(new Set());
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -253,6 +255,8 @@ export default function App() {
       });
     }
     list.push({ id: "inbox", label: "Go to inbox", run: () => setHome(true) });
+    list.push({ id: "theme", label: "Change theme…", run: () => setOverlay("theme") });
+    list.push({ id: "shortcuts", label: "Keyboard shortcuts", run: () => setOverlay("shortcuts") });
     if (stack) list.push({ id: "submit", label: "Submit review…", run: () => setSheetOpen(true) });
     if (shown) {
       list.push({ id: "reviewed", label: "Mark as reviewed (checkpoint)", run: () => void markRangeReviewed() });
@@ -282,7 +286,18 @@ export default function App() {
       if (e.metaKey && e.key === "k") {
         e.preventDefault();
         setError(null);
+        setOverlay(null);
         setPaletteOpen(true);
+      } else if (e.metaKey && e.key === "t") {
+        e.preventDefault();
+        setPaletteOpen(false);
+        setOverlay("theme");
+      } else if ((e.metaKey && e.key === "/") || (e.key === "?" && !e.metaKey && !isTypingIn(e.target))) {
+        e.preventDefault();
+        setPaletteOpen(false);
+        setOverlay("shortcuts");
+      } else if (overlay) {
+        return;
       } else if (e.metaKey && e.key === "i") {
         e.preventDefault();
         setHome(true);
@@ -305,6 +320,17 @@ export default function App() {
           toggleSince();
           return;
         }
+        if (e.key === "Tab") {
+          // Tab / Shift-Tab: the next / previous PR of the stack on its own, wrapping around.
+          e.preventDefault();
+          const size = stack.prs.length;
+          const { lo, hi } = shown.range;
+          if (size > 1) {
+            const index = e.shiftKey ? (lo - 1 + size) % size : (hi + 1) % size;
+            void chooseRange({ lo: index, hi: index });
+          }
+          return;
+        }
         const next = rangeForKey(e.key, shown.range, stack.prs.length);
         if (next) {
           e.preventDefault();
@@ -314,7 +340,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, sheetOpen, home, stack, shown, chooseRange, toggleWhitespace, markRangeReviewed, toggleSince]);
+  }, [paletteOpen, sheetOpen, overlay, home, stack, shown, chooseRange, toggleWhitespace, markRangeReviewed, toggleSince]);
 
   const isStack = stack !== null && stack.prs.length > 1;
   const showingDiff = !home && stack !== null && shown !== null;
@@ -361,7 +387,7 @@ export default function App() {
             showAttribution={isStack}
             multiPr={shown.range.hi > shown.range.lo}
             showFiles={showFiles}
-            keyboardEnabled={!paletteOpen && !sheetOpen && !home}
+            keyboardEnabled={!paletteOpen && !sheetOpen && !overlay && !home}
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}
             isIgnored={isIgnored}
@@ -369,7 +395,7 @@ export default function App() {
             onToggleViewed={toggleViewed}
           />
         ) : (
-          <Inbox entries={inbox} online={online} keyboardEnabled={!paletteOpen} onOpen={open} onRefresh={refreshInbox} />
+          <Inbox entries={inbox} online={online} keyboardEnabled={!paletteOpen && !overlay} onOpen={open} onRefresh={refreshInbox} />
         )}
       </main>
       {sheetOpen && stack && (
@@ -390,6 +416,8 @@ export default function App() {
           {toast}
         </div>
       )}
+      {overlay === "theme" && <ThemePicker onClose={() => setOverlay(null)} />}
+      {overlay === "shortcuts" && <ShortcutsHelp onClose={() => setOverlay(null)} />}
       {paletteOpen && (
         <CommandPalette busy={busy} error={error} commands={commands} onOpen={open} onClose={() => setPaletteOpen(false)} />
       )}
