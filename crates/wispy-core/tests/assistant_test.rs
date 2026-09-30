@@ -1,0 +1,158 @@
+mod support;
+
+use std::path::PathBuf;
+
+use support::{pull_request, OriginRepo};
+use wispy_core::assistant::{command, parse_line, Ask, AssistantEvent, Provider, Selection};
+use wispy_core::cache::Cache;
+use wispy_core::github::GitHubClient;
+use wispy_core::highlight::Highlighter;
+use wispy_core::repo_store::RepoStore;
+use wispy_core::service::{NewThread, PrService};
+use wispy_core::stack::Stack;
+
+fn fake(name: &str) -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fake-cli").join(name);
+    root.canonicalize().unwrap().to_string_lossy().into_owned()
+}
+
+fn args(ask: &Ask) -> Vec<String> {
+    let cmd = command(ask, std::path::Path::new("/tmp"));
+    cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+}
+
+fn ask(provider: Provider, resume: Option<&str>) -> Ask {
+    Ask { provider, model: Some("m1".into()), effort: Some("high".into()), prompt: "q".into(), resume: resume.map(str::to_string) }
+}
+
+#[test]
+fn builds_read_only_claude_invocations() {
+    let first = args(&ask(Provider::Claude, None));
+    let joined = first.join(" ");
+    assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages"));
+    assert!(joined.contains("--allowed-tools Read,Grep,Glob --permission-mode dontAsk"), "{joined}");
+    assert!(joined.contains("--model m1") && joined.contains("--effort high"));
+    assert!(!joined.contains("--resume"));
+    assert!(args(&ask(Provider::Claude, Some("s-1"))).join(" ").ends_with("--resume s-1"));
+    let defaults = Ask { model: None, effort: None, ..ask(Provider::Claude, None) };
+    assert!(!args(&defaults).iter().any(|a| a == "--model" || a == "--effort"));
+}
+
+#[test]
+fn builds_read_only_codex_invocations() {
+    assert_eq!(
+        args(&ask(Provider::Codex, None)),
+        ["exec", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"read-only\"", "-m", "m1", "-c", "model_reasoning_effort=\"high\"", "-"]
+    );
+    assert_eq!(&args(&ask(Provider::Codex, Some("t-1")))[..3], ["exec", "resume", "t-1"]);
+}
+
+#[test]
+fn parses_both_clis_event_streams() {
+    let claude = |line: &str| parse_line(Provider::Claude, line);
+    assert_eq!(claude(r#"{"type":"system","subtype":"init","session_id":"abc"}"#), vec![AssistantEvent::Session { id: "abc".into() }]);
+    assert_eq!(
+        claude(r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}"#),
+        vec![AssistantEvent::Delta { text: "Hel".into() }]
+    );
+    assert_eq!(
+        claude(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","name":"Read"}]}}"#),
+        vec![AssistantEvent::Text { text: "Hello".into() }]
+    );
+    assert_eq!(
+        claude(r#"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate: OAuth session expired"}"#),
+        vec![AssistantEvent::Error { message: "Failed to authenticate: OAuth session expired".into() }]
+    );
+    assert!(claude(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#).is_empty());
+    assert!(claude("not json").is_empty());
+
+    let codex = |line: &str| parse_line(Provider::Codex, line);
+    assert_eq!(codex(r#"{"type":"thread.started","thread_id":"t-9"}"#), vec![AssistantEvent::Session { id: "t-9".into() }]);
+    assert_eq!(
+        codex(r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Done"}}"#),
+        vec![AssistantEvent::Text { text: "Done".into() }]
+    );
+    assert!(codex(r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata not found"}}"#).is_empty(), "warnings aren't failures");
+    let failed = r#"{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'x' model requires a newer version of Codex.\"}}"}}"#;
+    assert_eq!(codex(failed), vec![AssistantEvent::Error { message: "The 'x' model requires a newer version of Codex.".into() }]);
+}
+
+#[test]
+fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session() {
+    // SAFETY: this test binary's tests don't read these variables concurrently in other ways.
+    unsafe {
+        std::env::set_var("WISPY_CLAUDE_BIN", fake("claude"));
+        std::env::set_var("WISPY_CODEX_BIN", fake("codex"));
+    }
+    let log = tempfile::NamedTempFile::new().unwrap();
+    unsafe { std::env::set_var("WISPY_FAKE_LOG", log.path()) };
+
+    let origin = OriginRepo::init();
+    origin.write("README.md", "# Shop\n");
+    origin.write("src/Order.php", "<?php\n$state = 'open';\n");
+    origin.commit("base");
+    origin.checkout_new("feature");
+    origin.write("src/Order.php", "<?php\n$state = 'picked';\n");
+    origin.commit("pick");
+    origin.publish_pr(3, "feature");
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new("http://127.0.0.1:9", "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let snapshot = service.fetch(Stack { prs: vec![pull_request(3, "main", "feature", &origin.url())], focus: 0 }).unwrap();
+
+    let selection = Selection { path: "src/Order.php".into(), pr_label: "#3".into(), start_line: 2, end_line: 2, text: "+$state = 'picked';".into() };
+    let mut streamed = String::new();
+    let new = NewThread { provider: Provider::Claude, model: Some("opus".into()), effort: Some("high".into()), selection: Some(selection), anchor: None };
+    let thread = service
+        .ask(&snapshot, (0, 0), None, Some(new), "Is 'picked' a valid state?", |event| {
+            if let AssistantEvent::Delta { text } = event {
+                streamed.push_str(text);
+            }
+        })
+        .unwrap();
+
+    assert_eq!(thread.messages.len(), 2);
+    assert_eq!(thread.messages[0].text, "Is 'picked' a valid state?");
+    let answer = &thread.messages[1];
+    assert!(!answer.error);
+    assert!(answer.text.contains("README.md, src"), "ran in a checkout of the head: {}", answer.text);
+    assert_eq!(streamed.trim(), answer.text);
+    assert_eq!(thread.session.as_deref(), Some("fake-claude-session"));
+
+    let calls: Vec<serde_json::Value> = std::fs::read_to_string(log.path()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let prompt = calls[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Under review: acme/shop #3"));
+    assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
+    assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"));
+    let args: Vec<&str> = calls[0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert!(args.windows(2).any(|w| w == ["--model", "opus"]));
+    let cwd = PathBuf::from(calls[0]["cwd"].as_str().unwrap());
+    assert!(cwd.starts_with(data.path().canonicalize().unwrap().join("worktrees/acme/shop")), "{cwd:?}");
+    assert_eq!(std::fs::read_to_string(cwd.join("src/Order.php")).unwrap(), "<?php\n$state = 'picked';\n");
+
+    // A follow-up resumes the session and sends only the question.
+    let followed = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "And 'shipped'?", |_| {}).unwrap();
+    assert_eq!(followed.messages.len(), 4);
+    assert!(followed.messages[3].text.starts_with("(follow-up)"));
+    let calls: Vec<serde_json::Value> = std::fs::read_to_string(log.path()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(calls[1]["prompt"], "And 'shipped'?");
+    assert!(calls[1]["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
+
+    // Failures are kept in the thread; Codex works the same way.
+    let failed = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "fail", |_| {}).unwrap();
+    assert!(failed.messages.last().unwrap().error);
+    assert!(failed.messages.last().unwrap().text.contains("Failed to authenticate (fake)"));
+    let codex = service
+        .ask(&snapshot, (0, 0), None, Some(NewThread { provider: Provider::Codex, model: None, effort: None, selection: None, anchor: None }), "Summarize", |_| {})
+        .unwrap();
+    assert_eq!(codex.session.as_deref(), Some("fake-codex-thread"));
+    assert!(codex.messages[1].text.contains("About “Summarize”"));
+
+    assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 2);
+    service.delete_assistant_thread(&thread.id).unwrap();
+    assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 1);
+}

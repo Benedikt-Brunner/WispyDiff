@@ -1,5 +1,5 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -10,10 +10,18 @@ const appBinary = path.join(root, "target/release/wispydiff");
 const apiPort = 4600;
 
 // The app inherits this environment: fake GitHub, throwaway data dir, no `gh` needed.
-const dataDir = mkdtempSync(path.join(tmpdir(), "wispy-e2e-"));
+// Every wdio process evaluates this file; the run id (set once by the launcher, inherited by
+// workers) makes them agree on the paths.
+process.env.WISPY_E2E_RUN ??= String(Date.now());
+const dataDir = path.join(tmpdir(), `wispy-e2e-${process.env.WISPY_E2E_RUN}`);
+mkdirSync(dataDir, { recursive: true });
 process.env.WISPY_DATA_DIR = dataDir;
 process.env.WISPY_GITHUB_API = `http://127.0.0.1:${apiPort}`;
 process.env.WISPY_GITHUB_TOKEN = "fixture-token";
+// The assistant runs fake CLIs (speaking the real JSON formats) instead of Claude Code / Codex.
+process.env.WISPY_CLAUDE_BIN = path.join(root, "e2e/fake-cli/claude");
+process.env.WISPY_CODEX_BIN = path.join(root, "e2e/fake-cli/codex");
+process.env.WISPY_FAKE_LOG = path.join(dataDir, "fake-cli.log");
 
 let fakeGitHub: ChildProcess | undefined;
 

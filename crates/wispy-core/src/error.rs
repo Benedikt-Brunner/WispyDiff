@@ -20,6 +20,8 @@ pub enum Error {
     DiffParse(String),
     #[error("no GitHub token available: {0}")]
     NoToken(String),
+    #[error("{0}")]
+    Assistant(String),
 }
 
 impl Error {

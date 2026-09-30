@@ -20,6 +20,7 @@ behaviour, performance budgets and milestones — read it before changing anythi
 - Core tests use real throwaway git repos (`tests/support`) and wiremock for GitHub. Construct services under test directly in each test — never through factory helpers (fixture builders are fine).
 - git always runs through `wispy_core::git::Git` (isolated from the user's global git config).
 - Never touch the user's own working copies; the app only uses its blobless clones under the data dir.
-- Env overrides (tests only): `WISPY_DATA_DIR`, `WISPY_GITHUB_API`, `WISPY_GITHUB_TOKEN`, `WISPY_PREFETCH_INTERVAL`.
+- Env overrides (tests only): `WISPY_DATA_DIR`, `WISPY_GITHUB_API`, `WISPY_GITHUB_TOKEN`, `WISPY_PREFETCH_INTERVAL`, `WISPY_CLAUDE_BIN` / `WISPY_CODEX_BIN` (+ `WISPY_FAKE_LOG`).
+- Tests never call the real Claude Code / Codex CLIs: `e2e/fake-cli/{claude,codex}` speak their JSON event formats and log how they were invoked.
 - e2e: spec files share one app process (don't assume a fresh UI); the embedded macOS driver is slow/lossy for element lookups and typed spaces, so helpers go through `browser.execute`. Failing tests print frontend errors (`[failure] …`).
 - git writes (repo setup, fetches) are serialized per repo in `RepoStore`; reads stay concurrent.

@@ -1,6 +1,7 @@
 //! WispyDiff core: everything except the UI shell.
 
 pub mod anchors;
+pub mod assistant;
 pub mod attribution;
 pub mod cache;
 pub mod diff;

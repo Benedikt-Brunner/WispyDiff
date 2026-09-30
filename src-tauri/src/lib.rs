@@ -55,6 +55,9 @@ pub fn run() {
             commands::grep,
             commands::read_file,
             commands::locate_line,
+            commands::ask_assistant,
+            commands::list_assistant_threads,
+            commands::delete_assistant_thread,
             commands::get_inbox,
             commands::refresh_inbox])
         .run(tauri::generate_context!())

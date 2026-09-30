@@ -73,6 +73,20 @@ pub struct GrepHit {
 /// Whole-repo search stops after this many hits.
 pub const MAX_GREP_HITS: usize = 1000;
 
+/// Starting a new assistant thread.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewThread {
+    pub provider: crate::assistant::Provider,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub selection: Option<crate::assistant::Selection>,
+    pub anchor: Option<crate::assistant::ThreadAnchor>,
+}
+
+/// How much of the range's diff goes into the first prompt.
+const PROMPT_DIFF_LIMIT: usize = 120_000;
+
 /// What a new draft is attached to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -468,6 +482,101 @@ impl PrService {
         blob_lines(&git, &blob, Language::from_path(path), &self.highlighter, &self.highlights)
     }
 
+    // ---------- assistant ----------
+
+    /// Assistant threads started on PRs of this stack.
+    pub fn assistant_threads(&self, snapshot: &StackSnapshot) -> Result<Vec<crate::assistant::Thread>> {
+        let numbers: Vec<u64> = snapshot.stack.prs.iter().map(|p| p.number).collect();
+        Ok(self
+            .cache
+            .assistant_threads(snapshot.repo_slug())?
+            .into_iter()
+            .filter(|t| t.prs.iter().any(|n| numbers.contains(n)))
+            .collect())
+    }
+
+    pub fn delete_assistant_thread(&self, id: &str) -> Result<()> {
+        self.cache.delete_assistant_thread(id)
+    }
+
+    /// Asks a question: in `thread` (a follow-up, resuming its CLI session) or in a new thread
+    /// about `lo..=hi` (and `new.selection`, if any). The CLI runs read-only in a checkout of
+    /// the range head. `on_event` receives the streamed answer; the thread (with both messages)
+    /// is stored either way. Blocking.
+    pub fn ask(
+        &self,
+        snapshot: &StackSnapshot,
+        (lo, hi): (usize, usize),
+        thread: Option<&str>,
+        new: Option<NewThread>,
+        question: &str,
+        on_event: impl FnMut(&crate::assistant::AssistantEvent),
+    ) -> Result<crate::assistant::Thread> {
+        use crate::assistant::{diff_text, first_prompt, run, worktree, Ask, Context, Message, Thread};
+        let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
+        let existing = match thread {
+            Some(id) => Some(self.cache.assistant_thread(id)?.ok_or_else(|| crate::Error::Assistant("thread not found".into()))?),
+            None => None,
+        };
+        let git = self.git(snapshot)?;
+        let head = &snapshot.heads[hi];
+        self.store.hydrate(&git, head)?;
+        let (owner, repo) = snapshot.repo_slug().split_once('/').unwrap_or((snapshot.repo_slug(), ""));
+        let cwd = worktree(&git, &self.store.worktrees_dir(owner, repo), head)?;
+
+        let (mut thread, context) = match existing {
+            Some(thread) => (thread, None),
+            None => {
+                let new = new.ok_or_else(|| crate::Error::Assistant("no thread to continue".into()))?;
+                let context = Context {
+                    range_label: range_label(snapshot, lo, hi),
+                    titles: snapshot.stack.prs[lo..=hi].iter().map(|p| format!("#{} {}", p.number, p.title)).collect(),
+                    diff: diff_text(&git, &snapshot.bases[lo], head, PROMPT_DIFF_LIMIT)?,
+                    selection: new.selection,
+                };
+                let thread = Thread {
+                    id: crate::drafts::new_id(),
+                    repo: snapshot.repo_slug().to_string(),
+                    prs: snapshot.stack.prs[lo..=hi].iter().map(|p| p.number).collect(),
+                    provider: new.provider,
+                    model: new.model,
+                    effort: new.effort,
+                    session: None,
+                    selection: new.anchor,
+                    messages: Vec::new(),
+                    created_at: now(),
+                };
+                (thread, Some(context))
+            }
+        };
+        // Follow-ups resume the CLI session, which already has the context.
+        let prompt = match (&thread.session, context) {
+            (None, Some(context)) => first_prompt(&context, question),
+            _ => question.to_string(),
+        };
+        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false });
+
+        let ask = Ask { provider: thread.provider, model: thread.model.clone(), effort: thread.effort.clone(), prompt, resume: thread.session.clone() };
+        let mut session = None;
+        let mut forward = on_event;
+        let result = run(&ask, &cwd, |event| {
+            if let crate::assistant::AssistantEvent::Session { id } = event {
+                session = Some(id.clone());
+            }
+            forward(event);
+        });
+        if thread.session.is_none() {
+            thread.session = session;
+        }
+        let (text, error) = match result {
+            Ok(text) => (text, false),
+            Err(err) => (err.to_string(), true),
+        };
+        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error });
+        self.cache.put_assistant_thread(&thread)?;
+        Ok(thread)
+    }
+
     // ---------- progress ----------
 
     pub fn viewed(&self, repo: &str) -> Result<Vec<String>> {
@@ -545,4 +654,13 @@ fn owner_of(slug: &str) -> &str {
 
 fn name_of(slug: &str) -> &str {
     slug.split_once('/').map(|(_, r)| r).unwrap_or("")
+}
+
+fn range_label(snapshot: &StackSnapshot, lo: usize, hi: usize) -> String {
+    let prs = &snapshot.stack.prs;
+    if lo == hi {
+        format!("{} #{}", snapshot.repo_slug(), prs[lo].number)
+    } else {
+        format!("{} #{}–#{} (a stack of {} PRs)", snapshot.repo_slug(), prs[lo].number, prs[hi].number, hi - lo + 1)
+    }
 }

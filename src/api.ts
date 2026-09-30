@@ -99,3 +99,75 @@ export const readFile = (stackId: string, prIndex: number, path: string) =>
 
 export const locateLine = (viewId: string, file: number, line: number) =>
   invoke<import("./comments").Location | null>("locate_line", { viewId, file, line });
+
+export type Provider = "claude" | "codex";
+
+export interface AssistantSelection {
+  path: string;
+  prLabel: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+}
+
+export interface ThreadAnchor {
+  path: string;
+  prIndex: number;
+  side: import("./comments").Side;
+  startLine: number;
+  endLine: number;
+  headStart: number | null;
+  headEnd: number | null;
+}
+
+export interface AssistantMessage {
+  role: "user" | "assistant";
+  text: string;
+  at: number;
+  error: boolean;
+}
+
+export interface AssistantThread {
+  id: string;
+  repo: string;
+  prs: number[];
+  provider: Provider;
+  model: string | null;
+  effort: string | null;
+  session: string | null;
+  selection: ThreadAnchor | null;
+  messages: AssistantMessage[];
+  createdAt: number;
+}
+
+export interface NewThread {
+  provider: Provider;
+  model: string | null;
+  effort: string | null;
+  selection: AssistantSelection | null;
+  anchor: ThreadAnchor | null;
+}
+
+export type AssistantEvent =
+  | { kind: "session"; id: string }
+  | { kind: "delta"; text: string }
+  | { kind: "text"; text: string }
+  | { kind: "error"; message: string };
+
+export function askAssistant(
+  stackId: string,
+  lo: number,
+  hi: number,
+  threadId: string | null,
+  newThread: NewThread | null,
+  question: string,
+  onEvent: (e: AssistantEvent) => void,
+) {
+  const channel = new Channel<AssistantEvent>();
+  channel.onmessage = onEvent;
+  return invoke<AssistantThread>("ask_assistant", { stackId, lo, hi, threadId, newThread, question, onEvent: channel });
+}
+
+export const listAssistantThreads = (stackId: string) => invoke<AssistantThread[]>("list_assistant_threads", { stackId });
+
+export const deleteAssistantThread = (id: string) => invoke<void>("delete_assistant_thread", { id });

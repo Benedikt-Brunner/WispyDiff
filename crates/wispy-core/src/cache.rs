@@ -71,6 +71,11 @@ impl Cache {
                  created_at INTEGER NOT NULL,
                  data TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS assistant_threads (
+                 id TEXT PRIMARY KEY,
+                 repo TEXT NOT NULL,
+                 data TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS app_state (
                  key TEXT PRIMARY KEY,
                  data TEXT NOT NULL
@@ -239,6 +244,39 @@ impl Cache {
             checkpoints.push(serde_json::from_str(&data?).map_err(Error::codec)?);
         }
         Ok(checkpoints)
+    }
+
+    pub fn put_assistant_thread(&self, thread: &crate::assistant::Thread) -> Result<()> {
+        let data = serde_json::to_string(thread).map_err(Error::codec)?;
+        self.conn().execute(
+            "INSERT OR REPLACE INTO assistant_threads (id, repo, data) VALUES (?1, ?2, ?3)",
+            params![thread.id, thread.repo, data],
+        )?;
+        Ok(())
+    }
+
+    pub fn assistant_thread(&self, id: &str) -> Result<Option<crate::assistant::Thread>> {
+        let data: Option<String> =
+            self.conn().query_row("SELECT data FROM assistant_threads WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+        data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+    }
+
+    /// A repo's assistant threads, oldest first.
+    pub fn assistant_threads(&self, repo: &str) -> Result<Vec<crate::assistant::Thread>> {
+        let conn = self.conn();
+        let mut statement = conn.prepare("SELECT data FROM assistant_threads WHERE repo = ?1")?;
+        let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
+        let mut threads: Vec<crate::assistant::Thread> = Vec::new();
+        for data in rows {
+            threads.push(serde_json::from_str(&data?).map_err(Error::codec)?);
+        }
+        threads.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(threads)
+    }
+
+    pub fn delete_assistant_thread(&self, id: &str) -> Result<()> {
+        self.conn().execute("DELETE FROM assistant_threads WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// A small app-wide JSON value (e.g. the last inbox), `None` if never stored.
