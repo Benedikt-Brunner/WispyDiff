@@ -23,6 +23,14 @@ export const click = (selector: string) =>
 export const scrollTop = () =>
   browser.execute(() => document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop);
 
+/** Whether the diff stays put over a few frames (a j/k glide has finished). */
+export const settled = () =>
+  browser.executeAsync((done: (still: boolean) => void) => {
+    const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+    const top = el.scrollTop;
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done(el.scrollTop === top))));
+  });
+
 export const waitFor = (condition: () => Promise<boolean>, timeout = 30_000) =>
   browser.waitUntil(condition, { timeout, interval: 25 });
 

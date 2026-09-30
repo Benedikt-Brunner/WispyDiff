@@ -1,3 +1,4 @@
+import { flushSync } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   acceptsLineComment,
@@ -252,6 +253,14 @@ export function DiffViewer(props: Props) {
 
   /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
    * full file has that line; flashes the row. */
+  /** The running j/k glide (see `glideToRow`); anything else that moves the view stops it. */
+  const glide = useRef<{ target: number; held: boolean; frame: number } | null>(null);
+  const stopGlide = useCallback(() => {
+    if (glide.current) cancelAnimationFrame(glide.current.frame);
+    glide.current = null;
+  }, []);
+  useEffect(() => stopGlide, [stopGlide]);
+
   const jumpToLine = useCallback(
     async (file: number, line: number) => {
       const location = await locateLine(viewId, file, line);
@@ -268,10 +277,11 @@ export function DiffViewer(props: Props) {
       }
       const offset = (segment.mode === "split" ? location.split : location.unified) ?? 0;
       const el = scrollRef.current;
+      stopGlide();
       if (el) el.scrollTop = Math.max(0, layout.rowY(segment.start + offset) - el.clientHeight / 3);
       setFlash({ file, offset });
     },
-    [viewId, summary, layout],
+    [viewId, summary, layout, stopGlide],
   );
 
   useEffect(() => {
@@ -326,7 +336,10 @@ export function DiffViewer(props: Props) {
       const keepOffset = sameView && segment.mode === place.mode;
       top = layout.rowY(segment.start + (keepOffset ? Math.min(place.offset, segment.rows - 1) : 0)) + (keepOffset ? place.delta : 0);
     }
-    if (previousView.current !== viewId) pendingMark.current = "view";
+    if (previousView.current !== viewId) {
+      pendingMark.current = "view";
+      stopGlide();
+    }
     previousView.current = viewId;
     el.scrollTop = top;
     setScrollTop(el.scrollTop);
@@ -636,8 +649,48 @@ export function DiffViewer(props: Props) {
 
   const scrollToRow = useCallback(
     (row: number) => {
+      stopGlide();
       const el = scrollRef.current;
       if (el) el.scrollTop = Math.max(0, layout.rowY(Math.max(0, row - JUMP_MARGIN)));
+    },
+    [layout, stopGlide],
+  );
+
+  /**
+   * j/k: ease to a change instead of teleporting, so a held key reads as one continuous scroll
+   * that settles on a change when released. A single hop further than a screen jumps directly.
+   */
+  const glideToRow = useCallback(
+    (row: number, held: boolean) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const top = Math.min(Math.max(0, layout.rowY(Math.max(0, row - JUMP_MARGIN))), el.scrollHeight - el.clientHeight);
+      if (glide.current) {
+        glide.current.target = top;
+        glide.current.held = held;
+        return;
+      }
+      if (!held && Math.abs(top - el.scrollTop) > el.clientHeight) {
+        el.scrollTop = top;
+        flushSync(() => setScrollTop(el.scrollTop));
+        return;
+      }
+      const state = { target: top, held, frame: 0 };
+      glide.current = state;
+      const step = () => {
+        const before = el.scrollTop;
+        const distance = state.target - before;
+        // Held: at most ~6 screens a second, so the passing code stays readable.
+        const cap = el.clientHeight / (state.held ? 10 : 3);
+        const move = Math.sign(distance) * Math.min(Math.abs(distance), cap, Math.max(Math.abs(distance) * 0.35, 6));
+        el.scrollTop = before + move;
+        // Render the rows for the new position before this frame paints, not a frame later.
+        flushSync(() => setScrollTop(el.scrollTop));
+        // Done when there, or when the browser won't scroll any further.
+        if (Math.abs(distance) < 1 || el.scrollTop === before) glide.current = null;
+        else state.frame = requestAnimationFrame(step);
+      };
+      state.frame = requestAnimationFrame(step);
     },
     [layout],
   );
@@ -645,12 +698,13 @@ export function DiffViewer(props: Props) {
   // Record the anchor before any layout change triggered from here, then flag the perf mark.
   const changeLayout = useCallback(
     (apply: () => void) => {
+      stopGlide();
       onScroll();
       pendingMark.current = "layout";
       mark("toggle:start");
       apply();
     },
-    [onScroll],
+    [onScroll, stopGlide],
   );
 
   const toggleFileMode = useCallback(
@@ -691,18 +745,23 @@ export function DiffViewer(props: Props) {
       if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
       const el = scrollRef.current;
       if (!el) return;
-      const anchorRow = layout.rowAt(el.scrollTop) + JUMP_MARGIN;
+      // While gliding, j/k continue from where the glide is heading.
+      const heading = glide.current?.target ?? el.scrollTop;
+      const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
       const here = layout.segmentAt(Math.min(layout.totalRows - 1, layout.rowAt(el.scrollTop) + 1));
       const starts = layout.segments.map((s) => s.start);
       const changes = layout.changeRows(summary);
       let target: number | undefined;
       switch (e.key) {
         case "j":
-          target = changes.find((r) => r > anchorRow);
-          break;
-        case "k":
-          target = findLast(changes, (r) => r < anchorRow);
-          break;
+        case "k": {
+          e.preventDefault();
+          // A held key doesn't run more than a screen ahead of what's shown.
+          if (e.repeat && Math.abs(heading - el.scrollTop) > el.clientHeight) return;
+          const change = e.key === "j" ? changes.find((r) => r > anchorRow) : findLast(changes, (r) => r < anchorRow);
+          if (change !== undefined) glideToRow(change, e.repeat);
+          return;
+        }
         case "n":
           target = starts.find((r) => r > anchorRow);
           break;
@@ -764,7 +823,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
+  }, [keyboardEnabled, layout, summary, scrollToRow, glideToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -785,6 +844,7 @@ export function DiffViewer(props: Props) {
           className="diff-scroll"
           ref={scrollRef}
           onScroll={onScroll}
+          onWheel={stopGlide}
           data-testid="diff-scroll"
           onMouseMove={(e) => (lastPointer.current = { x: e.clientX, y: e.clientY })}
           onClick={(e) => {

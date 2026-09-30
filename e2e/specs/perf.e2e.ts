@@ -59,6 +59,51 @@ async function scrollFrames(pxPerFrame: number, frames: number) {
   );
 }
 
+/**
+ * Holds `key` like the OS key repeat does (a keydown every 33 ms), sampling every frame: a frame
+ * is blank when part of the viewport shows no rows or rows still loading. `maxStep` is the largest
+ * move between two frames, in screens (a held key should scroll, not teleport).
+ */
+async function holdKey(key: string, presses: number) {
+  return browser.executeAsync(
+    (key: string, presses: number, done: (r: { intervals: number[]; blank: number; moved: number; maxStep: number }) => void) => {
+      const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+      const startTop = el.scrollTop;
+      const intervals: number[] = [];
+      let blank = 0;
+      let last = performance.now();
+      let lastTop = el.scrollTop;
+      let maxStep = 0;
+      let sent = 0;
+      const timer = setInterval(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key, repeat: sent > 0, bubbles: true }));
+        if (++sent >= presses) clearInterval(timer);
+      }, 33);
+      const isBlank = () => {
+        const box = el.getBoundingClientRect();
+        for (let i = 1; i < 8; i++) {
+          const y = box.top + (box.height * i) / 8;
+          const hit = document.elementFromPoint(box.left + box.width / 2, y)?.closest(".row, .insert");
+          if (!hit || hit.classList.contains("row-loading")) return true;
+        }
+        return false;
+      };
+      const step = (now: number) => {
+        intervals.push(now - last);
+        last = now;
+        if (isBlank()) blank++;
+        maxStep = Math.max(maxStep, Math.abs(el.scrollTop - lastTop) / el.clientHeight);
+        lastTop = el.scrollTop;
+        if (sent < presses || intervals.length < 30) requestAnimationFrame(step);
+        else done({ intervals: intervals.slice(1), blank, moved: el.scrollTop - startTop, maxStep });
+      };
+      requestAnimationFrame(step);
+    },
+    key,
+    presses,
+  );
+}
+
 const percentile = (values: number[], p: number) => {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
@@ -126,6 +171,23 @@ describe("performance budgets (synthetic worst case)", () => {
     for (let i = 0; i < 40; i++) await browser.keys("n");
     await waitFor(async () => !(await exists(".row-loading")), 1000);
     console.log(`[perf] 40 file jumps settled in ${Date.now() - start} ms`);
+  });
+
+  it("holds j/k to move through hunks without blank frames", async () => {
+    await openViaPalette(WORST_CASE);
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop = 0;
+    });
+    await waitFor(async () => !(await exists(".row-loading")), 2000);
+    const down = await holdKey("j", 60);
+    report("hold j", down.intervals, down.blank);
+    const up = await holdKey("k", 60);
+    report("hold k", up.intervals, up.blank);
+    console.log(`[perf] hold j/k: moved ${down.moved} / ${up.moved} px, largest step ${down.maxStep.toFixed(2)} / ${up.maxStep.toFixed(2)} screens`);
+    expect(down.moved).toBeGreaterThan(0);
+    expect(up.moved).toBeLessThan(0);
+    // Never a jump: a tap moves at most a third of a screen per frame, a held key a tenth.
+    expect(Math.max(down.maxStep, up.maxStep)).toBeLessThanOrEqual(0.34);
   });
 
   it(`switches the PR range in < ${BUDGET.rangeSwitchMs} ms once the stack is precomputed`, async () => {
