@@ -140,3 +140,14 @@ pub fn locate(view: &DiffView, top: u8, anchor: &Anchor) -> Option<Location> {
         .flatten();
     (unified.is_some() || split.is_some()).then_some(Location { file: file as u32, unified: unified.map(|u| u as u32), split })
 }
+
+/// Where head line `line` of file `file` is in a view (for jumping to a search hit).
+pub fn locate_new_line(view: &DiffView, file: usize, line: u32) -> Option<Location> {
+    let summary = view.summary.files.get(file)?;
+    let rows = file_slice(view, file);
+    let unified = rows.iter().position(|r| matches!(r.k, row_kind::ADDED | row_kind::CONTEXT) && r.n == Some(line));
+    let split = (summary.split_rows > 0)
+        .then(|| align(rows, summary.old_lines, summary.new_lines).pairs.iter().position(|p| p.n == Some(line)).map(|i| i as u32 + 1))
+        .flatten();
+    Some(Location { file: file as u32, unified: unified.map(|u| u as u32), split })
+}

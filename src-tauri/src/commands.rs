@@ -120,6 +120,7 @@ pub async fn select_range(
     lo: usize,
     hi: usize,
     ignore_whitespace: bool,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<OpenedRange, String> {
     let snapshot = state.stack(&stack_id).ok_or_else(|| format!("stack {stack_id} is no longer open"))?;
@@ -134,6 +135,7 @@ pub async fn select_range(
             view
         }
     };
+    prewarm_index(&app, &id);
     Ok(OpenedRange { view_id: id, range: Range { lo, hi }, ignore_whitespace, summary: view.summary.clone(), since: None })
 }
 
@@ -144,6 +146,7 @@ pub async fn select_since(
     lo: usize,
     hi: usize,
     checkpoint_id: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<OpenedRange, String> {
     let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
@@ -163,6 +166,7 @@ pub async fn select_since(
     .await?;
     let id = format!("{}:since:{}", view_id(&stack_id, lo, hi, false), checkpoint.id);
     state.register_view(&id, &stack_id, hi, view.clone());
+    prewarm_index(&app, &id);
     Ok(OpenedRange {
         view_id: id,
         range: Range { lo, hi },
@@ -380,6 +384,71 @@ pub async fn submit_review(
     Ok(outcome)
 }
 
+// ---------- code intelligence ----------
+
+/// Builds a view's symbol index in the background so the first usages lookup is instant.
+pub fn prewarm_index(app: &AppHandle, view_id: &str) {
+    let (app, view_id) = (app.clone(), view_id.to_string());
+    std::thread::spawn(move || {
+        // Let the view's first paint have the CPU.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = app.state::<AppState>().symbol_index(&view_id);
+    });
+}
+
+#[tauri::command]
+pub async fn usages(view_id: String, name: String, app: AppHandle) -> Result<wispy_core::symbols::Usages, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = app.state::<AppState>().symbol_index(&view_id)?;
+        Ok(index.usages(&name))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GrepEvent {
+    Hits { hits: Vec<wispy_core::service::GrepHit> },
+    Done { total: usize },
+    Failed { message: String },
+}
+
+/// Streams whole-repo `git grep` hits on the head of a stack PR.
+#[tauri::command]
+pub async fn grep(
+    stack_id: String,
+    pr_index: usize,
+    query: String,
+    whole_word: bool,
+    on_event: tauri::ipc::Channel<GrepEvent>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.grep(&snapshot, pr_index, &query, whole_word, |hits| on_event.send(GrepEvent::Hits { hits }).is_ok());
+        let _ = on_event.send(match result {
+            Ok(total) => GrepEvent::Done { total },
+            Err(err) => GrepEvent::Failed { message: err.to_string() },
+        });
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// A whole file on a stack PR's head, highlighted (for files outside the diff).
+#[tauri::command]
+pub async fn read_file(stack_id: String, pr_index: usize, path: String, state: State<'_, AppState>) -> Result<Vec<Vec<wispy_core::highlight::Seg>>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.read_file(&snapshot, pr_index, &path).map(|lines| lines.as_ref().clone())).await
+}
+
+#[tauri::command]
+pub fn locate_line(view_id: String, file: usize, line: u32, state: State<'_, AppState>) -> Result<Option<Location>, String> {
+    let view = state.view(&view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
+    Ok(wispy_core::anchors::locate_new_line(&view, file, line))
+}
+
 // ---------- inbox ----------
 
 /// The last known inbox (instant, offline-friendly); fresh entries arrive as `inbox-updated`.
@@ -427,6 +496,7 @@ fn open_stack(app: &AppHandle, state: &AppState, snapshot: Arc<StackSnapshot>, v
     let focus = snapshot.stack.focus;
     let id = view_id(&stack_id, focus, focus, false);
     state.register_view(&id, &stack_id, focus, view.clone());
+    prewarm_index(app, &id);
     spawn_precompute(app.clone(), stack_id.clone(), snapshot.clone());
     OpenedStack {
         stack_id,

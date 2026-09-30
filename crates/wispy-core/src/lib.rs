@@ -21,6 +21,7 @@ pub mod review;
 pub mod service;
 pub mod split;
 pub mod stack;
+pub mod symbols;
 pub mod token;
 
 pub use error::{Error, Result};

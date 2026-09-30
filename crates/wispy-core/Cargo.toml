@@ -20,6 +20,8 @@ tree-sitter-javascript = "0.25"
 tree-sitter-json = "0.24"
 tree-sitter-yaml = "0.7"
 tree-sitter-sequel = "0.3"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

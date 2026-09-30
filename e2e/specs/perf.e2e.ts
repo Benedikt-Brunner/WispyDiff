@@ -1,10 +1,12 @@
-import { click, clickChip, count, exists, goHome, openViaPalette, waitFor, waitForRanges } from "./helpers";
+import { click, clickChip, cmdClickWord, count, exists, goHome, openViaPalette, submitInput, waitFor, waitForRanges } from "./helpers";
 
 /** Binding budgets from SPEC.md. */
 const BUDGET = {
   cachedOpenMs: 150,
   rangeSwitchMs: 100,
   toggleMs: 100,
+  usagesMs: 50,
+  grepFirstHitMs: 300,
   frameP95Ms: 20, // 60 fps with a little jitter tolerance
   longFrameShare: 0.02, // frames > 33 ms
   blankFrameShare: 0.05, // frames showing unloaded rows
@@ -178,7 +180,29 @@ describe("performance budgets (synthetic worst case)", () => {
     expect(median).toBeLessThan(BUDGET.toggleMs);
   });
 
-  // Budgets whose features arrive in later milestones.
-  it.skip("finds usages in < 50 ms (milestone 7)");
-  it.skip("streams first git grep hits in < 300 ms (milestone 7)");
+  it(`finds usages of a symbol in < ${BUDGET.usagesMs} ms`, async () => {
+    await openViaPalette(WORST_CASE);
+    const samples: number[] = [];
+    for (const word of ["compute", "result", "value", "max", "compute"]) {
+      await cmdClickWord(".row .code span", word);
+      samples.push(await waitForMark("usages:start", "usages:visible"));
+    }
+    const median = percentile(samples, 0.5);
+    console.log(`[perf] usages: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
+    expect(median).toBeLessThan(BUDGET.usagesMs);
+  });
+
+  it(`streams the first git grep hits in < ${BUDGET.grepFirstHitMs} ms`, async () => {
+    // The first search of a head downloads its blobs; the budget is for searching.
+    await submitInput(".panel-input", "endblock");
+    await waitFor(async () => (await count('[data-testid="grep-results"] .panel-hit')) > 0, 60_000);
+    const samples: number[] = [];
+    for (const query of ["computed", "threshold", "helper", "endblock", "strlen"]) {
+      await submitInput(".panel-input", query);
+      samples.push(await waitForMark("grep:start", "grep:first-hit"));
+    }
+    const median = percentile(samples, 0.5);
+    console.log(`[perf] grep first hit: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
+    expect(median).toBeLessThan(BUDGET.grepFirstHitMs);
+  });
 });

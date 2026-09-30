@@ -60,7 +60,8 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
             e.preventDefault();
             onCancel();
           }
-          e.stopPropagation();
+          // Plain keys stay in the editor; ⌘ shortcuts (⌘K, ⌘I, …) still reach the app.
+          if (!e.metaKey) e.stopPropagation();
         }}
       />
       <div className="card-actions">

@@ -71,3 +71,35 @@ fn detects_languages_from_paths() {
     assert_eq!(Language::from_path("Makefile"), None);
     assert_eq!(Language::from_path("a.b/README"), None);
 }
+
+#[test]
+fn highlights_vue_script_and_style_blocks_in_their_own_languages() {
+    let highlighter = Highlighter::new();
+    let source = "<template>\n  <div class=\"bin\">{{ label }}</div>\n</template>\n<script setup lang=\"ts\">\nconst count: number = 42;\n</script>\n<style>\n.bin { color: red; }\n</style>\n";
+    let lines = highlighter.highlight(Some(Language::Vue), source);
+    assert_eq!(lines.len(), 9);
+    assert_eq!(class_of(&highlighter, Language::Vue, source, 4, "const"), "keyword");
+    assert_eq!(class_of(&highlighter, Language::Vue, source, 4, "42"), "number");
+    assert_eq!(class_of(&highlighter, Language::Vue, source, 0, "template"), "tag");
+    assert!(lines[7].iter().any(|(class, _)| *class != 0), "CSS highlighted: {:?}", lines[7]);
+}
+
+#[test]
+fn highlights_twig_tags_filters_strings_and_comments_over_html() {
+    let highlighter = Highlighter::new();
+    let source = "{% block content %}\n<p class=\"x\">{{ order.number|default('n/a') }}</p>\n{# note #}\n{% endblock %}\n";
+    assert_eq!(class_of(&highlighter, Language::Twig, source, 0, "block"), "keyword");
+    assert_eq!(class_of(&highlighter, Language::Twig, source, 1, "default"), "function");
+    assert_eq!(class_of(&highlighter, Language::Twig, source, 1, "'n/a'"), "string");
+    assert_eq!(class_of(&highlighter, Language::Twig, source, 1, "number"), "property");
+    assert_eq!(class_of(&highlighter, Language::Twig, source, 2, "{# note #}"), "comment");
+    let rebuilt: String = highlighter.highlight(Some(Language::Twig), source).iter().map(|l| l.iter().map(|s| s.1.as_str()).collect::<String>() + "\n").collect();
+    assert_eq!(rebuilt, source, "overlay keeps the text intact");
+}
+
+#[test]
+fn detects_templates_and_styles() {
+    assert_eq!(Language::from_path("views/page/index.html.twig"), Some(Language::Twig));
+    assert_eq!(Language::from_path("src/component/Bin.vue"), Some(Language::Vue));
+    assert_eq!(Language::from_path("app.scss"), Some(Language::Css));
+}

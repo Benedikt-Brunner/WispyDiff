@@ -126,4 +126,35 @@ impl RepoStore {
             .collect::<Result<Vec<_>>>()?;
         Ok(StackPoints { heads, bases })
     }
+
+    /// Downloads every blob of `commit`'s tree that the partial clone doesn't have yet, in one
+    /// batch (whole-repo search needs them; git would otherwise fetch them one by one).
+    /// Returns how many were fetched.
+    pub fn hydrate(&self, git: &Git, commit: &str) -> Result<usize> {
+        let listing = git.run_string(&["rev-list", "--objects", "--missing=print", "--no-walk", commit])?;
+        let missing: Vec<&str> = listing.lines().filter_map(|l| l.strip_prefix('?')).collect();
+        if missing.is_empty() {
+            return Ok(0);
+        }
+        let mut input = missing.join("\n");
+        input.push('\n');
+        let lock = self.repo_lock(&git.git_dir().to_path_buf());
+        let _writing = lock.lock().unwrap_or_else(|p| p.into_inner());
+        git.run_with_stdin(
+            &[
+                "-c",
+                "fetch.negotiationAlgorithm=noop",
+                "fetch",
+                "--quiet",
+                "origin",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--recurse-submodules=no",
+                "--filter=blob:none",
+                "--stdin",
+            ],
+            input.as_bytes(),
+        )?;
+        Ok(missing.len())
+    }
 }

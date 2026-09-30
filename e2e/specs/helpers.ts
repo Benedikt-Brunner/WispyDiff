@@ -157,3 +157,34 @@ export function originWrite(path: string, content: string) {
   mkdirSync(full.slice(0, full.lastIndexOf("/")), { recursive: true });
   writeFileSync(full, content);
 }
+
+/** ⌘-clicks the first code token matching `selector` whose text is exactly `word`. */
+export const cmdClickWord = (selector: string, word: string) =>
+  browser.execute(
+    (s: string, w: string) => {
+      const span = [...document.querySelectorAll<HTMLElement>(s)].find((el) => el.textContent === w && el.closest(".code"));
+      if (!span) return false;
+      span.scrollIntoView({ block: "center" });
+      const rect = span.getBoundingClientRect();
+      span.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, metaKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }),
+      );
+      return true;
+    },
+    selector,
+    word,
+  );
+
+/** Sets an input's value through React's input path and presses Enter in it. */
+export const submitInput = (selector: string, value: string) =>
+  browser.execute(
+    (s: string, v: string) => {
+      const input = document.querySelector<HTMLInputElement>(s)!;
+      input.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    },
+    selector,
+    value,
+  );
