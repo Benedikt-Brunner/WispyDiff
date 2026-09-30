@@ -449,6 +449,42 @@ pub fn locate_line(view_id: String, file: usize, line: u32, state: State<'_, App
     Ok(wispy_core::anchors::locate_new_line(&view, file, line))
 }
 
+// ---------- assistant ----------
+
+/// Asks the assistant (a follow-up in `thread_id`, or a new thread), streaming the answer.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn ask_assistant(
+    stack_id: String,
+    lo: usize,
+    hi: usize,
+    thread_id: Option<String>,
+    new_thread: Option<wispy_core::service::NewThread>,
+    question: String,
+    on_event: tauri::ipc::Channel<wispy_core::assistant::AssistantEvent>,
+    state: State<'_, AppState>,
+) -> Result<wispy_core::assistant::Thread, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || {
+        service.ask(&snapshot, (lo, hi), thread_id.as_deref(), new_thread, &question, |event| {
+            let _ = on_event.send(event.clone());
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_assistant_threads(stack_id: String, state: State<'_, AppState>) -> Result<Vec<wispy_core::assistant::Thread>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.assistant_threads(&snapshot)).await
+}
+
+#[tauri::command]
+pub async fn delete_assistant_thread(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let service = state.service()?;
+    blocking(move || service.delete_assistant_thread(&id)).await
+}
+
 // ---------- inbox ----------
 
 /// The last known inbox (instant, offline-friendly); fresh entries arrive as `inbox-updated`.

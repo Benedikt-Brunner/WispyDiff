@@ -44,6 +44,11 @@ impl RepoStore {
         self.repos.lock().unwrap_or_else(|p| p.into_inner()).entry(dir.clone()).or_default().clone()
     }
 
+    /// Where assistant checkouts of a repository live (next to the clones).
+    pub fn worktrees_dir(&self, owner: &str, repo: &str) -> PathBuf {
+        self.root.parent().unwrap_or(&self.root).join("worktrees").join(owner).join(repo)
+    }
+
     pub fn repo_dir(&self, owner: &str, repo: &str) -> PathBuf {
         self.root.join(owner).join(format!("{repo}.git"))
     }

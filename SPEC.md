@@ -56,10 +56,10 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - Mechanics: line numbers are tracked per PR (the attribution walk records each line's number in its PR's own diff), so a comment on a lower PR's line in a combined view lands on that PR. Line comments go in the review; file comments (GitHub has none inside reviews) and replies are posted individually. Everything sent carries a hidden `<!-- wispydiff:… -->` marker and each draft's status is persisted around its request; after a network failure the next submit looks for the marker on GitHub instead of resending. Submitting first re-fetches the stack, so drafts are planned against the PRs' current heads.
 
 ## Assistant
-- `a` / button opens a prompt; context is **the selected range or exactly the selected lines** (+ path + PR label).
+- `a` opens the side panel; context is **the selected range, or exactly the selected lines** (select code with the mouse first) + path + PR label + their line numbers in that PR. The first prompt carries the range's diff (truncated at ~120 KB; the CLI can read the rest from the checkout); follow-ups resume the CLI session and send only the question.
 - **Claude Code** (`claude -p --output-format stream-json --model --effort`) or **Codex** (`codex exec --json -m -c model_reasoning_effort=…`). Selection remembered globally, overridable per question.
-- Runs in a **read-only worktree** at the range head.
-- **Side-panel resumable threads** with gutter markers for selection threads, local history per PR, "turn answer into draft comment". Offline: read-only.
+- Runs in a **read-only worktree** at the range head (a `git worktree` of the app's clone, blobs fetched in one batch first). Read-only is enforced by the CLIs: Claude with only `Read,Grep,Glob` allowed and `--permission-mode dontAsk`; Codex with `sandbox_mode="read-only"`.
+- **Side-panel resumable threads** with gutter markers for selection threads (click to reopen), local history per stack, "turn answer into draft comment" (a line draft on the selected lines, or the top PR's review-summary draft for whole-range threads). CLI failures (auth, unavailable model) are shown in the thread. Offline: read-only.
 
 ## Testing
 - **Rust core**: tests against real throwaway git repos and a fake local GitHub HTTP server. Services under test are constructed directly in each test, never via factory methods.

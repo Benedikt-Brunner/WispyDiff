@@ -10,3 +10,4 @@ src-tauri/gen/
 
 # Apps pin their dependency graph (overrides a global *.lock ignore).
 !Cargo.lock
+__pycache__/

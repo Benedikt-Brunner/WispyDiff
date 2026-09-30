@@ -9,9 +9,15 @@ import {
   readFile,
   updateDraft,
   usages as fetchUsages,
+  askAssistant,
+  deleteAssistantThread,
+  listAssistantThreads,
+  type AssistantThread,
   type GrepHit,
+  type Provider,
   type Usages,
 } from "./api";
+import { AssistantPanel, type AskContext } from "./AssistantPanel";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileView } from "./FileView";
 import {
@@ -117,6 +123,16 @@ export function DiffViewer(props: Props) {
   const [fileView, setFileView] = useState<{ path: string; line: number; lines: Seg[][] | null; error: string | null } | null>(null);
   const [flash, setFlash] = useState<{ file: number; offset: number } | null>(null);
   const pendingJump = useRef<{ file: number; line: number } | null>(null);
+
+  // ---------- assistant ----------
+  const [assistant, setAssistant] = useState<{ context: AskContext; activeId: string | null; note: string | null } | null>(null);
+  const [assistantThreads, setAssistantThreads] = useState<AssistantThread[]>([]);
+  const [pendingAnswer, setPendingAnswer] = useState<{ threadId: string | null; question: string; text: string } | null>(null);
+  useEffect(() => {
+    listAssistantThreads(stackId)
+      .then(setAssistantThreads)
+      .catch(() => undefined);
+  }, [stackId]);
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
   const grepRun = useRef(0);
 
@@ -125,6 +141,7 @@ export function DiffViewer(props: Props) {
       const clean = name.replace(/^\$/, "");
       if (!clean) return;
       mark("usages:start");
+      setAssistant(null);
       setPanel({ kind: "usages", name: clean });
       setGrepHits([]);
       setGrepStatus("idle");
@@ -409,6 +426,115 @@ export function DiffViewer(props: Props) {
     [targetAt, openComposer],
   );
 
+  const rangeLabel = lo === hi ? `#${prs[lo].number}` : `#${prs[lo].number}–#${prs[hi].number}`;
+
+  /** The selected code (a native text selection across rows) as assistant context. */
+  const selectionContext = useCallback((): AskContext => {
+    const none: AskContext = { selection: null, anchor: null, rangeLabel };
+    const selected = window.getSelection();
+    if (!selected || selected.isCollapsed) return none;
+    const rowOf = (node: Node | null) => (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>(".row[data-file]") ?? null;
+    const [a, b] = [rowOf(selected.anchorNode), rowOf(selected.focusNode)];
+    if (!a || !b || a.dataset.file !== b.dataset.file || a.dataset.mode !== b.dataset.mode) return none;
+    const file = Number(a.dataset.file);
+    const mode = a.dataset.mode as "unified" | "split";
+    const [from, to] = [Number(a.dataset.offset), Number(b.dataset.offset)].sort((x, y) => x - y);
+    const first = targetAt(file, mode, from, "new") ?? targetAt(file, mode, from, "old");
+    const last = targetAt(file, mode, to, "new") ?? targetAt(file, mode, to, "old");
+    if (!first || !last) return none;
+    const lines: string[] = [];
+    const heads: number[] = [];
+    for (let offset = from; offset <= to; offset++) {
+      if (mode === "unified") {
+        const row = store.unified(file, offset);
+        if (!row || row.k === RowKind.Hunk || row.k === RowKind.File) continue;
+        const sign = row.k === RowKind.Added ? "+" : row.k === RowKind.Deleted ? "-" : " ";
+        lines.push(sign + row.s.map((seg) => seg[1]).join(""));
+        if (row.n !== null) heads.push(row.n);
+      } else {
+        const row = store.split(file, offset);
+        if (!row) continue;
+        lines.push((row.nk === RowKind.Filler ? row.os : row.ns).map((seg) => seg[1]).join(""));
+        if (row.n !== null) heads.push(row.n);
+      }
+    }
+    const same = first.anchor.pr === last.anchor.pr && first.anchor.side === last.anchor.side && first.anchor.path === last.anchor.path;
+    const start = same ? Math.min(first.anchor.line, last.anchor.line) : last.anchor.line;
+    const end = same ? Math.max(first.anchor.line, last.anchor.line) : last.anchor.line;
+    const prLabel = `#${prs[last.anchor.pr].number}`;
+    return {
+      rangeLabel,
+      selection: { path: summary.files[file].path, prLabel, startLine: start, endLine: end, text: lines.join("\n") },
+      anchor: {
+        path: last.anchor.path,
+        prIndex: last.anchor.pr,
+        side: last.anchor.side,
+        startLine: start,
+        endLine: end,
+        headStart: heads.length ? Math.min(...heads) : null,
+        headEnd: heads.length ? Math.max(...heads) : null,
+      },
+    };
+  }, [rangeLabel, targetAt, store, summary, prs]);
+
+  const openAssistant = useCallback(
+    (threadId: string | null = null) => {
+      setPanel(null);
+      const context = threadId ? { selection: null, anchor: null, rangeLabel } : selectionContext();
+      setAssistant({ context, activeId: threadId, note: null });
+    },
+    [selectionContext, rangeLabel],
+  );
+
+  const ask = useCallback(
+    (question: string, choice: { provider: Provider; model: string | null; effort: string | null }) => {
+      if (!assistant) return;
+      const threadId = assistant.activeId;
+      setPendingAnswer({ threadId, question, text: "" });
+      const newThread = threadId ? null : { ...choice, selection: assistant.context.selection, anchor: assistant.context.anchor };
+      askAssistant(stackId, lo, hi, threadId, newThread, question, (event) => {
+        if (event.kind === "delta") setPendingAnswer((p) => p && { ...p, text: p.text + event.text });
+        else if (event.kind === "text") setPendingAnswer((p) => p && { ...p, text: event.text });
+      })
+        .then((thread) => {
+          setAssistantThreads((list) => [...list.filter((t) => t.id !== thread.id), thread]);
+          setAssistant((a) => a && { ...a, activeId: thread.id });
+        })
+        .catch((e) => setAssistant((a) => a && { ...a, note: String(e) }))
+        .finally(() => setPendingAnswer(null));
+    },
+    [assistant, stackId, lo, hi],
+  );
+
+  const answerToDraft = useCallback(
+    async (thread: AssistantThread, text: string) => {
+      const anchor = thread.selection;
+      await createDraft(
+        stackId,
+        anchor
+          ? { prIndex: anchor.prIndex, kind: "line", path: anchor.path, side: anchor.side, line: anchor.endLine, startLine: anchor.startLine, body: text, threadId: null, replyTo: null }
+          : { prIndex: hi, kind: "summary", path: null, side: null, line: null, startLine: null, body: text, threadId: null, replyTo: null },
+      );
+      onDraftsChanged();
+      setAssistant((a) => a && { ...a, note: anchor ? "Saved as a draft comment on those lines" : `Saved as the review summary draft for #${prs[hi].number}` });
+    },
+    [stackId, hi, prs, onDraftsChanged],
+  );
+
+  /** Head lines of the files in view that assistant threads were asked about (gutter markers). */
+  const markers = useMemo(() => {
+    const byPath = new Map<string, { from: number; to: number; id: string }[]>();
+    for (const thread of assistantThreads) {
+      const a = thread.selection;
+      if (!a || a.headStart === null || a.headEnd === null) continue;
+      const path = summary.files.find((f) => f.path === a.path || f.pr_paths.some(([, p]) => p === a.path))?.path;
+      if (path) byPath.set(path, [...(byPath.get(path) ?? []), { from: a.headStart, to: a.headEnd, id: thread.id }]);
+    }
+    return byPath;
+  }, [assistantThreads, summary]);
+  const markerAt = (path: string, line: number | null) =>
+    line === null ? undefined : markers.get(path)?.find((m) => line >= m.from && line <= m.to)?.id;
+
   // Load what's visible, per file segment.
   for (let row = first; row < last; ) {
     const segment = layout.segmentAt(row);
@@ -437,7 +563,18 @@ export function DiffViewer(props: Props) {
       const split = store.split(segment.file, offset);
       if (!split) visibleLoaded = false;
       rendered.push(
-        <SplitRowView key={key} y={y} row={split} showAttribution={showAttribution} selected={selected} file={segment.file} offset={offset} onGutter={onGutter} />,
+        <SplitRowView
+          key={key}
+          y={y}
+          row={split}
+          showAttribution={showAttribution}
+          selected={selected}
+          file={segment.file}
+          offset={offset}
+          onGutter={onGutter}
+          marker={split ? markerAt(file.path, split.n) : undefined}
+          onMarker={openAssistant}
+        />,
       );
     } else {
       const unified = store.unified(segment.file, offset);
@@ -455,6 +592,8 @@ export function DiffViewer(props: Props) {
           file={segment.file}
           offset={offset}
           onGutter={onGutter}
+          marker={unified ? markerAt(file.path, unified.n) : undefined}
+          onMarker={openAssistant}
         />,
       );
     }
@@ -593,11 +732,19 @@ export function DiffViewer(props: Props) {
           break;
         }
         case "/":
+          setAssistant(null);
           setPanel({ kind: "search", query: "" });
           break;
+        case "a":
+          openAssistant();
+          break;
         case "Escape":
-          if (!panel) return;
-          setPanel(null);
+          // Innermost first: an open comment box, then the side panels.
+          if (composer) setComposer(null);
+          else if (panel || assistant) {
+            setPanel(null);
+            setAssistant(null);
+          } else return;
           break;
         case "v": {
           const file = summary.files[here.file];
@@ -617,7 +764,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel]);
+  }, [keyboardEnabled, layout, summary, scrollToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -673,6 +820,24 @@ export function DiffViewer(props: Props) {
           onSearch={search}
           onJump={jump}
           onClose={() => setPanel(null)}
+        />
+      )}
+      {assistant && (
+        <AssistantPanel
+          threads={assistantThreads}
+          activeId={assistant.activeId}
+          context={assistant.context}
+          pending={pendingAnswer}
+          note={assistant.note}
+          onSelect={(id) => setAssistant((a) => a && { ...a, activeId: id, note: null })}
+          onAsk={ask}
+          onDraft={(thread, text) => void answerToDraft(thread, text)}
+          onDelete={(id) => {
+            void deleteAssistantThread(id);
+            setAssistantThreads((list) => list.filter((t) => t.id !== id));
+            setAssistant((a) => a && { ...a, activeId: null });
+          }}
+          onClose={() => setAssistant(null)}
         />
       )}
       {fileView && <FileView {...fileView} onClose={() => setFileView(null)} />}
@@ -757,6 +922,9 @@ interface RowProps {
   file: number;
   offset: number;
   onGutter: GutterHandler;
+  /** An assistant thread was asked about this line. */
+  marker?: string;
+  onMarker: (threadId: string) => void;
 }
 
 const gutterEvents = (onGutter: GutterHandler, file: number, mode: "unified" | "split", offset: number, side: "old" | "new" | null) => ({
@@ -768,7 +936,7 @@ const gutterEvents = (onGutter: GutterHandler, file: number, mode: "unified" | "
   onMouseUp: () => onGutter("up", file, mode, offset, side),
 });
 
-const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag, selected, file, offset, onGutter }: RowProps) {
+const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag, selected, file, offset, onGutter, marker, onMarker }: RowProps) {
   const style = at(y);
   if (!row) return <div className="row row-loading" style={style} />;
   switch (row.k) {
@@ -798,8 +966,12 @@ const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag, selec
           style={style}
           title={attributed ? lineHistory(row, prs) : undefined}
           onMouseEnter={() => onGutter("hover", file, "unified", offset, null)}
+          data-file={file}
+          data-mode="unified"
+          data-offset={offset}
         >
           <span className="gutter commentable" {...gutterEvents(onGutter, file, "unified", offset, null)}>
+            {marker && <AssistantMark id={marker} onOpen={onMarker} />}
             <span className="ln">{row.o ?? ""}</span>
             <span className="ln">{row.n ?? ""}</span>
             <span className="sign">{kind === "add" ? "+" : kind === "del" ? "−" : ""}</span>
@@ -825,9 +997,11 @@ interface SplitProps {
   file: number;
   offset: number;
   onGutter: GutterHandler;
+  marker?: string;
+  onMarker: (threadId: string) => void;
 }
 
-const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selected, file, offset, onGutter }: SplitProps) {
+const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selected, file, offset, onGutter, marker, onMarker }: SplitProps) {
   if (!row) return <div className="row row-loading" style={at(y)} />;
   const side = (no: number | null, kind: number, segs: Seg[], pr: number | null, left: boolean) => {
     const cls = sideClass(kind);
@@ -842,6 +1016,7 @@ const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selec
           {...(cls === "filler" ? {} : gutterEvents(onGutter, file, "split", offset, left ? "old" : "new"))}
           onMouseEnter={() => cls !== "filler" && onGutter("enter", file, "split", offset, left ? "old" : "new")}
         >
+          {!left && marker && <AssistantMark id={marker} onOpen={onMarker} />}
           <span className="ln">{no ?? ""}</span>
         </span>
         <span className="code">
@@ -855,6 +1030,9 @@ const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selec
       className={`row row-split${selected ? " selected" : ""}`}
       style={{ transform: `translate(var(--split-x, 0px), ${y}px)` }}
       onMouseEnter={() => onGutter("hover", file, "split", offset, "new")}
+      data-file={file}
+      data-mode="split"
+      data-offset={offset}
     >
       {side(row.o, row.ok, row.os, row.oa, true)}
       {side(row.n, row.nk, row.ns, row.na, false)}
@@ -907,6 +1085,20 @@ function FileList({ files, isViewed, segments, current, showPrs, onSelect }: Fil
         ))}
       </ul>
     </nav>
+  );
+}
+
+function AssistantMark({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
+  return (
+    <span
+      className="assistant-mark"
+      title="Assistant conversation about these lines"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(id);
+      }}
+    />
   );
 }
 
