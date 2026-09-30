@@ -23,20 +23,22 @@ export const scrollTop = () =>
 export const waitFor = (condition: () => Promise<boolean>, timeout = 30_000) =>
   browser.waitUntil(condition, { timeout, interval: 25 });
 
-/** Types into the palette like a user (opening it with ⌘K if needed) and presses Enter. */
+/**
+ * Enters `value` in the palette (opening it with ⌘K if needed) and presses Enter. The value is
+ * set through React's input path: the embedded driver drops spaces from typed text.
+ */
 export async function typeInPalette(value: string) {
   if (!(await exists(".palette-input"))) await browser.keys(["Meta", "k"]);
   await waitFor(() =>
-    browser.execute(() => {
+    browser.execute((v: string) => {
       const input = document.querySelector<HTMLInputElement>(".palette-input");
       if (!input || input.disabled) return false;
       input.focus();
-      input.select();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
       return true;
-    }),
+    }, value),
   );
-  await browser.keys("Backspace");
-  await browser.keys(value.split(""));
   await browser.keys("Enter");
 }
 

@@ -566,3 +566,92 @@ body,
 .t15 { color: var(--t-attribute); }
 .t16 { color: var(--t-escape); }
 .t17, .t18, .t19 { color: var(--t-type); }
+
+/* ---------- side by side ---------- */
+
+/* Pinned to the viewport horizontally (translated by --split-x); the code inside each half
+   shifts left instead, so both halves scroll together and stay 50/50. */
+.row-split {
+  right: auto;
+  width: var(--vw, 100%);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.half {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+.half .code {
+  transform: translateX(calc(-1 * var(--split-x, 0px)));
+}
+.half .gutter {
+  position: relative;
+}
+.half-left {
+  border-right: 1px solid var(--border);
+}
+.half-gutter {
+  width: calc(var(--gutter-ch) * 1ch + 30px);
+}
+
+.half-add {
+  background: var(--add-bg);
+}
+.half-add .gutter {
+  background: var(--add-gutter);
+  color: var(--add-fg);
+}
+.half-del {
+  background: var(--del-bg);
+}
+.half-del .gutter {
+  background: var(--del-gutter);
+  color: var(--del-fg);
+}
+.half-filler {
+  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--border) 60%, transparent) 6px 7px);
+}
+.half-filler .gutter {
+  background: transparent;
+}
+.half.attributed .gutter {
+  box-shadow: inset 3px 0 0 var(--pr);
+}
+
+/* ---------- collapsed files ---------- */
+
+.row-collapsed {
+  cursor: pointer;
+}
+.row-collapsed .code {
+  color: var(--fg-muted);
+  font-family: var(--sans);
+}
+.row-collapsed:hover .code {
+  color: var(--fg);
+}
+.file-badge {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 15px;
+}
+.file-mode {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.file-list li.muted .file-name {
+  opacity: 0.55;
+}
+.pr-flag {
+  color: var(--pr1);
+}
+.palette-list.commands li {
+  font-family: var(--sans);
+  font-size: 13px;
+}

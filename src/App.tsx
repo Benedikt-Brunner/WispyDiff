@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { openPr, refreshPr, selectRange } from "./api";
-import { CommandPalette } from "./CommandPalette";
-import { DiffViewer } from "./DiffViewer";
+import { getIgnorePatterns, openPr, refreshPr, selectRange, setIgnorePatterns } from "./api";
+import { CommandPalette, type Command } from "./CommandPalette";
+import { DiffViewer, type BaseMode } from "./DiffViewer";
+import { globMatcher } from "./glob";
 import { Mark, Wordmark } from "./Logo";
 import { mark } from "./perf";
+import { loadPref, savePref } from "./prefs";
 import { rememberPr } from "./recent";
 import { rangeForKey, StackBar } from "./StackBar";
 import { prLabel, type OpenedRange, type OpenedStack, type Range } from "./types";
@@ -21,6 +23,8 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showFiles, setShowFiles] = useState(true);
+  const [defaultMode, setDefaultMode] = useState<BaseMode>(() => loadPref("defaultMode", ["unified", "split"] as const, "unified"));
+  const [ignorePatterns, setIgnore] = useState<string[]>([]);
   const [, setReadyVersion] = useState(0);
   const rangeRequest = useRef(0);
 
@@ -45,6 +49,29 @@ export default function App() {
     setStack(opened);
     setShown(opened);
     setNewerVersion(null);
+  }, []);
+
+  const repo = stack?.prs[0].base_repo ?? null;
+  useEffect(() => {
+    if (!repo) return;
+    getIgnorePatterns(repo)
+      .then(setIgnore)
+      .catch(() => setIgnore([]));
+  }, [repo]);
+  const isIgnored = useMemo(() => globMatcher(ignorePatterns), [ignorePatterns]);
+
+  const updateIgnore = useCallback(
+    (patterns: string[]) => {
+      if (!repo) return;
+      setIgnore(patterns);
+      void setIgnorePatterns(repo, patterns);
+    },
+    [repo],
+  );
+
+  const changeDefaultMode = useCallback((mode: BaseMode) => {
+    setDefaultMode(mode);
+    savePref("defaultMode", mode);
   }, []);
 
   const open = useCallback(
@@ -76,20 +103,52 @@ export default function App() {
   );
 
   const chooseRange = useCallback(
-    async (range: Range) => {
+    async (range: Range, ignoreWhitespace = shown?.ignoreWhitespace ?? false) => {
       if (!stack) return;
       mark("range:start");
       const request = ++rangeRequest.current;
       try {
-        const result = await selectRange(stack.stackId, range.lo, range.hi);
+        const result = await selectRange(stack.stackId, range.lo, range.hi, ignoreWhitespace);
         // A later selection wins even if its response arrives first.
         if (request === rangeRequest.current) setShown(result);
       } catch (e) {
         console.error("range switch failed", e);
       }
     },
-    [stack],
+    [stack, shown],
   );
+
+  const toggleWhitespace = useCallback(() => {
+    if (shown) void chooseRange(shown.range, !shown.ignoreWhitespace);
+  }, [shown, chooseRange]);
+
+  const commands = useMemo<Command[]>(() => {
+    const list: Command[] = [];
+    if (shown) {
+      list.push({
+        id: "whitespace",
+        label: shown.ignoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes",
+        run: toggleWhitespace,
+      });
+    }
+    list.push({
+      id: "mode",
+      label: defaultMode === "split" ? "Show all files unified" : "Show all files side by side",
+      run: () => changeDefaultMode(defaultMode === "split" ? "unified" : "split"),
+    });
+    if (repo) {
+      list.push({
+        id: "ignore",
+        keyword: "ignore",
+        label: "Ignore files matching",
+        run: (pattern) => pattern.trim() && updateIgnore([...new Set([...ignorePatterns, pattern.trim()])]),
+      });
+      for (const pattern of ignorePatterns) {
+        list.push({ id: `unignore:${pattern}`, label: `Stop ignoring ${pattern}`, run: () => updateIgnore(ignorePatterns.filter((p) => p !== pattern)) });
+      }
+    }
+    return list.map((c) => ({ ...c, run: (arg: string) => (c.run(arg), setPaletteOpen(false)) }));
+  }, [shown, repo, ignorePatterns, defaultMode, toggleWhitespace, changeDefaultMode, updateIgnore]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -101,6 +160,11 @@ export default function App() {
         e.preventDefault();
         setShowFiles((s) => !s);
       } else if (!paletteOpen && stack && shown && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === "w") {
+          e.preventDefault();
+          toggleWhitespace();
+          return;
+        }
         const next = rangeForKey(e.key, shown.range, stack.prs.length);
         if (next) {
           e.preventDefault();
@@ -110,7 +174,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, stack, shown, chooseRange]);
+  }, [paletteOpen, stack, shown, chooseRange, toggleWhitespace]);
 
   const isStack = stack !== null && stack.prs.length > 1;
   const ready = (lo: number, hi: number) => (stack ? (readyRanges.get(stack.stackId)?.has(`${lo}-${hi}`) ?? false) : false);
@@ -132,6 +196,7 @@ export default function App() {
       <main className="content">
         {stack && shown ? (
           <DiffViewer
+            key={stack.stackId}
             viewId={shown.viewId}
             summary={shown.summary}
             prs={stack.prs}
@@ -139,6 +204,9 @@ export default function App() {
             multiPr={shown.range.hi > shown.range.lo}
             showFiles={showFiles}
             keyboardEnabled={!paletteOpen}
+            defaultMode={defaultMode}
+            onDefaultModeChange={changeDefaultMode}
+            isIgnored={isIgnored}
           />
         ) : (
           <div className="empty">
@@ -148,7 +216,7 @@ export default function App() {
         )}
       </main>
       {paletteOpen && (
-        <CommandPalette busy={busy} error={error} onOpen={open} onClose={stack ? () => setPaletteOpen(false) : null} />
+        <CommandPalette busy={busy} error={error} commands={commands} onOpen={open} onClose={stack ? () => setPaletteOpen(false) : null} />
       )}
     </div>
   );
@@ -167,6 +235,7 @@ function RangeHeader({ stack, shown }: { stack: OpenedStack; shown: OpenedRange 
         {lo === hi ? `${prLabel(top)} · ${top.author} · ` : `${top.base_repo} · `}
         {bottom.base_ref} ← {top.head_ref} · {summary.files.length} files ·{" "}
         <span className="add">+{summary.additions}</span> <span className="del">−{summary.deletions}</span>
+        {shown.ignoreWhitespace && <span className="pr-flag"> · whitespace hidden</span>}
       </span>
     </div>
   );

@@ -26,7 +26,7 @@ fn origin_with_pr() -> (OriginRepo, String) {
 }
 
 fn single_pr_view(git: &Git, fetched: &FetchedPr) -> DiffView {
-    let spec = RangeSpec { from: fetched.merge_base.clone(), heads: vec![fetched.head_sha.clone()], prs: vec![0] };
+    let spec = RangeSpec { from: fetched.merge_base.clone(), heads: vec![fetched.head_sha.clone()], prs: vec![0], ignore_whitespace: false };
     compute_range(git, &spec, &Highlighter::new(), &HighlightCache::default()).unwrap()
 }
 
@@ -87,7 +87,8 @@ fn computes_a_highlighted_three_dot_diff() {
     let stock_rows = view.rows(stock.first_row, stock.first_row + stock.row_count);
     assert_eq!(stock_rows[0].k, row_kind::FILE);
     assert_eq!(stock_rows[1].k, row_kind::HUNK);
-    assert_eq!(view.summary.hunk_rows, vec![1, stock.first_row + 1]);
+    assert_eq!(stock.hunks, vec![1]);
+    assert_eq!(view.summary.files[0].hunks, vec![1]);
 
     let added = stock_rows.iter().find(|r| r.k == row_kind::ADDED).unwrap();
     assert_eq!(added.n, Some(4));

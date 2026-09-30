@@ -13,6 +13,7 @@ use crate::git::Git;
 use crate::highlight::{Highlighter, Language};
 use crate::highlight_cache::{HighlightCache, Lines};
 use crate::model::{read_blobs, DiffView, MODEL_VERSION};
+use crate::noise::generated_paths;
 
 /// A range `from..heads.last()`, decomposed into one step per PR: step `i` goes from the
 /// previous head (or `from`) to `heads[i]` and belongs to stack index `prs[i]`.
@@ -21,6 +22,9 @@ pub struct RangeSpec {
     pub from: String,
     pub heads: Vec<String>,
     pub prs: Vec<u8>,
+    /// Diff with `-w`: whitespace-only changes disappear.
+    #[serde(default)]
+    pub ignore_whitespace: bool,
 }
 
 impl RangeSpec {
@@ -31,13 +35,22 @@ impl RangeSpec {
     /// Identifies the computed view; any SHA change produces a new key.
     pub fn cache_key(&self, repo_slug: &str) -> String {
         let steps: Vec<String> = self.prs.iter().zip(&self.heads).map(|(pr, head)| format!("{pr}={head}")).collect();
-        format!("v{MODEL_VERSION}:{repo_slug}:{}..{}", self.from, steps.join(","))
+        let whitespace = if self.ignore_whitespace { ":w" } else { "" };
+        format!("v{MODEL_VERSION}:{repo_slug}:{}..{}{whitespace}", self.from, steps.join(","))
+    }
+
+    pub fn with_ignore_whitespace(mut self, ignore: bool) -> Self {
+        self.ignore_whitespace = ignore;
+        self
     }
 }
 
 pub fn compute_range(git: &Git, spec: &RangeSpec, highlighter: &Highlighter, cache: &HighlightCache) -> Result<DiffView> {
     let diff = |from: &str, to: &str| -> Result<Vec<FileDiff>> {
         let mut args = PATCH_ARGS.to_vec();
+        if spec.ignore_whitespace {
+            args.push("-w");
+        }
         args.extend([from, to, "--"]);
         parse_patch(&git.run(&args)?)
     };
@@ -59,7 +72,21 @@ pub fn compute_range(git: &Git, spec: &RangeSpec, highlighter: &Highlighter, cac
     };
     let attributions = attribute(&combined, &steps);
     let highlights = highlight_blobs(git, &combined, highlighter, cache)?;
-    Ok(DiffView::build(&spec.from, spec.to(), &combined, &attributions, &highlights))
+    let paths: Vec<&str> = combined.iter().filter(|f| f.new_path.is_some()).map(FileDiff::path).collect();
+    let generated = generated_paths(git, spec.to(), &paths)?;
+    Ok(DiffView::build(&spec.from, spec.to(), &combined, &attributions, &highlights, &generated))
+}
+
+/// Highlighted full contents of one blob (e.g. the other side of a file for side-by-side),
+/// from the cache or by reading and highlighting it.
+pub fn blob_lines(git: &Git, blob: &str, language: Option<Language>, highlighter: &Highlighter, cache: &HighlightCache) -> Result<Lines> {
+    if let Some(lines) = cache.get(blob, language) {
+        return Ok(lines);
+    }
+    let content = read_blobs(git, &[blob])?.remove(blob).unwrap_or_default();
+    let lines: Lines = Arc::new(highlighter.highlight(language, &String::from_utf8_lossy(&content)));
+    cache.insert_many(vec![(blob.to_string(), language, lines.clone())]);
+    Ok(lines)
 }
 
 /// Highlighted full contents for every blob the rows need, reusing and filling `cache`.
@@ -100,9 +127,7 @@ fn highlight_blobs(
             (blob.clone(), Arc::new(lines))
         })
         .collect();
-    for (blob, lines) in fresh {
-        cache.insert(blob.clone(), wanted[&blob], lines.clone());
-        highlights.insert(blob, lines);
-    }
+    cache.insert_many(fresh.iter().map(|(blob, lines)| (blob.clone(), wanted[blob], lines.clone())).collect());
+    highlights.extend(fresh);
     Ok(highlights)
 }

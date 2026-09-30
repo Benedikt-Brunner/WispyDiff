@@ -41,7 +41,16 @@ fn segments_reassemble_to_the_original_lines() {
     let source = "<?php\r\n$a = \"multi\nline\";\n\n  echo $a; // é ✓\n";
     let lines = highlighter.highlight(Some(Language::Php), source);
     let rebuilt: Vec<String> = lines.iter().map(|segs| segs.iter().map(|(_, t)| t.as_str()).collect()).collect();
-    assert_eq!(rebuilt, vec!["<?php", "$a = \"multi", "line\";", "", "  echo $a; // é ✓", ""]);
+    assert_eq!(rebuilt, vec!["<?php", "$a = \"multi", "line\";", "", "  echo $a; // é ✓"]);
+}
+
+#[test]
+fn line_count_matches_the_file() {
+    let highlighter = Highlighter::new();
+    assert_eq!(highlighter.highlight(Some(Language::Php), "").len(), 0);
+    assert_eq!(highlighter.highlight(Some(Language::Php), "<?php\n").len(), 1);
+    assert_eq!(highlighter.highlight(None, "a\nb").len(), 2);
+    assert_eq!(highlighter.highlight(None, "a\n\n").len(), 2);
 }
 
 #[test]

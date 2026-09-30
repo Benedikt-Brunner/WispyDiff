@@ -1,6 +1,6 @@
 //! The prepared, highlighted row model the frontend renders from.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -11,9 +11,11 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::highlight::{plain_lines, Language, Seg};
 use crate::highlight_cache::Lines;
+use crate::noise::path_noise;
+use crate::split::align;
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 2;
+pub const MODEL_VERSION: u32 = 3;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -56,6 +58,17 @@ pub struct FileSummary {
     pub row_count: u32,
     /// Stack indices of the PRs that touched this file within the range.
     pub prs: Vec<u8>,
+    pub old_blob: Option<String>,
+    pub new_blob: Option<String>,
+    /// Offsets (within this file's unified rows, header = 0) of each hunk header.
+    pub hunks: Vec<u32>,
+    /// Row count of the full-file side-by-side (header included); 0 when unavailable
+    /// (binary, rename-only, ...).
+    pub split_rows: u32,
+    /// Offsets (within the side-by-side rows, header = 0) of each change block.
+    pub split_blocks: Vec<u32>,
+    /// Why the file is collapsed by default ("lockfile", "generated", ...), if it is.
+    pub noise: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +76,6 @@ pub struct DiffSummary {
     pub base_sha: String,
     pub head_sha: String,
     pub files: Vec<FileSummary>,
-    /// Row indices of every hunk header, for `j`/`k` navigation.
-    pub hunk_rows: Vec<u32>,
     pub total_rows: u32,
     /// Longest line in characters, so the frontend can size horizontal scrolling up front.
     pub max_line_chars: u32,
@@ -89,13 +100,15 @@ impl DiffView {
     }
 
     /// Builds rows for `files`. `attributions` holds one entry per hunk line of each file (see
-    /// [`crate::attribution::attribute`]); `highlights` maps blob SHAs to highlighted full files.
+    /// [`crate::attribution::attribute`]); `highlights` maps blob SHAs to highlighted full files;
+    /// `generated` lists paths marked `linguist-generated`.
     pub fn build(
         base_sha: &str,
         head_sha: &str,
         files: &[FileDiff],
         attributions: &[Vec<LineAttr>],
         highlights: &HashMap<String, Lines>,
+        generated: &HashSet<String>,
     ) -> DiffView {
         let per_file: Vec<Vec<Row>> = files
             .par_iter()
@@ -106,7 +119,6 @@ impl DiffView {
 
         let mut rows = Vec::with_capacity(per_file.iter().map(Vec::len).sum());
         let mut summaries = Vec::with_capacity(files.len());
-        let mut hunk_rows = Vec::new();
         let mut max_line_chars = 0u32;
         let mut max_line_number = 0u32;
         for (file, file_rows) in files.iter().zip(per_file) {
@@ -114,14 +126,23 @@ impl DiffView {
             let mut prs: Vec<u8> = file_rows.iter().filter_map(|r| r.a).collect();
             prs.sort_unstable();
             prs.dedup();
+            let mut hunks = Vec::new();
             for (offset, row) in file_rows.iter().enumerate() {
                 if row.k == row_kind::HUNK {
-                    hunk_rows.push(first_row + offset as u32);
+                    hunks.push(offset as u32);
                 }
                 let chars: usize = row.s.iter().map(|(_, text)| text.chars().count()).sum();
                 max_line_chars = max_line_chars.max(chars as u32);
                 max_line_number = max_line_number.max(row.o.unwrap_or(0)).max(row.n.unwrap_or(0));
             }
+            let (split_rows, split_blocks) = match line_counts(file, highlights) {
+                Some((old_len, new_len)) => {
+                    let alignment = align(&file_rows, old_len, new_len);
+                    (alignment.pairs.len() as u32 + 1, alignment.blocks.iter().map(|b| b + 1).collect())
+                }
+                None => (0, Vec::new()),
+            };
+            let noise = if generated.contains(file.path()) { Some("generated") } else { path_noise(file.path()) };
             summaries.push(FileSummary {
                 path: file.path().to_string(),
                 old_path: file.old_path.clone().filter(|old| Some(old) != file.new_path.as_ref()),
@@ -133,6 +154,12 @@ impl DiffView {
                 first_row,
                 row_count: file_rows.len() as u32,
                 prs,
+                old_blob: file.old_blob.clone(),
+                new_blob: file.new_blob.clone(),
+                hunks,
+                split_rows,
+                split_blocks,
+                noise: noise.map(str::to_string),
             });
             rows.extend(file_rows);
         }
@@ -144,7 +171,6 @@ impl DiffView {
                 additions: summaries.iter().map(|f| f.additions).sum(),
                 deletions: summaries.iter().map(|f| f.deletions).sum(),
                 files: summaries,
-                hunk_rows,
                 total_rows: rows.len() as u32,
                 max_line_chars,
                 max_line_number,
@@ -152,6 +178,29 @@ impl DiffView {
             rows,
         }
     }
+}
+
+/// Old and new line counts of a text file with hunks, from whichever side was highlighted
+/// (the other follows from the diff's additions and deletions).
+fn line_counts(file: &FileDiff, highlights: &HashMap<String, Lines>) -> Option<(u32, u32)> {
+    if file.binary || file.hunks.is_empty() {
+        return None;
+    }
+    let len = |blob: &Option<String>| blob.as_ref().and_then(|b| highlights.get(b)).map(|l| l.len() as i64);
+    let delta = i64::from(file.additions()) - i64::from(file.deletions());
+    let (old, new) = match (len(&file.old_blob), len(&file.new_blob)) {
+        (Some(old), Some(new)) => (old, new),
+        (Some(old), None) => (old, if file.new_blob.is_some() { old + delta } else { 0 }),
+        (None, Some(new)) => (if file.old_blob.is_some() { new - delta } else { 0 }, new),
+        (None, None) => return None,
+    };
+    Some((old.max(0) as u32, new.max(0) as u32))
+}
+
+/// The rows of file `index` (header first) as a slice of `rows`.
+pub fn file_slice<'a>(view: &'a DiffView, index: usize) -> &'a [Row] {
+    let file = &view.summary.files[index];
+    view.rows(file.first_row, file.first_row + file.row_count)
 }
 
 fn file_rows(index: u32, file: &FileDiff, attrs: &[LineAttr], highlights: &HashMap<String, Lines>) -> Vec<Row> {
