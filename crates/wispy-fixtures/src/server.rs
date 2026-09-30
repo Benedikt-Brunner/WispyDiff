@@ -19,6 +19,8 @@ struct State {
     /// PR number → bodies of every review comment (for reconciliation lookups).
     comments: HashMap<u64, Vec<String>>,
     next_id: u64,
+    /// Simulated network outage: every request is dropped without a response.
+    offline: bool,
 }
 
 impl State {
@@ -95,6 +97,15 @@ fn handle(mut stream: TcpStream, fixture: &Fixture, state: &Mutex<State>) {
 
     let mut parts = request_line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+    {
+        let mut state = state.lock().unwrap();
+        match target {
+            "/__offline" => state.offline = true,
+            "/__online" => state.offline = false,
+            _ if state.offline => return, // drop the connection, like a dead network
+            _ => {}
+        }
+    }
     let (status, response) = route(method, target, &body, fixture, &mut state.lock().unwrap());
     let response = response.to_string();
     let _ = write!(
@@ -114,7 +125,7 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
         return ("200 OK", json!({ "login": "you" }));
     }
     if path == "/graphql" {
-        return graphql(body, state);
+        return graphql(body, fixture, state);
     }
     if path == pulls {
         let owner_prefix = format!("{}:", fixture.owner);
@@ -183,7 +194,26 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
     }
 }
 
-fn graphql(body: &Value, state: &mut State) -> (&'static str, Value) {
+fn search_nodes(fixture: &Fixture, numbers: &[u64]) -> Vec<Value> {
+    fixture
+        .prs
+        .iter()
+        .enumerate()
+        .filter(|(_, pr)| numbers.contains(&pr.number))
+        .map(|(i, pr)| {
+            json!({
+                "number": pr.number, "title": pr.title, "isDraft": false,
+                "url": format!("https://github.com/{}/{}/pull/{}", fixture.owner, fixture.repo, pr.number),
+                "updatedAt": format!("2026-09-{:02}T10:00:00Z", 10 + i),
+                "headRefName": pr.head_ref, "baseRefName": pr.base_ref, "headRefOid": pr.head_sha,
+                "author": { "login": if pr.number == 1 { "you" } else { "fixture-bot" } },
+                "repository": { "nameWithOwner": format!("{}/{}", fixture.owner, fixture.repo) }
+            })
+        })
+        .collect()
+}
+
+fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str, Value) {
     let query = body["query"].as_str().unwrap_or_default();
     let variables = &body["variables"];
     if query.contains("resolveReviewThread") {
@@ -194,6 +224,13 @@ fn graphql(body: &Value, state: &mut State) -> (&'static str, Value) {
             }
         }
         return ("200 OK", json!({ "data": { "resolveReviewThread": { "thread": { "id": id, "isResolved": true } } } }));
+    }
+    if query.contains("search(") {
+        // Review requested on the stack's upper PRs and the solo PR; the bottom PR is "mine".
+        let q = variables["q"].as_str().unwrap_or_default();
+        let numbers: &[u64] = if q.contains("review-requested:@me") { &[2, 3, 4, 5] } else { &[1] };
+        let nodes = search_nodes(fixture, numbers);
+        return ("200 OK", json!({ "data": { "search": { "nodes": nodes } } }));
     }
     if query.contains("reviewThreads") {
         let number = variables["number"].as_u64().unwrap_or_default();

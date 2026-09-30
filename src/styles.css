@@ -957,3 +957,89 @@ body,
   color: var(--add-fg);
   margin-top: 6px;
 }
+
+/* ---------- inbox ---------- */
+
+.titlebar-home {
+  flex: none;
+  display: flex;
+  align-items: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.inbox {
+  height: 100%;
+  overflow-y: auto;
+  padding: 18px max(24px, calc((100% - 880px) / 2));
+}
+.inbox-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.inbox-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+.inbox-status {
+  color: var(--fg-muted);
+  font-size: 12px;
+  flex: 1;
+}
+.inbox-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.inbox-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.inbox-repo {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  flex: 1;
+}
+.inbox-ready {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.inbox-ready.ready {
+  color: var(--add-fg);
+}
+.inbox-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.inbox-group li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.inbox-group li.selected {
+  background: var(--selection);
+}
+.inbox-pr-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inbox-meta {
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+}

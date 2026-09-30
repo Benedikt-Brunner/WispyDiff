@@ -1,4 +1,5 @@
 mod commands;
+mod prefetch;
 mod shell_env;
 mod state;
 
@@ -20,8 +21,16 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let _ = handle.state::<state::AppState>().service();
+                prefetch::start(&handle);
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                if let Some(trigger) = window.app_handle().try_state::<prefetch::PrefetchTrigger>() {
+                    trigger.fire();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![commands::open_pr, commands::refresh_pr, commands::select_range,
             commands::get_rows,
@@ -36,7 +45,9 @@ pub fn run() {
             commands::list_threads,
             commands::locate_anchors,
             commands::prepare_submit,
-            commands::submit_review])
+            commands::submit_review,
+            commands::get_inbox,
+            commands::refresh_inbox])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
 }

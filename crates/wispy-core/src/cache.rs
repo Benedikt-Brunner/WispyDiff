@@ -58,6 +58,10 @@ impl Cache {
                  fetched_at INTEGER NOT NULL DEFAULT (unixepoch()),
                  PRIMARY KEY (repo, pr)
              );
+             CREATE TABLE IF NOT EXISTS app_state (
+                 key TEXT PRIMARY KEY,
+                 data TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS repo_settings (
                  repo TEXT PRIMARY KEY,
                  data TEXT NOT NULL
@@ -185,6 +189,37 @@ impl Cache {
             .query_row("SELECT data FROM threads WHERE repo = ?1 AND pr = ?2", params![repo, pr as i64], |row| row.get(0))
             .optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+    }
+
+    /// A small app-wide JSON value (e.g. the last inbox), `None` if never stored.
+    pub fn app_value(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        let data: Option<String> =
+            self.conn().query_row("SELECT data FROM app_state WHERE key = ?1", [key], |row| row.get(0)).optional()?;
+        data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
+    }
+
+    pub fn put_app_value(&self, key: &str, value: &serde_json::Value) -> Result<()> {
+        self.conn().execute("INSERT OR REPLACE INTO app_state (key, data) VALUES (?1, ?2)", params![key, value.to_string()])?;
+        Ok(())
+    }
+
+    /// PRs (`owner/repo#N`) with a cached stack snapshot.
+    pub fn cached_prs(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut statement = conn.prepare("SELECT pr FROM stack_snapshots")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Forgets a PR's cached stack, threads, and every diff view computed from `heads`.
+    pub fn evict(&self, pr: &PrRef, heads: &[String]) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM stack_snapshots WHERE pr = ?1", [pr.to_string()])?;
+        conn.execute("DELETE FROM threads WHERE repo = ?1 AND pr = ?2", params![pr.repo_slug(), pr.number as i64])?;
+        for head in heads {
+            conn.execute("DELETE FROM diff_views WHERE key LIKE ?1", [format!("%{head}%")])?;
+        }
+        Ok(())
     }
 
     /// Per-repo settings (a JSON value); `None` if never set.

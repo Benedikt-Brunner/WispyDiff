@@ -121,3 +121,14 @@ export const clickButton = (scope: string, label: string) =>
     scope,
     label,
   );
+
+/** Simulates losing (or regaining) the network to GitHub: the fake API drops every request. */
+export const setOffline = async (offline: boolean) => {
+  await fetch(`http://127.0.0.1:4600/${offline ? "__offline" : "__online"}`).catch(() => undefined);
+};
+
+/** Shows the inbox (⌘I). */
+export async function goHome() {
+  await browser.keys(["Meta", "i"]);
+  await waitFor(() => exists('[data-testid="inbox"]'), 60_000);
+}

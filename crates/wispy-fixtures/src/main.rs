@@ -122,6 +122,13 @@ fn generate(out: &Path, seed: u64) -> Fixture {
         commit(&origin, title, 2 + layer as u64);
         prs.push((branch, prs.last().unwrap().0, title));
     }
+    // A standalone PR next to the stack (its own inbox group).
+    git(&["checkout", "--quiet", "main"]);
+    git(&["checkout", "--quiet", "-b", "solo"]);
+    files[250].mutate(3, &mut rng);
+    files[250].write(&origin);
+    commit(&origin, "Fix carrier label typo", 6);
+    prs.push(("solo", "main", "Fix carrier label typo"));
     git(&["checkout", "--quiet", "main"]);
 
     let prs: Vec<FixturePr> = prs

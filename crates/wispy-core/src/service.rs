@@ -9,6 +9,7 @@ use crate::anchors::{remap_line, Coverage};
 use crate::cache::Cache;
 use crate::drafts::{now, Draft, DraftKind, DraftStatus};
 use crate::github::{ReviewThread, Side, Verdict};
+use crate::inbox::{group, InboxGroup};
 use crate::review::{self, Outcome, Planned, Target};
 use crate::error::Result;
 use crate::github::GitHubClient;
@@ -45,6 +46,19 @@ pub struct ShownDraft {
     pub line: Option<u32>,
     pub start_line: Option<u32>,
 }
+
+/// An inbox group as the home screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxEntry {
+    pub group: InboxGroup,
+    /// Its stack is prefetched at the listed heads: opening it needs no network.
+    pub ready: bool,
+    /// Unposted drafts on the group's PRs.
+    pub drafts: usize,
+}
+
+const INBOX_KEY: &str = "inbox";
 
 /// What a new draft is attached to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -301,6 +315,81 @@ impl PrService {
         Ok(outcome)
     }
 
+    // ---------- inbox & prefetch ----------
+
+    /// The last inbox fetched, for instant (and offline) display.
+    pub fn cached_inbox(&self) -> Result<Vec<InboxGroup>> {
+        Ok(self.cache.app_value(INBOX_KEY)?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default())
+    }
+
+    pub async fn refresh_inbox(&self) -> Result<Vec<InboxGroup>> {
+        let groups = group(self.github.inbox().await?);
+        self.cache.put_app_value(INBOX_KEY, &serde_json::to_value(&groups).map_err(crate::Error::codec)?)?;
+        Ok(groups)
+    }
+
+    pub fn inbox_entries(&self, groups: Vec<InboxGroup>) -> Result<Vec<InboxEntry>> {
+        groups
+            .into_iter()
+            .map(|group| {
+                let numbers: Vec<u64> = group.prs.iter().map(|p| p.number).collect();
+                let drafts = self.cache.drafts(&group.repo, &numbers)?.iter().filter(|d| d.is_pending()).count();
+                let ready = group.prs.iter().all(|pr| {
+                    let reference = PrRef { owner: owner_of(&group.repo).into(), repo: name_of(&group.repo).into(), number: pr.number };
+                    matches!(self.cache.stack(&reference), Ok(Some(s)) if s.heads.contains(&pr.head_sha))
+                });
+                Ok(InboxEntry { group, ready, drafts })
+            })
+            .collect()
+    }
+
+    /// Makes a group openable offline: discovers and fetches its full stack, precomputes each
+    /// member alone and the whole stack, and caches review threads.
+    pub async fn prefetch(&self, group: &InboxGroup) -> Result<StackSnapshot> {
+        let pr = PrRef { owner: owner_of(&group.repo).into(), repo: name_of(&group.repo).into(), number: group.prs[0].number };
+        let stack = self.discover(&pr).await?;
+        let snapshot = self.fetch(stack)?;
+        let members: Vec<usize> = group
+            .prs
+            .iter()
+            .filter_map(|member| snapshot.stack.prs.iter().position(|p| p.number == member.number))
+            .collect();
+        for &index in &members {
+            self.precompute(&snapshot, index, index)?;
+        }
+        self.precompute(&snapshot, 0, snapshot.len() - 1)?;
+        self.refresh_threads(&snapshot).await?;
+        Ok(snapshot)
+    }
+
+    /// Drops cached stacks of PRs that left the inbox because they were merged or closed,
+    /// unless they still have unposted drafts. Returns how many PRs were evicted.
+    pub async fn evict_finished(&self, inbox: &[InboxGroup]) -> Result<usize> {
+        let listed: std::collections::HashSet<String> =
+            inbox.iter().flat_map(|g| g.prs.iter().map(move |p| format!("{}#{}", g.repo, p.number))).collect();
+        let mut evicted = 0;
+        for key in self.cache.cached_prs()? {
+            if listed.contains(&key) {
+                continue;
+            }
+            let Ok(pr) = PrRef::parse(&key) else { continue };
+            if self.cache.has_pending_drafts(&pr.repo_slug(), &[pr.number])? {
+                continue;
+            }
+            let state = match self.github.pull_request(&pr).await {
+                Ok(pull) => pull.state,
+                Err(_) => continue,
+            };
+            if state == "open" {
+                continue;
+            }
+            let heads = self.cache.stack(&pr)?.map(|s| s.heads).unwrap_or_default();
+            self.cache.evict(&pr, &heads)?;
+            evicted += 1;
+        }
+        Ok(evicted)
+    }
+
     fn git(&self, snapshot: &StackSnapshot) -> Result<crate::git::Git> {
         let (owner, repo) = snapshot.repo_slug().split_once('/').unwrap_or((snapshot.repo_slug(), ""));
         self.store.ensure_repo(owner, repo, &snapshot.stack.prs[0].clone_url)
@@ -312,4 +401,12 @@ impl PrService {
         self.cache.put_diff_view(snapshot.repo_slug(), &spec, &view)?;
         Ok(view)
     }
+}
+
+fn owner_of(slug: &str) -> &str {
+    slug.split_once('/').map(|(o, _)| o).unwrap_or(slug)
+}
+
+fn name_of(slug: &str) -> &str {
+    slug.split_once('/').map(|(_, r)| r).unwrap_or("")
 }
