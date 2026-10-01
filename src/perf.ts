@@ -16,16 +16,32 @@ export function sinceLast(start: string, end: string): number | undefined {
   return finish ? finish.startTime - begin.startTime : undefined;
 }
 
+/**
+ * Whether the page was hidden (window minimized, covered, on another Space) at any point between
+ * the latest `start` mark and now. WebKit doesn't run animation frames while hidden, so marks set
+ * from one are late by however long that lasted — such a sample says nothing about the app.
+ */
+export function hiddenSince(start: string): boolean {
+  const starts = performance.getEntriesByName(`wispy:${start}`, "mark");
+  const begin = starts[starts.length - 1]?.startTime ?? 0;
+  return document.visibilityState === "hidden" || lastVisibilityChange >= begin;
+}
+
+let lastVisibilityChange = -1;
+document.addEventListener("visibilitychange", () => {
+  lastVisibilityChange = performance.now();
+});
+
 declare global {
   interface Window {
-    __wispyPerf?: { sinceLast: typeof sinceLast };
+    __wispyPerf?: { sinceLast: typeof sinceLast; hiddenSince: typeof hiddenSince };
     __wispyErrors?: string[];
     /** Set by App: how many ranges of a stack are precomputed, and the open stack. */
     __wispyRanges?: { readyCount: (stackId: string) => number; current: () => string | null };
   }
 }
 
-window.__wispyPerf = { sinceLast };
+window.__wispyPerf = { sinceLast, hiddenSince };
 
 // Keep recent frontend errors around for the e2e suite's failure reports.
 const errors: string[] = [];

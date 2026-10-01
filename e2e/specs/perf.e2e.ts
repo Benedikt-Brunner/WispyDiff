@@ -11,34 +11,47 @@ const BUDGET = {
   longFrameShare: 0.02, // frames > 33 ms
   blankFrameShare: 0.05, // frames showing unloaded rows
 };
+/**
+ * Budgets are checked on the median; no single sample may exceed the budget by more than this
+ * factor. A sample that does means something blocked (a lock, a background task) — not jitter.
+ */
+const MAX_OVER_BUDGET = 2;
 
 const WORST_CASE = "wispy/fixture#1"; // ~500 files, ~50k changed lines, one 20k-line file
 
+const HIDDEN =
+  "the app window was hidden (minimized, covered or on another Space) during the measurement: " +
+  "WebKit pauses animation frames then, so the timings are meaningless. Keep the window visible while benchmarking.";
+
 async function measureOpen(label: string) {
   await openViaPalette(label);
-  let duration: number | null | undefined;
-  await waitFor(async () => {
-    // `execute` serializes undefined as null.
-    duration = await browser.execute(() => window.__wispyPerf!.sinceLast("open:start", "view:first-visible"));
-    return duration != null;
-  });
-  return duration!;
+  return waitForMark("open:start", "view:first-visible");
 }
 
-/** Waits for the first `end` mark after the latest `start` mark and returns the time between them. */
+/**
+ * Waits for the first `end` mark after the latest `start` mark and returns the time between them.
+ * Fails if the window was hidden in between (the end mark is set from an animation frame).
+ */
 async function waitForMark(start: string, end: string) {
-  let duration: number | null | undefined;
+  let sample: { duration: number | null; hidden: boolean } | undefined;
   await waitFor(async () => {
-    duration = await browser.execute((s: string, e: string) => window.__wispyPerf!.sinceLast(s, e), start, end);
-    return duration != null;
+    sample = await browser.execute(
+      // `execute` serializes undefined as null.
+      (s: string, e: string) => ({ duration: window.__wispyPerf!.sinceLast(s, e) ?? null, hidden: window.__wispyPerf!.hiddenSince(s) }),
+      start,
+      end,
+    );
+    return sample.duration !== null || sample.hidden;
   });
-  return duration!;
+  if (sample!.hidden) throw new Error(HIDDEN);
+  return sample!.duration!;
 }
 
 /** Scrolls the diff at a constant speed inside rAF and records frame intervals. */
 async function scrollFrames(pxPerFrame: number, frames: number) {
   return browser.executeAsync(
     (pxPerFrame: number, frames: number, done: (r: { intervals: number[]; blank: number }) => void) => {
+      performance.mark("wispy:frames:start");
       const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
       const intervals: number[] = [];
       let blank = 0;
@@ -67,6 +80,7 @@ async function scrollFrames(pxPerFrame: number, frames: number) {
 async function holdKey(key: string, presses: number) {
   return browser.executeAsync(
     (key: string, presses: number, done: (r: { intervals: number[]; blank: number; moved: number; maxStep: number }) => void) => {
+      performance.mark("wispy:frames:start");
       const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
       const startTop = el.scrollTop;
       const intervals: number[] = [];
@@ -109,7 +123,18 @@ const percentile = (values: number[], p: number) => {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
 };
 
-function report(name: string, intervals: number[], blank: number) {
+/** Checks timing samples of one scenario against its budget (median and worst case). */
+function checkSamples(name: string, samples: number[], budgetMs: number) {
+  const median = percentile(samples, 0.5);
+  const max = Math.max(...samples);
+  console.log(`[perf] ${name}: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)}, max ${max.toFixed(0)})`);
+  expect(median).toBeLessThan(budgetMs);
+  expect(max).toBeLessThan(budgetMs * MAX_OVER_BUDGET);
+}
+
+/** Checks the frame intervals recorded by `scrollFrames` / `holdKey`. */
+async function report(name: string, intervals: number[], blank: number) {
+  if (await browser.execute(() => window.__wispyPerf!.hiddenSince("frames:start"))) throw new Error(HIDDEN);
   const p95 = percentile(intervals, 0.95);
   const long = intervals.filter((i) => i > 33).length / intervals.length;
   const blankShare = blank / (intervals.length + 1);
@@ -121,9 +146,13 @@ function report(name: string, intervals: number[], blank: number) {
 
 describe("performance budgets (synthetic worst case)", () => {
   before(async () => {
-    // Cold open: fetch + diff + highlight + cache. Not budgeted (prefetch hides it), just reported.
-    const cold = await measureOpen(WORST_CASE);
-    console.log(`[perf] cold open (uncached) ${WORST_CASE}: ${cold.toFixed(0)} ms`);
+    // Let the launch prefetch finish first, so every run measures the same thing (otherwise the
+    // first opens race it, and whether they compute or read the cache depends on timing).
+    await waitFor(async () => (await count(".inbox-ready.ready")) === 2, 120_000);
+    // Opens the stack for the first time in this process, which starts precomputing its ranges
+    // in the background (the cached opens below run alongside that). Not budgeted, just reported.
+    const first = await measureOpen(WORST_CASE);
+    console.log(`[perf] first open ${WORST_CASE} (prefetched): ${first.toFixed(0)} ms`);
   });
 
   it(`opens a cached worst-case PR with the first file visible in < ${BUDGET.cachedOpenMs} ms`, async () => {
@@ -132,9 +161,7 @@ describe("performance budgets (synthetic worst case)", () => {
       await openViaPalette("wispy/fixture#2"); // switch away so the next open is a real reopen
       samples.push(await measureOpen(WORST_CASE));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] cached open: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.cachedOpenMs);
+    checkSamples("cached open", samples, BUDGET.cachedOpenMs);
   });
 
   it(`opens a prefetched stack from the inbox with the first file visible in < ${BUDGET.cachedOpenMs} ms`, async () => {
@@ -143,27 +170,20 @@ describe("performance budgets (synthetic worst case)", () => {
       await goHome();
       await waitFor(async () => (await count(".inbox-ready.ready")) === 2, 120_000);
       await browser.execute(() => document.querySelector<HTMLElement>('[data-testid="inbox"] li[data-pr="1"]')!.click());
-      let duration: number | null | undefined;
-      await waitFor(async () => {
-        duration = await browser.execute(() => window.__wispyPerf!.sinceLast("open:start", "view:first-visible"));
-        return duration != null;
-      });
-      samples.push(duration!);
+      samples.push(await waitForMark("open:start", "view:first-visible"));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] open from inbox: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.cachedOpenMs);
+    checkSamples("open from inbox", samples, BUDGET.cachedOpenMs);
   });
 
   it("scrolls the whole 50k-line diff at 60 fps", async () => {
     const { intervals, blank } = await scrollFrames(60, 600);
-    report("scroll whole diff", intervals, blank);
+    await report("scroll whole diff", intervals, blank);
   });
 
   it("scrolls the 20k-line file at 60 fps", async () => {
     await click('.file-list li[title="src/Allocation/PickListAllocator.php"]');
     const { intervals, blank } = await scrollFrames(60, 600);
-    report("scroll 20k-line file", intervals, blank);
+    await report("scroll 20k-line file", intervals, blank);
   });
 
   it("jumps across the diff with n/p without blank frames lingering", async () => {
@@ -180,9 +200,9 @@ describe("performance budgets (synthetic worst case)", () => {
     });
     await waitFor(async () => !(await exists(".row-loading")), 2000);
     const down = await holdKey("j", 60);
-    report("hold j", down.intervals, down.blank);
+    await report("hold j", down.intervals, down.blank);
     const up = await holdKey("k", 60);
-    report("hold k", up.intervals, up.blank);
+    await report("hold k", up.intervals, up.blank);
     console.log(`[perf] hold j/k: moved ${down.moved} / ${up.moved} px, largest step ${down.maxStep.toFixed(2)} / ${up.maxStep.toFixed(2)} screens`);
     expect(down.moved).toBeGreaterThan(0);
     expect(up.moved).toBeLessThan(0);
@@ -198,16 +218,9 @@ describe("performance budgets (synthetic worst case)", () => {
     const samples: number[] = [];
     for (const [index, extend] of clicks) {
       await clickChip(index, extend);
-      let duration: number | null | undefined;
-      await waitFor(async () => {
-        duration = await browser.execute(() => window.__wispyPerf!.sinceLast("range:start", "view:first-visible"));
-        return duration != null;
-      });
-      samples.push(duration!);
+      samples.push(await waitForMark("range:start", "view:first-visible"));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] range switch: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.rangeSwitchMs);
+    checkSamples("range switch", samples, BUDGET.rangeSwitchMs);
   });
 
   it(`toggles the 20k-line file to side by side in < ${BUDGET.toggleMs} ms`, async () => {
@@ -218,9 +231,7 @@ describe("performance budgets (synthetic worst case)", () => {
       await browser.keys("s");
       samples.push(await waitForMark("toggle:start", "layout:first-visible"));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] toggle 20k-line file: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.toggleMs);
+    checkSamples("toggle 20k-line file", samples, BUDGET.toggleMs);
   });
 
   it("scrolls the 20k-line file side by side at 60 fps", async () => {
@@ -228,7 +239,7 @@ describe("performance budgets (synthetic worst case)", () => {
     await browser.keys("s");
     await waitForMark("toggle:start", "layout:first-visible");
     const { intervals, blank } = await scrollFrames(60, 600);
-    report("scroll 20k-line file side by side", intervals, blank);
+    await report("scroll 20k-line file side by side", intervals, blank);
   });
 
   it(`switches every file of the worst case between modes in < ${BUDGET.toggleMs} ms`, async () => {
@@ -237,9 +248,7 @@ describe("performance budgets (synthetic worst case)", () => {
       await browser.keys("S");
       samples.push(await waitForMark("toggle:start", "layout:first-visible"));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] toggle all files: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.toggleMs);
+    checkSamples("toggle all files", samples, BUDGET.toggleMs);
   });
 
   it(`finds usages of a symbol in < ${BUDGET.usagesMs} ms`, async () => {
@@ -249,9 +258,7 @@ describe("performance budgets (synthetic worst case)", () => {
       await cmdClickWord(".row .code span", word);
       samples.push(await waitForMark("usages:start", "usages:visible"));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] usages: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.usagesMs);
+    checkSamples("usages", samples, BUDGET.usagesMs);
   });
 
   it(`streams the first git grep hits in < ${BUDGET.grepFirstHitMs} ms`, async () => {
@@ -263,8 +270,6 @@ describe("performance budgets (synthetic worst case)", () => {
       await submitInput(".panel-input", query);
       samples.push(await waitForMark("grep:start", "grep:first-hit"));
     }
-    const median = percentile(samples, 0.5);
-    console.log(`[perf] grep first hit: ${samples.map((s) => s.toFixed(0)).join(", ")} ms (median ${median.toFixed(0)})`);
-    expect(median).toBeLessThan(BUDGET.grepFirstHitMs);
+    checkSamples("grep first hit", samples, BUDGET.grepFirstHitMs);
   });
 });

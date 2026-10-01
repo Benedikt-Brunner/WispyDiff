@@ -28,7 +28,7 @@ bench: build-e2e
 
 # All functional specs (everything but the performance budgets).
 e2e-functional: build-e2e
-    pnpm exec wdio run e2e/wdio.conf.ts --exclude e2e/specs/perf.e2e.ts
+    pnpm exec wdio run e2e/wdio.conf.ts --exclude perf.e2e.ts
 
 # Release build with the embedded WebDriver server, plus the fixture generator.
 build-e2e:
