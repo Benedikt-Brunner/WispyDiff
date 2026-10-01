@@ -258,6 +258,13 @@ export function DiffViewer(props: Props) {
 
   /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
    * full file has that line; flashes the row. */
+  /**
+   * The file picked by navigation (n/p, the file list, v) and the scroll position it was shown at.
+   * While the view stays there it is the current file, even if it couldn't scroll to the top
+   * (the last files of the diff) and a collapsed file sits above it.
+   */
+  const [pinned, setPinned] = useState<{ file: number; top: number } | null>(null);
+
   /** The running j/k glide (see `glideToRow`); anything else that moves the view stops it. */
   const glide = useRef<{ target: number; held: boolean; frame: number } | null>(null);
   const stopGlide = useCallback(() => {
@@ -331,6 +338,8 @@ export function DiffViewer(props: Props) {
   const previousView = useRef<string | null>(null);
   /** After `v`: once the viewed file has collapsed, put `next`'s header at the top. */
   const pendingFile = useRef<{ viewed: number; next: number } | null>(null);
+  /** After toggling a file (s, e, Space, v): it stays the current file once the layout changes. */
+  const keepFile = useRef<number | null>(null);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -338,23 +347,30 @@ export function DiffViewer(props: Props) {
     const index = place ? summary.files.findIndex((f) => f.path === place.path) : -1;
     let top = 0;
     const moveOn = pendingFile.current;
+    let pin: number | null = null;
     if (moveOn && previousView.current === viewId && layout.segments[moveOn.viewed]?.mode === "collapsed") {
       pendingFile.current = null;
       top = layout.rowY(layout.segments[moveOn.next].start);
+      pin = moveOn.next;
     } else if (index >= 0 && place) {
       const segment = layout.segments[index];
       const sameView = previousView.current === viewId;
       const keepOffset = sameView && segment.mode === place.mode;
       top = layout.rowY(segment.start + (keepOffset ? Math.min(place.offset, segment.rows - 1) : 0)) + (keepOffset ? place.delta : 0);
     }
+    if (keepFile.current !== null && pin === null) pin = keepFile.current;
+    keepFile.current = null;
     if (previousView.current !== viewId) {
       pendingMark.current = "view";
       pendingFile.current = null;
+      pin = null;
       stopGlide();
     }
     previousView.current = viewId;
     el.scrollTop = top;
     setScrollTop(el.scrollTop);
+    // Near the end of the diff a file can't reach the top; pinning keeps it current anyway.
+    setPinned(pin === null ? null : { file: pin, top: el.scrollTop });
   }, [layout, viewId, summary]);
 
   useLayoutEffect(() => {
@@ -659,16 +675,25 @@ export function DiffViewer(props: Props) {
     };
   }, [layout, summary]);
 
-  const topRow = layout.rowAt(scrollTop);
-  // The file whose rows are at the top (one row in, so a file header scrolled to the top counts).
-  const current = layout.segmentAt(Math.min(layout.totalRows - 1, topRow + 1));
+  /** The file keys act on: the pinned one while the view hasn't moved, else the one at the top. */
+  const fileAt = useCallback(
+    (top: number) =>
+      pinned && Math.abs(pinned.top - top) < 1 && layout.segments[pinned.file]
+        ? layout.segments[pinned.file]
+        : // One row in, so a file header scrolled to the top counts.
+          layout.segmentAt(Math.min(layout.totalRows - 1, layout.rowAt(top) + 1)),
+    [pinned, layout],
+  );
+  const current = fileAt(scrollTop);
 
-  /** Puts `row` near the top, with `margin` rows above it (file headers go right at the top). */
+  /** Puts `row` near the top, with `margin` rows above it; `pin` makes that file the current one. */
   const scrollToRow = useCallback(
-    (row: number, margin = JUMP_MARGIN) => {
+    (row: number, margin = JUMP_MARGIN, pin?: number) => {
       stopGlide();
       const el = scrollRef.current;
-      if (el) el.scrollTop = Math.max(0, layout.rowY(Math.max(0, row - margin)));
+      if (!el) return;
+      el.scrollTop = Math.max(0, layout.rowY(Math.max(0, row - margin)));
+      if (pin !== undefined) setPinned({ file: pin, top: el.scrollTop });
     },
     [layout, stopGlide],
   );
@@ -771,8 +796,8 @@ export function DiffViewer(props: Props) {
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
       // Files: the header of the file being read sits at the top after n/p.
-      const topRow = layout.rowAt(heading);
-      const here = layout.segmentAt(Math.min(layout.totalRows - 1, layout.rowAt(el.scrollTop) + 1));
+      const here = fileAt(el.scrollTop);
+      const topRow = here === layout.segments[pinned?.file ?? -1] ? here.start : layout.rowAt(heading);
       const starts = layout.segments.map((s) => s.start);
       const changes = layout.changeRows(summary);
       let target: number | undefined;
@@ -806,6 +831,7 @@ export function DiffViewer(props: Props) {
           fileTarget = findLast(starts, (r) => r < topRow);
           break;
         case "s":
+          keepFile.current = here.file;
           toggleFileMode(here);
           break;
         case "S":
@@ -817,6 +843,7 @@ export function DiffViewer(props: Props) {
         case "e":
         case " ":
           // Collapse/expand without touching the viewed mark.
+          keepFile.current = here.file;
           toggleCollapsed(here);
           break;
         case "c":
@@ -853,10 +880,9 @@ export function DiffViewer(props: Props) {
             setExpanded((s) => withOut(s, file.path));
             if (!viewed) setCollapsed((s) => withOut(s, file.path));
             // Marking viewed moves on to the next file still to review, so v, v, v… works.
-            if (viewed) {
-              const next = summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key));
-              if (next >= 0) pendingFile.current = { viewed: here.file, next };
-            }
+            const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key)) : -1;
+            if (next >= 0) pendingFile.current = { viewed: here.file, next };
+            else keepFile.current = here.file;
           });
           break;
         }
@@ -865,11 +891,11 @@ export function DiffViewer(props: Props) {
       }
       e.preventDefault();
       if (target !== undefined) scrollToRow(target);
-      if (fileTarget !== undefined) scrollToRow(fileTarget, 0);
+      if (fileTarget !== undefined) scrollToRow(fileTarget, 0, layout.segmentAt(fileTarget).file);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -882,7 +908,7 @@ export function DiffViewer(props: Props) {
           segments={layout.segments}
           current={current.file}
           showPrs={multiPr}
-          onSelect={(index) => scrollToRow(layout.segments[index].start, 0)}
+          onSelect={(index) => scrollToRow(layout.segments[index].start, 0, index)}
         />
       )}
       <div className="diff-main">

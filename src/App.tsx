@@ -72,17 +72,34 @@ export default function App() {
     return () => void unlisten.then((f) => f());
   }, []);
 
+  // The open stack, for checking it against GitHub whenever the background refresh runs.
+  const openStack = useRef<{ label: string; stackId: string } | null>(null);
+  const checking = useRef(false);
+  const checkForNewCommits = useCallback(() => {
+    const open = openStack.current;
+    if (!open || checking.current) return;
+    checking.current = true;
+    refreshPr(open.label, open.stackId)
+      .then((fresh) => fresh && openStack.current?.stackId === open.stackId && setNewerVersion(fresh))
+      .catch(() => undefined)
+      .finally(() => (checking.current = false));
+  }, []);
+
   useEffect(() => {
     invoke<InboxEntry[]>("get_inbox")
       .then(setInbox)
       .catch(() => undefined);
     const updates = listen<InboxEntry[]>("inbox-updated", ({ payload }) => setInbox(payload));
-    const status = listen<string>("inbox-status", ({ payload }) => setOnline(payload === "online"));
+    // Each background refresh (launch, every 5 minutes, window focus) also checks the open PR.
+    const status = listen<string>("inbox-status", ({ payload }) => {
+      setOnline(payload === "online");
+      if (payload === "online") checkForNewCommits();
+    });
     return () => {
       void updates.then((f) => f());
       void status.then((f) => f());
     };
-  }, []);
+  }, [checkForNewCommits]);
   const refreshInbox = useCallback(() => void invoke("refresh_inbox"), []);
 
   useEffect(() => {
@@ -97,6 +114,10 @@ export default function App() {
     setShown(opened);
     setNewerVersion(null);
   }, []);
+
+  useEffect(() => {
+    openStack.current = stack ? { label: prLabel(stack.prs[stack.focus]), stackId: stack.stackId } : null;
+  }, [stack]);
 
   const stackId = stack?.stackId ?? null;
   const refreshDrafts = useCallback(() => {
