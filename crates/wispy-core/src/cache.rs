@@ -1,5 +1,6 @@
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -14,9 +15,25 @@ use crate::progress::Checkpoint;
 use crate::range::RangeSpec;
 use crate::stack::StackSnapshot;
 
+/// How long a connection waits for SQLite's own file locks before giving up.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Idle read connections kept open for reuse.
+const IDLE_READERS: usize = 4;
+
 /// Local SQLite store for stack snapshots and precomputed diff views.
+///
+/// Writes go through one connection; reads use their own connections (WAL lets them run
+/// alongside a write), so opening a cached view never queues behind a background task
+/// storing a multi-megabyte view or a batch of highlighted files.
 pub struct Cache {
-    conn: Mutex<Connection>,
+    writer: Mutex<Connection>,
+    /// `None` for an in-memory cache, whose data only its one connection can see.
+    readers: Option<Readers>,
+}
+
+struct Readers {
+    path: PathBuf,
+    idle: Mutex<Vec<Connection>>,
 }
 
 impl Cache {
@@ -24,14 +41,16 @@ impl Cache {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        Self::init(Connection::open(path)?)
+        let readers = Readers { path: path.to_path_buf(), idle: Mutex::new(Vec::new()) };
+        Self::init(Connection::open(path)?, Some(readers))
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(conn: Connection, readers: Option<Readers>) -> Result<Self> {
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -90,7 +109,7 @@ impl Cache {
                  created_at INTEGER NOT NULL DEFAULT (unixepoch())
              );",
         )?;
-        Ok(Cache { conn: Mutex::new(conn) })
+        Ok(Cache { writer: Mutex::new(conn), readers })
     }
 
     /// Stores the snapshot under every PR of the stack, so opening any of them is cached.
@@ -112,7 +131,7 @@ impl Cache {
     /// The stack `pr` was last seen in, with `focus` pointing at `pr`.
     pub fn stack(&self, pr: &PrRef) -> Result<Option<StackSnapshot>> {
         let data: Option<String> = self
-            .conn()
+            .reader()?
             .query_row("SELECT data FROM stack_snapshots WHERE pr = ?1", [pr.to_string()], |row| row.get(0))
             .optional()?;
         let Some(mut snapshot) = data.map(|d| serde_json::from_str::<StackSnapshot>(&d).map_err(Error::codec)).transpose()? else {
@@ -138,7 +157,7 @@ impl Cache {
 
     pub fn diff_view(&self, repo_slug: &str, spec: &RangeSpec) -> Result<Option<DiffView>> {
         let data: Option<Vec<u8>> = self
-            .conn()
+            .reader()?
             .query_row("SELECT data FROM diff_views WHERE key = ?1", [spec.cache_key(repo_slug)], |row| row.get(0))
             .optional()?;
         data.map(|d| rmp_serde::from_slice(&d).map_err(Error::codec)).transpose()
@@ -146,7 +165,7 @@ impl Cache {
 
     pub fn has_diff_view(&self, repo_slug: &str, spec: &RangeSpec) -> Result<bool> {
         let found: Option<i64> = self
-            .conn()
+            .reader()?
             .query_row("SELECT 1 FROM diff_views WHERE key = ?1", [spec.cache_key(repo_slug)], |row| row.get(0))
             .optional()?;
         Ok(found.is_some())
@@ -168,13 +187,13 @@ impl Cache {
 
     pub fn draft(&self, id: &str) -> Result<Option<Draft>> {
         let data: Option<String> =
-            self.conn().query_row("SELECT data FROM drafts WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+            self.reader()?.query_row("SELECT data FROM drafts WHERE id = ?1", [id], |row| row.get(0)).optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
     }
 
     /// Drafts of the given PRs of `repo`, oldest first.
     pub fn drafts(&self, repo: &str, prs: &[u64]) -> Result<Vec<Draft>> {
-        let conn = self.conn();
+        let conn = self.reader()?;
         let mut statement = conn.prepare("SELECT data FROM drafts WHERE repo = ?1 AND pr = ?2")?;
         let mut drafts = Vec::new();
         for pr in prs {
@@ -203,14 +222,14 @@ impl Cache {
 
     pub fn threads(&self, repo: &str, pr: u64) -> Result<Option<Vec<ReviewThread>>> {
         let data: Option<String> = self
-            .conn()
+            .reader()?
             .query_row("SELECT data FROM threads WHERE repo = ?1 AND pr = ?2", params![repo, pr as i64], |row| row.get(0))
             .optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
     }
 
     pub fn viewed_keys(&self, repo: &str) -> Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.reader()?;
         let mut statement = conn.prepare("SELECT key FROM viewed WHERE repo = ?1")?;
         let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -236,7 +255,7 @@ impl Cache {
 
     /// All checkpoints of a repo, newest first.
     pub fn checkpoints(&self, repo: &str) -> Result<Vec<Checkpoint>> {
-        let conn = self.conn();
+        let conn = self.reader()?;
         let mut statement = conn.prepare("SELECT data FROM checkpoints WHERE repo = ?1 ORDER BY created_at DESC, id DESC")?;
         let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
         let mut checkpoints = Vec::new();
@@ -257,13 +276,13 @@ impl Cache {
 
     pub fn assistant_thread(&self, id: &str) -> Result<Option<crate::assistant::Thread>> {
         let data: Option<String> =
-            self.conn().query_row("SELECT data FROM assistant_threads WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+            self.reader()?.query_row("SELECT data FROM assistant_threads WHERE id = ?1", [id], |row| row.get(0)).optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
     }
 
     /// A repo's assistant threads, oldest first.
     pub fn assistant_threads(&self, repo: &str) -> Result<Vec<crate::assistant::Thread>> {
-        let conn = self.conn();
+        let conn = self.reader()?;
         let mut statement = conn.prepare("SELECT data FROM assistant_threads WHERE repo = ?1")?;
         let rows = statement.query_map([repo], |row| row.get::<_, String>(0))?;
         let mut threads: Vec<crate::assistant::Thread> = Vec::new();
@@ -282,7 +301,7 @@ impl Cache {
     /// A small app-wide JSON value (e.g. the last inbox), `None` if never stored.
     pub fn app_value(&self, key: &str) -> Result<Option<serde_json::Value>> {
         let data: Option<String> =
-            self.conn().query_row("SELECT data FROM app_state WHERE key = ?1", [key], |row| row.get(0)).optional()?;
+            self.reader()?.query_row("SELECT data FROM app_state WHERE key = ?1", [key], |row| row.get(0)).optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
     }
 
@@ -293,7 +312,7 @@ impl Cache {
 
     /// PRs (`owner/repo#N`) with a cached stack snapshot.
     pub fn cached_prs(&self) -> Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.reader()?;
         let mut statement = conn.prepare("SELECT pr FROM stack_snapshots")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -313,7 +332,7 @@ impl Cache {
     /// Per-repo settings (a JSON value); `None` if never set.
     pub fn repo_settings(&self, repo_slug: &str) -> Result<Option<serde_json::Value>> {
         let data: Option<String> = self
-            .conn()
+            .reader()?
             .query_row("SELECT data FROM repo_settings WHERE repo = ?1", [repo_slug], |row| row.get(0))
             .optional()?;
         data.map(|d| serde_json::from_str(&d).map_err(Error::codec)).transpose()
@@ -327,15 +346,58 @@ impl Cache {
         Ok(())
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A connection for reading: an idle one, or a new one if all are in use.
+    fn reader(&self) -> Result<Reader<'_>> {
+        let Some(readers) = &self.readers else { return Ok(Reader::Writer(self.conn())) };
+        let idle = readers.idle.lock().unwrap_or_else(|p| p.into_inner()).pop();
+        let conn = match idle {
+            Some(conn) => conn,
+            None => {
+                let conn = Connection::open(&readers.path)?;
+                conn.busy_timeout(BUSY_TIMEOUT)?;
+                conn.pragma_update(None, "query_only", true)?;
+                conn
+            }
+        };
+        Ok(Reader::Pooled(Some(conn), readers))
+    }
+}
+
+enum Reader<'a> {
+    Pooled(Option<Connection>, &'a Readers),
+    Writer(MutexGuard<'a, Connection>),
+}
+
+impl std::ops::Deref for Reader<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        match self {
+            Reader::Pooled(conn, _) => conn.as_ref().expect("only taken on drop"),
+            Reader::Writer(conn) => conn,
+        }
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        if let Reader::Pooled(conn, readers) = self {
+            let mut idle = readers.idle.lock().unwrap_or_else(|p| p.into_inner());
+            if idle.len() < IDLE_READERS {
+                idle.extend(conn.take());
+            }
+        }
     }
 }
 
 impl BlobStore for Cache {
     fn get(&self, key: &str) -> Option<Vec<Vec<Seg>>> {
         let data: Vec<u8> = self
-            .conn()
+            .reader().ok()?
             .query_row("SELECT data FROM highlighted_blobs WHERE key = ?1", [key], |row| row.get(0))
             .optional()
             .ok()??;
