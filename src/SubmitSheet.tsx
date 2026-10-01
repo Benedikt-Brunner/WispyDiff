@@ -40,23 +40,32 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
   const hasWork = (index: number) =>
     plannedFor(index).length > 0 || (verdicts[index] ?? "COMMENT") !== "COMMENT" || (summaries[index] ?? "").trim() !== "";
 
-  const submitAll = async () => {
+  /** Submits the review of each PR in `indices` that has something to send. */
+  const submit = async (indices: number[]) => {
     if (!plan) return;
     setSubmitting(true);
     const fresh = plan.stack;
-    for (let index = 0; index < fresh.prs.length; index++) {
+    for (const index of indices) {
       if (!hasWork(index) || blocked(index)) continue;
       setResults((r) => ({ ...r, [index]: { state: "sending" } }));
       try {
         const outcome = await submitReview(fresh.stackId, index, verdicts[index] ?? "COMMENT", summaries[index]?.trim() || null);
         setResults((r) => ({ ...r, [index]: { state: "done", outcome } }));
+        // Sent: the verdict and summary don't go out again with a later submit.
+        setVerdicts(({ [index]: _, ...rest }) => rest);
+        setSummaries(({ [index]: _, ...rest }) => rest);
       } catch (e) {
         setResults((r) => ({ ...r, [index]: { state: "error", message: String(e) } }));
       }
     }
     setSubmitting(false);
     onSubmitted(fresh);
+    // What's left to send for the other PRs (posted drafts drop out).
+    prepareSubmit(stackId)
+      .then(setPlan)
+      .catch(() => undefined);
   };
+  const submitAll = () => submit(plan ? plan.stack.prs.map((_, i) => i) : []);
 
   const resolveOutdated = async (id: string, choice: "file" | "discard") => {
     if (choice === "file") await updateDraft(id, { asFile: true });
@@ -106,6 +115,15 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                         <option value="APPROVE">Approve</option>
                         <option value="REQUEST_CHANGES">Request changes</option>
                       </select>
+                      <button
+                        className="button"
+                        onClick={() => void submit([index])}
+                        disabled={submitting || !hasWork(index) || blocked(index)}
+                        title={`Submit only #${pr.number} (⌘↵ in its summary)`}
+                        data-testid={`submit-pr-${pr.number}`}
+                      >
+                        Submit #{pr.number}
+                      </button>
                     </div>
                     <textarea
                       className="sheet-summary"
@@ -113,6 +131,12 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                       rows={2}
                       value={summaries[index] ?? ""}
                       onChange={(e) => setSummaries((s) => ({ ...s, [index]: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && e.metaKey) {
+                          e.preventDefault();
+                          void submit([index]);
+                        }
+                      }}
                       disabled={submitting}
                     />
                     <ul className="sheet-items">

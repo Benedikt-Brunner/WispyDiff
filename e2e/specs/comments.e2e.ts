@@ -1,4 +1,4 @@
-import { click, clickButton, clickChip, count, exists, gutterDrag, openViaPalette, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, clickChip, count, exists, gutterDrag, openViaPalette, selectedChips, setTextarea, text, waitFor } from "./helpers";
 
 const draftCount = async () => {
   const label = (await text('[data-testid="review-button"]')) ?? "";
@@ -106,5 +106,34 @@ describe("comments", () => {
     expect(bodies).toContain("Why this threshold?");
     expect(bodies).toContain("These three lines");
     expect(await count(".card.draft")).toBe(0);
+  });
+
+  it("submits a single PR of the stack and keeps the other PRs' drafts", async () => {
+    const draftOn = async (chip: number, body: string) => {
+      await clickChip(chip);
+      await waitFor(async () => JSON.stringify(await selectedChips()) === `[${chip}]`);
+      await gutterDrag(".row-add", 0);
+      await waitFor(() => exists(".composer-input"));
+      await setTextarea(".composer-input", body);
+      await clickButton(".composer", "Save draft");
+      await waitFor(async () => (await text(".card.draft"))?.includes(body) ?? false);
+    };
+    await draftOn(2, "Only this one goes out");
+    await draftOn(1, "This one stays a draft");
+    await waitFor(async () => (await draftCount()) === 2);
+
+    await click('[data-testid="review-button"]');
+    await waitFor(async () => (await count('.sheet-pr[data-pr="3"] .sheet-items li')) === 1);
+    expect(await count('.sheet-pr[data-pr="2"] .sheet-items li')).toBe(1);
+    await click('[data-testid="submit-pr-3"]');
+    await waitFor(async () => (await text('.sheet-pr[data-pr="3"] .sheet-done')) === "Posted ✓", 60_000);
+    await waitFor(async () => (await count('.sheet-pr[data-pr="3"] .sheet-items li')) === 0);
+    expect(await count('.sheet-pr[data-pr="2"] .sheet-items li')).toBe(1);
+    expect(await text('.sheet-pr[data-pr="2"] .sheet-done')).toBeNull();
+    await browser.keys("Escape");
+    await waitFor(async () => (await draftCount()) === 1);
+
+    await clickButton(".card.draft", "Delete");
+    await waitFor(async () => (await draftCount()) === 0);
   });
 });
