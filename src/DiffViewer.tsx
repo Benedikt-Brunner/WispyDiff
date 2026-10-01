@@ -34,12 +34,17 @@ import {
   type ShownDraft,
 } from "./comments";
 import { Composer, DraftCard, InsertBox, ThreadCard } from "./Inserts";
-import { Layout, type Insert, type Mode, type Segment } from "./layout";
+import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment } from "./layout";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
 
+/** Rows drawn beyond the viewport, at least this many and at least a screen on each side. */
 const OVERSCAN = 20;
+/** Rows are fetched this many screens beyond the viewport, so files arrive before they're drawn. */
+const PREFETCH_SCREENS = 2;
+/** Arrow keys scroll by this many pixels (held: continuously). */
+const ARROW_STEP = 3 * ROW_HEIGHT;
 /** Rows kept above the target when jumping, so the jump target isn't glued to the top edge. */
 const JUMP_MARGIN = 3;
 
@@ -253,6 +258,13 @@ export function DiffViewer(props: Props) {
 
   /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
    * full file has that line; flashes the row. */
+  /**
+   * The file picked by navigation (n/p, the file list, v) and the scroll position it was shown at.
+   * While the view stays there it is the current file, even if it couldn't scroll to the top
+   * (the last files of the diff) and a collapsed file sits above it.
+   */
+  const [pinned, setPinned] = useState<{ file: number; top: number } | null>(null);
+
   /** The running j/k glide (see `glideToRow`); anything else that moves the view stops it. */
   const glide = useRef<{ target: number; held: boolean; frame: number } | null>(null);
   const stopGlide = useCallback(() => {
@@ -324,25 +336,41 @@ export function DiffViewer(props: Props) {
 
   // Keep the reader's place when the view or the layout changes.
   const previousView = useRef<string | null>(null);
+  /** After `v`: once the viewed file has collapsed, put `next`'s header at the top. */
+  const pendingFile = useRef<{ viewed: number; next: number } | null>(null);
+  /** After toggling a file (s, e, Space, v): it stays the current file once the layout changes. */
+  const keepFile = useRef<number | null>(null);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const place = anchor.current;
     const index = place ? summary.files.findIndex((f) => f.path === place.path) : -1;
     let top = 0;
-    if (index >= 0 && place) {
+    const moveOn = pendingFile.current;
+    let pin: number | null = null;
+    if (moveOn && previousView.current === viewId && layout.segments[moveOn.viewed]?.mode === "collapsed") {
+      pendingFile.current = null;
+      top = layout.rowY(layout.segments[moveOn.next].start);
+      pin = moveOn.next;
+    } else if (index >= 0 && place) {
       const segment = layout.segments[index];
       const sameView = previousView.current === viewId;
       const keepOffset = sameView && segment.mode === place.mode;
       top = layout.rowY(segment.start + (keepOffset ? Math.min(place.offset, segment.rows - 1) : 0)) + (keepOffset ? place.delta : 0);
     }
+    if (keepFile.current !== null && pin === null) pin = keepFile.current;
+    keepFile.current = null;
     if (previousView.current !== viewId) {
       pendingMark.current = "view";
+      pendingFile.current = null;
+      pin = null;
       stopGlide();
     }
     previousView.current = viewId;
     el.scrollTop = top;
     setScrollTop(el.scrollTop);
+    // Near the end of the diff a file can't reach the top; pinning keeps it current anyway.
+    setPinned(pin === null ? null : { file: pin, top: el.scrollTop });
   }, [layout, viewId, summary]);
 
   useLayoutEffect(() => {
@@ -359,8 +387,9 @@ export function DiffViewer(props: Props) {
     return () => observer.disconnect();
   }, []);
 
-  const first = Math.max(0, layout.rowAt(scrollTop) - OVERSCAN);
-  const last = Math.min(layout.totalRows, layout.rowAt(scrollTop + viewportHeight) + 1 + OVERSCAN);
+  const overscan = Math.max(OVERSCAN, Math.ceil(viewportHeight / ROW_HEIGHT));
+  const first = Math.max(0, layout.rowAt(scrollTop) - overscan);
+  const last = Math.min(layout.totalRows, layout.rowAt(scrollTop + viewportHeight) + 1 + overscan);
 
   /** The comment target for a row side (null for fillers and headers). */
   const targetAt = useCallback(
@@ -548,10 +577,12 @@ export function DiffViewer(props: Props) {
   const markerAt = (path: string, line: number | null) =>
     line === null ? undefined : markers.get(path)?.find((m) => line >= m.from && line <= m.to)?.id;
 
-  // Load what's visible, per file segment.
-  for (let row = first; row < last; ) {
+  // Load what's drawn and a couple of screens beyond, per file segment.
+  const loadFirst = Math.max(0, layout.rowAt(scrollTop - PREFETCH_SCREENS * viewportHeight));
+  const loadLast = Math.min(layout.totalRows, layout.rowAt(scrollTop + (PREFETCH_SCREENS + 1) * viewportHeight) + 1);
+  for (let row = loadFirst; row < loadLast; ) {
     const segment = layout.segmentAt(row);
-    const end = Math.min(last, segment.start + segment.rows);
+    const end = Math.min(loadLast, segment.start + segment.rows);
     if (segment.mode !== "collapsed") store.ensure(segment.file, segment.mode, row - segment.start, end - segment.start);
     row = end;
   }
@@ -630,7 +661,8 @@ export function DiffViewer(props: Props) {
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    setScrollTop(el.scrollTop);
+    // Draw the rows for the new position right away; a deferred render shows up as blank frames.
+    flushSync(() => setScrollTop(el.scrollTop));
     // Horizontal scrolling moves side-by-side code within its halves (no re-render needed).
     canvasRef.current?.style.setProperty("--split-x", `${el.scrollLeft}px`);
     const row = layout.rowAt(el.scrollTop);
@@ -643,15 +675,25 @@ export function DiffViewer(props: Props) {
     };
   }, [layout, summary]);
 
-  const topRow = layout.rowAt(scrollTop);
-  // The file whose rows are at the top (one row in, so a file header scrolled to the top counts).
-  const current = layout.segmentAt(Math.min(layout.totalRows - 1, topRow + 1));
+  /** The file keys act on: the pinned one while the view hasn't moved, else the one at the top. */
+  const fileAt = useCallback(
+    (top: number) =>
+      pinned && Math.abs(pinned.top - top) < 1 && layout.segments[pinned.file]
+        ? layout.segments[pinned.file]
+        : // One row in, so a file header scrolled to the top counts.
+          layout.segmentAt(Math.min(layout.totalRows - 1, layout.rowAt(top) + 1)),
+    [pinned, layout],
+  );
+  const current = fileAt(scrollTop);
 
+  /** Puts `row` near the top, with `margin` rows above it; `pin` makes that file the current one. */
   const scrollToRow = useCallback(
-    (row: number) => {
+    (row: number, margin = JUMP_MARGIN, pin?: number) => {
       stopGlide();
       const el = scrollRef.current;
-      if (el) el.scrollTop = Math.max(0, layout.rowY(Math.max(0, row - JUMP_MARGIN)));
+      if (!el) return;
+      el.scrollTop = Math.max(0, layout.rowY(Math.max(0, row - margin)));
+      if (pin !== undefined) setPinned({ file: pin, top: el.scrollTop });
     },
     [layout, stopGlide],
   );
@@ -660,11 +702,11 @@ export function DiffViewer(props: Props) {
    * j/k: ease to a change instead of teleporting, so a held key reads as one continuous scroll
    * that settles on a change when released. A single hop further than a screen jumps directly.
    */
-  const glideToRow = useCallback(
-    (row: number, held: boolean) => {
+  const glideTo = useCallback(
+    (to: number, held: boolean) => {
       const el = scrollRef.current;
       if (!el) return;
-      const top = Math.min(Math.max(0, layout.rowY(Math.max(0, row - JUMP_MARGIN))), el.scrollHeight - el.clientHeight);
+      const top = Math.min(Math.max(0, to), el.scrollHeight - el.clientHeight);
       if (glide.current) {
         glide.current.target = top;
         glide.current.held = held;
@@ -692,7 +734,11 @@ export function DiffViewer(props: Props) {
       };
       state.frame = requestAnimationFrame(step);
     },
-    [layout],
+    [],
+  );
+  const glideToRow = useCallback(
+    (row: number, held: boolean) => glideTo(layout.rowY(Math.max(0, row - JUMP_MARGIN)), held),
+    [layout, glideTo],
   );
 
   // Record the anchor before any layout change triggered from here, then flag the perf mark.
@@ -742,16 +788,20 @@ export function DiffViewer(props: Props) {
   useEffect(() => {
     if (!keyboardEnabled) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
+      // Escape works from anywhere (e.g. the assistant's model picker); text fields handle their own.
+      if (e.metaKey || e.ctrlKey || e.altKey || (isTyping(e.target) && e.key !== "Escape")) return;
       const el = scrollRef.current;
       if (!el) return;
       // While gliding, j/k continue from where the glide is heading.
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
-      const here = layout.segmentAt(Math.min(layout.totalRows - 1, layout.rowAt(el.scrollTop) + 1));
+      // Files: the header of the file being read sits at the top after n/p.
+      const here = fileAt(el.scrollTop);
+      const topRow = here === layout.segments[pinned?.file ?? -1] ? here.start : layout.rowAt(heading);
       const starts = layout.segments.map((s) => s.start);
       const changes = layout.changeRows(summary);
       let target: number | undefined;
+      let fileTarget: number | undefined;
       switch (e.key) {
         case "j":
         case "k": {
@@ -762,13 +812,26 @@ export function DiffViewer(props: Props) {
           if (change !== undefined) glideToRow(change, e.repeat);
           return;
         }
+        case "ArrowDown":
+        case "ArrowUp": {
+          e.preventDefault();
+          const down = e.key === "ArrowDown";
+          if (e.shiftKey) {
+            // Shift+arrows: next/previous file, like n/p.
+            fileTarget = down ? starts.find((r) => r > topRow) : findLast(starts, (r) => r < topRow);
+            break;
+          }
+          glideTo(heading + (down ? ARROW_STEP : -ARROW_STEP), true);
+          return;
+        }
         case "n":
-          target = starts.find((r) => r > anchorRow);
+          fileTarget = starts.find((r) => r > topRow);
           break;
         case "p":
-          target = findLast(starts, (r) => r < anchorRow);
+          fileTarget = findLast(starts, (r) => r < topRow);
           break;
         case "s":
+          keepFile.current = here.file;
           toggleFileMode(here);
           break;
         case "S":
@@ -778,6 +841,9 @@ export function DiffViewer(props: Props) {
           });
           break;
         case "e":
+        case " ":
+          // Collapse/expand without touching the viewed mark.
+          keepFile.current = here.file;
           toggleCollapsed(here);
           break;
         case "c":
@@ -798,12 +864,13 @@ export function DiffViewer(props: Props) {
           openAssistant();
           break;
         case "Escape":
-          // Innermost first: an open comment box, then the side panels.
-          if (composer) setComposer(null);
-          else if (panel || assistant) {
-            setPanel(null);
-            setAssistant(null);
-          } else return;
+          // The assistant first, then the other panels, then an open comment box. (A focused
+          // comment box closes itself.)
+          if (assistant) setAssistant(null);
+          else if (panel) setPanel(null);
+          else if (composer) setComposer(null);
+          else if (selection) setSelection(null);
+          else return;
           break;
         case "v": {
           const file = summary.files[here.file];
@@ -812,6 +879,10 @@ export function DiffViewer(props: Props) {
             onToggleViewed(file.content_key, viewed);
             setExpanded((s) => withOut(s, file.path));
             if (!viewed) setCollapsed((s) => withOut(s, file.path));
+            // Marking viewed moves on to the next file still to review, so v, v, v… works.
+            const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key)) : -1;
+            if (next >= 0) pendingFile.current = { viewed: here.file, next };
+            else keepFile.current = here.file;
           });
           break;
         }
@@ -820,10 +891,11 @@ export function DiffViewer(props: Props) {
       }
       e.preventDefault();
       if (target !== undefined) scrollToRow(target);
+      if (fileTarget !== undefined) scrollToRow(fileTarget, 0, layout.segmentAt(fileTarget).file);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, scrollToRow, glideToRow, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
 
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
 
@@ -836,7 +908,7 @@ export function DiffViewer(props: Props) {
           segments={layout.segments}
           current={current.file}
           showPrs={multiPr}
-          onSelect={(index) => scrollToRow(layout.segments[index].start + JUMP_MARGIN)}
+          onSelect={(index) => scrollToRow(layout.segments[index].start, 0, index)}
         />
       )}
       <div className="diff-main">

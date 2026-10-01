@@ -7,7 +7,9 @@ const root = path.resolve(import.meta.dirname, "..");
 const fixtureDir = path.join(root, "e2e/.fixtures/stack");
 const fixturesBin = path.join(root, "target/release/wispy-fixtures");
 const appBinary = path.join(root, "target/release/wispydiff");
-const apiPort = 4600;
+// Overridable so two checkouts (e.g. worktrees) can run their suites at the same time.
+const apiPort = Number(process.env.WISPY_E2E_API_PORT ?? 4600);
+const driverPort = Number(process.env.WISPY_E2E_DRIVER_PORT ?? 4445);
 
 // The app inherits this environment: fake GitHub, throwaway data dir, no `gh` needed.
 // Every wdio process evaluates this file; the run id (set once by the launcher, inherited by
@@ -30,9 +32,11 @@ let fakeGitHub: ChildProcess | undefined;
 export const config: WebdriverIO.Config = {
   runner: "local",
   specs: ["./specs/**/*.e2e.ts"],
+  // The performance budgets run on their own (`just bench` sets WISPY_E2E_PERF=1).
+  exclude: process.env.WISPY_E2E_PERF === "1" ? [] : ["./specs/perf.e2e.ts"],
   maxInstances: 1,
   capabilities: [{ browserName: "tauri", "tauri:options": { application: appBinary } } as WebdriverIO.Capabilities],
-  services: [["@wdio/tauri-service", { appBinaryPath: appBinary, driverProvider: "embedded", embeddedPort: 4445 }]],
+  services: [["@wdio/tauri-service", { appBinaryPath: appBinary, driverProvider: "embedded", embeddedPort: driverPort }]],
   framework: "mocha",
   mochaOpts: { ui: "bdd", timeout: 120_000 },
   reporters: ["spec"],

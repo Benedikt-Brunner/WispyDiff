@@ -66,4 +66,20 @@ describe("review progress", () => {
     await waitFor(async () => !((await text(".pr-meta"))?.includes("changes since") ?? true));
     expect(await count(".file-list li")).toBe(1);
   });
+
+  it("offers new commits for the PR on screen as soon as the background refresh sees them", async () => {
+    expect(await exists(".update-banner")).toBe(false);
+    originGit("checkout", "--quiet", "solo");
+    originWrite("docs/NOTES.md", "pushed while the PR was open\n");
+    originGit("add", "-A");
+    originGit("commit", "--quiet", "-m", "more work");
+    originGit("update-ref", "refs/pull/5/head", "solo");
+    originGit("checkout", "--quiet", "main");
+
+    // What the 5-minute timer or focusing the window does.
+    await browser.execute(() => (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("refresh_inbox"));
+    await waitFor(() => exists(".update-banner"), 60_000);
+    await click(".update-banner");
+    await waitFor(async () => ((await fileNames()) as string[]).includes("docs/NOTES.md"), 60_000);
+  });
 });
