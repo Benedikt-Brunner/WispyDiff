@@ -65,6 +65,26 @@ describe("keyboard", () => {
     }
   });
 
+  it("marks the last files viewed even though they can't scroll to the top", async () => {
+    const [secondLast, last] = files.slice(-2);
+    await click(`.file-list li[title="${secondLast}"]`);
+    await waitFor(async () => (await activeFile()) === secondLast);
+    await browser.keys("v");
+    await waitFor(async () => (await listHas(secondLast, "viewed")) && (await activeFile()) === last);
+    await browser.keys("v");
+    await waitFor(() => listHas(last, "viewed"));
+    expect(await activeFile()).toBe(last);
+    // v again un-views that same file, not the collapsed one above it.
+    await browser.keys("v");
+    await waitFor(async () => !(await listHas(last, "viewed")));
+    expect(await listHas(secondLast, "viewed")).toBe(true);
+
+    await click(`.file-list li[title="${secondLast}"]`);
+    await waitFor(async () => (await activeFile()) === secondLast);
+    await browser.keys("v");
+    await waitFor(async () => !(await listHas(secondLast, "viewed")));
+  });
+
   it("closes the assistant with Escape even from its pickers", async () => {
     await browser.keys("a");
     await waitFor(() => exists('[data-testid="assistant-panel"]'));

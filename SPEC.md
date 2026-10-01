@@ -33,7 +33,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - Keyboard-first (`?` or `⌘/` lists every shortcut):
   - Moving: `↑/↓` scroll (held: continuously); `⇧↑/⇧↓` or `n/p` next/previous file (its header goes to the top); `j/k` hunks (the view glides there; holding the key scrolls through the changes and settles on one when released); `⌘B` file list.
   - Stack: `Tab`/`⇧Tab` next/previous PR on its own (wrapping); `[ ]` move the range, `{ }` extend it; `w` whitespace; `M` mark reviewed; `d` since checkpoint.
-  - Files: `s`/`S` side-by-side (file/all); `Space` or `e` collapse/expand without touching the viewed mark; `v` viewed — marking moves on to the next file not yet viewed, so `v v v` ticks off consecutive files.
+  - Files: `s`/`S` side-by-side (file/all); `Space` or `e` collapse/expand without touching the viewed mark; `v` viewed — marking moves on to the next file not yet viewed, so `v v v` ticks off consecutive files. A file reached by `n`/`p`/the file list/`v` stays the current file while the view stays put, even when it is one of the last files and can't scroll to the top (so a collapsed file above it never takes over).
   - Review: `c` comment, `⌘`-click / `u` usages, `/` search repo, `a` assistant; `Esc` closes the assistant first, then other panels, then an open comment box.
   - Anywhere: `⌘K` palette, `⌘I` inbox, `⌘T` theme.
 - **Themes** (`⌘T`, or `> Change theme…`): System (follows macOS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia. Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
@@ -41,6 +41,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 
 ## Offline
 - **Every inbox stack is prefetched** in the background (at launch, every 5 minutes, and on window focus): the full stack is discovered and fetched, each inbox PR alone and the whole stack are precomputed (highlighted full files included), and review threads are cached. Stacks of PRs that left the inbox because they were merged/closed are evicted unless they have unposted drafts.
+- **New commits on the open PR**: opening a cached stack shows it at once and checks GitHub; each background refresh (launch, every 5 minutes, window focus) checks the open stack again. If any PR in it moved, a "New commits pushed · load latest" button appears in the title bar; nothing changes under the reader until it is clicked (drafts are re-mapped, `d` shows what's new).
 
 ## Progress tracking
 - **Viewed marks** per file (`v`), keyed by the file's diff content (paths + changed/context text, not line numbers or SHAs), so they survive rebases that don't change the file. Viewed files collapse and get a ✓ in the file list.
