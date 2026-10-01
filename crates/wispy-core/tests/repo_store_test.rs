@@ -1,5 +1,7 @@
 mod support;
 
+use std::time::Duration;
+
 use support::OriginRepo;
 use wispy_core::git::Git;
 use wispy_core::highlight::Highlighter;
@@ -137,5 +139,32 @@ fn concurrent_setup_and_fetches_of_one_repo_do_not_collide() {
         for handle in handles {
             assert_eq!(handle.join().unwrap(), head);
         }
+    });
+}
+#[test]
+fn reads_of_a_set_up_repo_do_not_wait_for_a_running_fetch_but_fetches_do() {
+    let (origin, head) = origin_with_pr();
+    let root = tempfile::tempdir().unwrap();
+    let store = RepoStore::new(root.path(), None);
+    let url = origin.url();
+    let git = store.ensure_repo("acme", "shop", &url).unwrap();
+    store.fetch_pr(&git, 7, "main").unwrap();
+
+    let lock = store.write_lock(&git);
+    let (store, url, git) = (&store, &url, &git);
+    std::thread::scope(|scope| {
+        // Held inside the scope, so a failing assertion releases it before the threads are joined.
+        let writing = lock.hold();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        scope.spawn(move || read_tx.send(store.ensure_repo("acme", "shop", url).map(|g| g.git_dir().to_path_buf())));
+        let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
+        scope.spawn(move || fetch_tx.send(store.fetch_pr(git, 7, "main").map(|f| f.head_sha)));
+
+        let read = read_rx.recv_timeout(Duration::from_secs(5)).expect("ensure_repo waited for the write lock");
+        assert_eq!(read.unwrap(), root.path().join("acme/shop.git"));
+        assert!(fetch_rx.recv_timeout(Duration::from_millis(300)).is_err(), "a fetch ran while another write held the lock");
+
+        drop(writing);
+        assert_eq!(fetch_rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap(), head);
     });
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::Result;
 use crate::git::Git;
@@ -10,12 +10,20 @@ use crate::github::PullRequest;
 ///
 /// Reads (diff, cat-file, ...) run concurrently; anything that writes repository state —
 /// setup and fetches — is serialized per repository, so the background prefetch, range
-/// precomputation and the UI never trip over git's lock files.
+/// precomputation and the UI never trip over git's lock files. Reads never wait for a write:
+/// a repository that is already set up is handed out while a fetch is running.
 pub struct RepoStore {
     root: PathBuf,
     github_token: Option<String>,
-    /// Per repository: a write lock, and the remote URL it was last set up with.
-    repos: Mutex<HashMap<PathBuf, Arc<Mutex<Option<String>>>>>,
+    repos: Mutex<HashMap<PathBuf, Arc<RepoLocks>>>,
+}
+
+#[derive(Default)]
+struct RepoLocks {
+    /// The remote URL the repository was last set up with.
+    set_up_with: Mutex<Option<String>>,
+    /// Held while writing repository state (setup, fetches). Taken after `set_up_with`.
+    writing: Mutex<()>,
 }
 
 /// Where each PR of a stack starts and ends, after fetching.
@@ -40,8 +48,13 @@ impl RepoStore {
         RepoStore { root: root.into(), github_token, repos: Mutex::new(HashMap::new()) }
     }
 
-    fn repo_lock(&self, dir: &PathBuf) -> Arc<Mutex<Option<String>>> {
-        self.repos.lock().unwrap_or_else(|p| p.into_inner()).entry(dir.clone()).or_default().clone()
+    fn locks(&self, dir: &Path) -> Arc<RepoLocks> {
+        self.repos.lock().unwrap_or_else(|p| p.into_inner()).entry(dir.to_path_buf()).or_default().clone()
+    }
+
+    /// Serializes writes to `git`'s repository with setup and fetches for as long as it's held.
+    pub fn write_lock(&self, git: &Git) -> WriteLock {
+        WriteLock(self.locks(git.git_dir()))
     }
 
     /// Where assistant checkouts of a repository live (next to the clones).
@@ -58,11 +71,12 @@ impl RepoStore {
     pub fn ensure_repo(&self, owner: &str, repo: &str, clone_url: &str) -> Result<Git> {
         let dir = self.repo_dir(owner, repo);
         let git = Git::new(&dir, self.github_token.clone());
-        let lock = self.repo_lock(&dir);
-        let mut set_up_with = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let locks = self.locks(&dir);
+        let mut set_up_with = lock(&locks.set_up_with);
         if set_up_with.as_deref() == Some(clone_url) {
             return Ok(git);
         }
+        let _writing = lock(&locks.writing);
         if !dir.join("HEAD").exists() {
             std::fs::create_dir_all(&dir)?;
             git.run(&["init", "--bare", "--quiet"])?;
@@ -85,8 +99,8 @@ impl RepoStore {
     pub fn fetch_pr(&self, git: &Git, number: u64, base_ref: &str) -> Result<FetchedPr> {
         let head_ref = format!("refs/wispy/pull/{number}/head");
         let base_local = format!("refs/wispy/heads/{base_ref}");
-        let lock = self.repo_lock(&git.git_dir().to_path_buf());
-        let _writing = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = self.write_lock(git);
+        let _writing = lock.hold();
         git.run(&[
             "fetch",
             "--quiet",
@@ -114,8 +128,8 @@ impl RepoStore {
         let mut args = vec!["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--filter=blob:none", "origin"];
         args.extend(refspecs.iter().map(String::as_str));
         {
-            let lock = self.repo_lock(&git.git_dir().to_path_buf());
-            let _writing = lock.lock().unwrap_or_else(|p| p.into_inner());
+            let lock = self.write_lock(git);
+            let _writing = lock.hold();
             git.run(&args)?;
         }
 
@@ -143,8 +157,8 @@ impl RepoStore {
         }
         let mut input = missing.join("\n");
         input.push('\n');
-        let lock = self.repo_lock(&git.git_dir().to_path_buf());
-        let _writing = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = self.write_lock(git);
+        let _writing = lock.hold();
         git.run_with_stdin(
             &[
                 "-c",
@@ -162,4 +176,17 @@ impl RepoStore {
         )?;
         Ok(missing.len())
     }
+}
+
+/// A repository's write lock (see [`RepoStore::write_lock`]).
+pub struct WriteLock(Arc<RepoLocks>);
+
+impl WriteLock {
+    pub fn hold(&self) -> MutexGuard<'_, ()> {
+        lock(&self.0.writing)
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
 }
