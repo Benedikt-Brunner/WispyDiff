@@ -3,6 +3,8 @@ name = "wispydiff"
 description = "Distraction-free review of stacked GitHub PRs"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "wispydiff_lib"
