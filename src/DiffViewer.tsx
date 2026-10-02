@@ -409,9 +409,9 @@ export function DiffViewer(props: Props) {
 
   // Keep the reader's place when the view or the layout changes.
   const previousView = useRef<string | null>(null);
-  /** After `v`: once the viewed file has collapsed, put `next`'s header at the top. */
-  const pendingFile = useRef<{ viewed: number; next: number } | null>(null);
-  /** After toggling a file (s, e, Space, v): it stays the current file once the layout changes. */
+  /** After `v` or collapsing (e, Space): once `from` has collapsed, put `next`'s header at the top. */
+  const pendingFile = useRef<{ from: number; next: number } | null>(null);
+  /** After toggling a file (s, expanding, un-viewing): it stays the current file once the layout changes. */
   const keepFile = useRef<number | null>(null);
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -421,7 +421,7 @@ export function DiffViewer(props: Props) {
     let top = 0;
     const moveOn = pendingFile.current;
     let pin: number | null = null;
-    if (moveOn && previousView.current === viewId && layout.segments[moveOn.viewed]?.mode === "collapsed") {
+    if (moveOn && previousView.current === viewId && layout.segments[moveOn.from]?.mode === "collapsed") {
       pendingFile.current = null;
       top = layout.rowY(layout.segments[moveOn.next].start);
       pin = moveOn.next;
@@ -947,11 +947,15 @@ export function DiffViewer(props: Props) {
           });
           break;
         case "e":
-        case " ":
-          // Collapse/expand without touching the viewed mark.
-          keepFile.current = here.file;
+        case " ": {
+          // Collapse/expand without touching the viewed mark. Collapsing moves on to the next
+          // file that's still open, like `v`.
+          const next = here.mode === "collapsed" ? -1 : layout.segments.findIndex((s) => s.file > here.file && s.mode !== "collapsed");
+          if (next >= 0) pendingFile.current = { from: here.file, next };
+          else keepFile.current = here.file;
           toggleCollapsed(here);
           break;
+        }
         case "c":
           if (hovered.current) openComposer(hovered.current, hovered.current);
           else openFileComposer(here.file);
@@ -987,7 +991,7 @@ export function DiffViewer(props: Props) {
             if (!viewed) setCollapsed((s) => withOut(s, file.path));
             // Marking viewed moves on to the next file still to review, so v, v, v… works.
             const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key)) : -1;
-            if (next >= 0) pendingFile.current = { viewed: here.file, next };
+            if (next >= 0) pendingFile.current = { from: here.file, next };
             else keepFile.current = here.file;
           });
           break;
