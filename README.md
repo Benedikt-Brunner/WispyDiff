@@ -1,4 +1,9 @@
-<p align="center"><img src="assets/logo/wordmark.svg" alt="WispyDiff" height="64"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/wordmark-light.svg">
+    <img src="assets/logo/wordmark-dark.svg" alt="WispyDiff" height="64">
+  </picture>
+</p>
 
 A distraction-free, keyboard-first macOS app for reviewing **stacked GitHub PRs**.
 
