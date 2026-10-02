@@ -18,6 +18,8 @@ struct State {
     reviews: HashMap<u64, Vec<String>>,
     /// PR number → bodies of every review comment (for reconciliation lookups).
     comments: HashMap<u64, Vec<String>>,
+    /// PR number → the user's latest review (`viewerLatestReview`).
+    latest_review: HashMap<u64, Value>,
     next_id: u64,
     /// Simulated network outage: every request is dropped without a response.
     offline: bool,
@@ -166,6 +168,15 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
                 state.thread(number, c["path"].as_str().unwrap_or_default(), c["line"].as_u64(), c["start_line"].as_u64(), &side, false, first);
             }
             state.reviews.entry(number).or_default().push(text("body"));
+            let review_state = match text("event").as_str() {
+                "APPROVE" => "APPROVED",
+                "REQUEST_CHANGES" => "CHANGES_REQUESTED",
+                _ => "COMMENTED",
+            };
+            state.latest_review.insert(
+                number,
+                json!({ "state": review_state, "submittedAt": "2026-09-30T10:00:00Z", "commit": { "oid": text("commit_id") } }),
+            );
             let id = state.id();
             ("200 OK", json!({ "id": id, "state": text("event") }))
         }
@@ -194,7 +205,7 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
     }
 }
 
-fn search_nodes(fixture: &Fixture, numbers: &[u64]) -> Vec<Value> {
+fn search_nodes(fixture: &Fixture, state: &State, numbers: &[u64]) -> Vec<Value> {
     fixture
         .prs
         .iter()
@@ -208,7 +219,8 @@ fn search_nodes(fixture: &Fixture, numbers: &[u64]) -> Vec<Value> {
                 "headRefName": pr.head_ref, "baseRefName": pr.base_ref,
                 "headRefOid": run_git(&fixture.origin, &["rev-parse", &format!("refs/pull/{}/head", pr.number)]),
                 "author": { "login": if pr.number == 1 { "you" } else { "fixture-bot" } },
-                "repository": { "nameWithOwner": format!("{}/{}", fixture.owner, fixture.repo) }
+                "repository": { "nameWithOwner": format!("{}/{}", fixture.owner, fixture.repo) },
+                "viewerLatestReview": state.latest_review.get(&pr.number).cloned().unwrap_or(Value::Null)
             })
         })
         .collect()
@@ -230,7 +242,7 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
         // Review requested on the stack's upper PRs and the solo PR; the bottom PR is "mine".
         let q = variables["q"].as_str().unwrap_or_default();
         let numbers: &[u64] = if q.contains("review-requested:@me") { &[2, 3, 4, 5] } else { &[1] };
-        let nodes = search_nodes(fixture, numbers);
+        let nodes = search_nodes(fixture, state, numbers);
         return ("200 OK", json!({ "data": { "search": { "nodes": nodes } } }));
     }
     if query.contains("reviewThreads") {

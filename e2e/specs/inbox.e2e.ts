@@ -1,4 +1,4 @@
-import { clickButton, count, exists, goHome, gutterDrag, selectedChips, setOffline, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, count, exists, goHome, gutterDrag, selectedChips, setOffline, setTextarea, text, waitFor } from "./helpers";
 
 const openFromInbox = async (pr: number) => {
   await browser.execute((n: number) => document.querySelector<HTMLElement>(`[data-testid="inbox"] li[data-pr="${n}"]`)!.click(), pr);
@@ -17,6 +17,32 @@ describe("inbox", () => {
 
   it("prefetches every group so it opens offline", async () => {
     await waitFor(async () => (await count(".inbox-ready.ready")) === 2, 120_000);
+  });
+
+  it("shows the reviews I submitted", async () => {
+    // The comments spec approved #2 at its current head.
+    await waitFor(async () => (await text('li[data-pr="2"] .inbox-review')) === "you approved", 60_000);
+    expect(await exists('li[data-pr="2"] .inbox-review.ok')).toBe(true);
+    expect(await exists('li[data-pr="1"] .inbox-review')).toBe(false);
+  });
+
+  it("collapses and expands a stack with its toggle, Space/e and Enter", async () => {
+    const stack = '.inbox-group[data-group="1,2,3,4"]';
+    const collapsed = () => exists(`${stack}[data-collapsed]`);
+    await click(`${stack} .inbox-toggle`);
+    await waitFor(collapsed);
+    expect(await count(`${stack} li`)).toBe(0);
+    expect(await text(`${stack} .inbox-summary`)).toMatch(/^\d\/4 reviewed$/);
+    expect(await exists(`${stack} .inbox-group-head.selected`)).toBe(true);
+
+    await browser.keys(" ");
+    await waitFor(async () => !(await collapsed()));
+    expect(await count(`${stack} li`)).toBe(4);
+    await browser.keys("e");
+    await waitFor(collapsed);
+    await browser.keys("Enter");
+    await waitFor(async () => !(await collapsed()));
+    expect(await browser.execute(() => document.querySelector(".inbox-group li.selected")?.getAttribute("data-pr"))).toBe("1");
   });
 
   it("opens a PR from the inbox with its stack", async () => {

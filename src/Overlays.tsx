@@ -72,7 +72,8 @@ const SHORTCUTS: [string, [string[], string][]][] = [
     "Inbox",
     [
       [["j", "k"], "Move down / up"],
-      [["↵"], "Open"],
+      [["↵"], "Open (a collapsed stack: expand)"],
+      [["Space", "e"], "Collapse / expand the stack"],
       [["r"], "Refresh"],
     ],
   ],

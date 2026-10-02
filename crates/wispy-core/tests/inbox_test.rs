@@ -6,7 +6,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use wispy_core::cache::Cache;
 use wispy_core::github::GitHubClient;
 use wispy_core::highlight::Highlighter;
-use wispy_core::inbox::{group, merge, InboxPr};
+use wispy_core::inbox::{group, merge, InboxPr, MyReview};
+use wispy_core::progress::{Checkpoint, CheckpointEntry};
 use wispy_core::repo_store::RepoStore;
 use wispy_core::service::PrService;
 
@@ -24,6 +25,7 @@ fn inbox_pr(repo: &str, number: u64, base: &str, head: &str, updated: &str) -> I
         updated_at: updated.into(),
         requested: true,
         authored: false,
+        my_review: None,
     }
 }
 
@@ -109,6 +111,100 @@ async fn searches_review_requests_and_authored_prs() {
     prs.sort_by_key(|p| p.number);
     let flags: Vec<(u64, bool, bool)> = prs.iter().map(|p| (p.number, p.requested, p.authored)).collect();
     assert_eq!(flags, vec![(1, true, false), (2, true, true), (3, false, true)]);
+}
+
+#[tokio::test]
+async fn search_results_carry_my_latest_submitted_review() {
+    let server = MockServer::start().await;
+    let node = |number: u64, review: serde_json::Value| {
+        serde_json::json!({
+            "number": number, "title": format!("PR {number}"), "url": "u", "isDraft": false, "updatedAt": "2026-09-30T00:00:00Z",
+            "headRefName": format!("h{number}"), "baseRefName": "main", "headRefOid": format!("sha{number}"),
+            "author": { "login": "someone" }, "repository": { "nameWithOwner": "acme/shop" },
+            "viewerLatestReview": review
+        })
+    };
+    let nodes = serde_json::json!([
+        node(1, serde_json::json!({ "state": "APPROVED", "submittedAt": "2026-09-29T00:00:00Z", "commit": { "oid": "old1" } })),
+        node(2, serde_json::json!({ "state": "PENDING", "submittedAt": null, "commit": { "oid": "sha2" } })),
+        node(3, serde_json::Value::Null),
+    ]);
+    Mock::given(path("/graphql"))
+        .and(body_string_contains("review-requested:@me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": { "search": { "nodes": nodes } } })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/graphql"))
+        .and(body_string_contains("author:@me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": { "search": { "nodes": [] } } })))
+        .mount(&server)
+        .await;
+
+    let github = GitHubClient::new(server.uri(), "t").unwrap();
+    let mut prs = github.inbox().await.unwrap();
+    prs.sort_by_key(|p| p.number);
+    let reviews: Vec<Option<MyReview>> = prs.into_iter().map(|p| p.my_review).collect();
+    assert_eq!(
+        reviews,
+        vec![
+            Some(MyReview { state: "APPROVED".into(), commit: "old1".into(), submitted_at: "2026-09-29T00:00:00Z".into() }),
+            None, // a pending review isn't submitted yet
+            None,
+        ]
+    );
+}
+
+#[test]
+fn inbox_entries_tell_what_i_reviewed_and_whether_it_changed_since() {
+    let data = tempfile::tempdir().unwrap();
+    let cache_path = data.path().join("cache.sqlite");
+    let service = PrService::new(
+        GitHubClient::new("http://127.0.0.1:9", "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&cache_path).unwrap(),
+        Highlighter::new(),
+    );
+    let checkpoints = Cache::open(&cache_path).unwrap();
+    let checkpoint = |id: &str, created_at: i64, source: &str, entries: &[(u64, &str)]| Checkpoint {
+        id: id.into(),
+        repo: "acme/shop".into(),
+        created_at,
+        source: source.into(),
+        entries: entries.iter().map(|&(pr, head)| CheckpointEntry { pr, head: head.into(), base: "base".into() }).collect(),
+    };
+    // Marked #1 and #2 reviewed; #2 has been pushed to since. Submitting #3 isn't a mark.
+    checkpoints.put_checkpoint(&checkpoint("c1", 1, "manual", &[(1, "sha1"), (2, "old2")])).unwrap();
+    checkpoints.put_checkpoint(&checkpoint("c2", 2, "submit", &[(3, "sha3")])).unwrap();
+
+    let review = |state: &str, commit: &str| Some(MyReview { state: state.into(), commit: commit.into(), submitted_at: "t".into() });
+    let mut prs = vec![
+        inbox_pr("acme/shop", 1, "main", "a", "1"),
+        inbox_pr("acme/shop", 2, "a", "b", "1"),
+        inbox_pr("acme/shop", 3, "b", "c", "1"),
+    ];
+    prs[0].my_review = review("APPROVED", "sha1");
+    prs[2].my_review = review("COMMENTED", "old3");
+    let groups = group(prs);
+
+    let progress = |service: &PrService| -> Vec<(Option<String>, bool, bool, bool)> {
+        service.inbox_entries(groups.clone()).unwrap()[0]
+            .progress
+            .iter()
+            .map(|p| (p.review.clone(), p.changed_since_review, p.marked, p.changed_since_marked))
+            .collect()
+    };
+    assert_eq!(
+        progress(&service),
+        vec![
+            (Some("APPROVED".into()), false, true, false),
+            (None, false, true, true),
+            (Some("COMMENTED".into()), true, false, false),
+        ]
+    );
+
+    // Marking #2 again at its current head: nothing new since.
+    checkpoints.put_checkpoint(&checkpoint("c3", 3, "manual", &[(2, "sha2")])).unwrap();
+    assert_eq!(progress(&service)[1], (None, false, true, false));
 }
 
 #[tokio::test]

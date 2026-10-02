@@ -395,6 +395,7 @@ pub async fn submit_review(
     pr_index: usize,
     verdict: Verdict,
     summary: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Outcome, String> {
     let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
@@ -403,6 +404,8 @@ pub async fn submit_review(
         // Submitting counts as having reviewed this PR at its current head.
         let _ = service.mark_reviewed(&snapshot, pr_index, pr_index, "submit");
     }
+    // So the inbox shows the new review.
+    refresh_inbox(app);
     Ok(outcome)
 }
 

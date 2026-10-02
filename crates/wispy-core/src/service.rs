@@ -57,6 +57,22 @@ pub struct InboxEntry {
     pub ready: bool,
     /// Unposted drafts on the group's PRs.
     pub drafts: usize,
+    /// Review progress of each of the group's PRs (same order).
+    pub progress: Vec<PrProgress>,
+}
+
+/// Where the user stands with one inbox PR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrProgress {
+    /// State of the user's latest submitted review on GitHub, if any.
+    pub review: Option<String>,
+    /// The PR's head moved since that review.
+    pub changed_since_review: bool,
+    /// Marked as reviewed (`M`, local) at some head.
+    pub marked: bool,
+    /// The PR's head moved since the latest mark.
+    pub changed_since_marked: bool,
 }
 
 const INBOX_KEY: &str = "inbox";
@@ -373,7 +389,22 @@ impl PrService {
                     let reference = PrRef { owner: owner_of(&group.repo).into(), repo: name_of(&group.repo).into(), number: pr.number };
                     matches!(self.cache.stack(&reference), Ok(Some(s)) if s.heads.contains(&pr.head_sha))
                 });
-                Ok(InboxEntry { group, ready, drafts })
+                // Newest first: the first manual checkpoint covering a PR is its latest mark.
+                let marks: Vec<Checkpoint> = self.cache.checkpoints(&group.repo)?.into_iter().filter(|c| c.source == "manual").collect();
+                let progress = group
+                    .prs
+                    .iter()
+                    .map(|pr| {
+                        let mark = marks.iter().find_map(|c| c.entry(pr.number));
+                        PrProgress {
+                            review: pr.my_review.as_ref().map(|r| r.state.clone()),
+                            changed_since_review: pr.my_review.as_ref().is_some_and(|r| r.commit != pr.head_sha),
+                            marked: mark.is_some(),
+                            changed_since_marked: mark.is_some_and(|m| m.head != pr.head_sha),
+                        }
+                    })
+                    .collect();
+                Ok(InboxEntry { group, ready, drafts, progress })
             })
             .collect()
     }

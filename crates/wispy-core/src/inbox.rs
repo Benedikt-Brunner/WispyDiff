@@ -23,6 +23,20 @@ pub struct InboxPr {
     pub requested: bool,
     /// The user opened it.
     pub authored: bool,
+    /// The user's latest submitted review on GitHub (from any client).
+    #[serde(default)]
+    pub my_review: Option<MyReview>,
+}
+
+/// A review the user submitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyReview {
+    /// GitHub's state: `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
+    pub state: String,
+    /// The head it was submitted on.
+    pub commit: String,
+    pub submitted_at: String,
 }
 
 /// PRs of one repo that stack on each other (bottom first), or a single PR.

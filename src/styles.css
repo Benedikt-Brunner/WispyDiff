@@ -818,6 +818,10 @@ body.resizing {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
 }
+.badge.ok {
+  background: color-mix(in srgb, var(--add-fg) 15%, transparent);
+  color: var(--add-fg);
+}
 .badge.warn {
   background: color-mix(in srgb, var(--pr1) 18%, transparent);
   color: var(--pr1);
@@ -1102,10 +1106,31 @@ body.resizing {
   padding: 6px 14px;
   cursor: pointer;
 }
-.inbox-group li.selected {
+.inbox-group li.selected,
+.inbox-group-head.selected {
   background: var(--selection);
 }
+.inbox-group.collapsed .inbox-group-head {
+  border-bottom: 0;
+  cursor: pointer;
+}
+.inbox-toggle {
+  flex: none;
+  width: 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.inbox-group li .badge,
+.inbox-group-head .badge {
+  flex: none;
+  white-space: nowrap;
+}
 .inbox-pr-title {
+  min-width: 0;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;

@@ -89,10 +89,14 @@ export default function App() {
       .finally(() => (checking.current = false));
   }, []);
 
+  // Re-read on every return home: marks made since (M) show up without a refresh.
   useEffect(() => {
+    if (!home) return;
     invoke<InboxEntry[]>("get_inbox")
       .then(setInbox)
       .catch(() => undefined);
+  }, [home]);
+  useEffect(() => {
     const updates = listen<InboxEntry[]>("inbox-updated", ({ payload }) => setInbox(payload));
     // Each background refresh (launch, every 5 minutes, window focus) also checks the open PR.
     const status = listen<string>("inbox-status", ({ payload }) => {

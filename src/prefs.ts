@@ -16,3 +16,16 @@ export function savePref(key: string, value: string) {
     // Ignore: preferences are a convenience only.
   }
 }
+
+export function loadList(key: string): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(`wispy.${key}`) ?? "[]");
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveList(key: string, values: string[]) {
+  savePref(key, JSON.stringify(values));
+}
