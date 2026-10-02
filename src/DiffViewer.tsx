@@ -41,6 +41,7 @@ import { RowStore } from "./rowStore";
 import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
 import { mod } from "./platform";
+import { ResizeHandle, useSidebarWidth } from "./Resizable";
 
 /** Rows drawn beyond the viewport, at least this many and at least a screen on each side. */
 const OVERSCAN = 20;
@@ -1306,8 +1307,10 @@ interface FileListProps {
 function FileList({ files, isViewed, segments, current, showPrs, onSelect }: FileListProps) {
   const activeRef = useRef<HTMLLIElement>(null);
   useEffect(() => activeRef.current?.scrollIntoView({ block: "nearest" }), [current]);
+  const width = useSidebarWidth("files", 280);
   return (
-    <nav className="file-list">
+    <nav className="file-list" style={{ width: width.width }}>
+      <ResizeHandle edge="right" {...width} />
       <ul>
         {files.map((f, i) => (
           <li

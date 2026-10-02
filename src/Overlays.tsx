@@ -65,6 +65,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [[keyLabel("I")], "Inbox"],
       [[keyLabel("T")], "Theme"],
       [["?", keyLabel("/")], "This list"],
+      [[keyLabel("+"), keyLabel("-"), keyLabel("0")], `Zoom in / out / reset (or ${keyLabel("scroll")})`],
     ],
   ],
   [

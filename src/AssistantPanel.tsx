@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AssistantSelection, AssistantThread, Provider, ThreadAnchor } from "./api";
 import { loadPref, savePref } from "./prefs";
 import { mod, keyLabel } from "./platform";
+import { ResizeHandle, useSidebarWidth } from "./Resizable";
 
 const MODELS: Record<Provider, string[]> = {
   claude: ["", "opus", "sonnet", "haiku", "fable"],
@@ -37,6 +38,7 @@ interface Props {
 
 /** Side-panel conversations with Claude Code or Codex about the range or a selection. */
 export function AssistantPanel({ threads, activeId, context, pending, note, onSelect, onAsk, onDraft, onDelete, onClose }: Props) {
+  const width = useSidebarWidth("assistant", 420);
   const [provider, setProvider] = useState<Provider>(() => loadPref("assistant.provider", ["claude", "codex"] as const, "claude"));
   const [model, setModel] = useState(() => localValue(`assistant.model.${provider}`));
   const [effort, setEffort] = useState(() => localValue(`assistant.effort.${provider}`));
@@ -65,7 +67,8 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
   };
 
   return (
-    <aside className="code-panel assistant-panel" data-testid="assistant-panel">
+    <aside className="code-panel assistant-panel" style={{ width: width.width }} data-testid="assistant-panel">
+      <ResizeHandle edge="left" {...width} />
       <div className="panel-head">
         <select className="verdict" value={activeId ?? ""} onChange={(e) => onSelect(e.target.value || null)} data-testid="assistant-threads">
           <option value="">New conversation</option>

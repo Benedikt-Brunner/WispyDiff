@@ -37,8 +37,9 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
   - Stack: `Tab`/`⇧Tab` next/previous PR on its own (wrapping); `[ ]` move the range, `{ }` extend it; `w` whitespace; `M` mark reviewed; `d` since checkpoint.
   - Files: `s`/`S` side-by-side (file/all); `z` line wrap; `Space` or `e` collapse/expand without touching the viewed mark — collapsing moves on to the next file that isn't collapsed; `v` viewed — marking moves on to the next file not yet viewed, so `v v v` ticks off consecutive files. A file reached by `n`/`p`/the file list/`v`/collapsing stays the current file while the view stays put, even when it is one of the last files and can't scroll to the top (so a collapsed file above it never takes over).
   - Review: `c` comment, `⌘`-click / `u` usages, `/` search repo, `a` assistant; `Esc` closes the assistant first, then other panels, then an open comment box.
-  - Anywhere: `⌘K` palette, `⌘I` inbox, `⌘T` theme.
+  - Anywhere: `⌘K` palette, `⌘I` inbox, `⌘T` theme, `⌘+`/`⌘-`/`⌘0` zoom in/out/reset (also `⌘`+scroll wheel; the whole window scales, remembered).
 - **Themes** (`⌘T`, or `> Change theme…`): System (follows the OS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia, E-Ink (black on white, syntax by weight instead of colour, no shadows, jumps land instantly instead of gliding). Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
+- Sidebars (file list, usages/search, assistant) resize by dragging their inner edge; double-click resets. Widths are remembered per sidebar.
 - Scrolling never shows blank rows: rows for a new scroll position render before the frame paints, a screen of rows is drawn beyond each edge, and rows two screens ahead are fetched.
 
 ## Offline
