@@ -19,6 +19,10 @@ export const getRows = (viewId: string, file: number, start: number, end: number
 export const getSplitRows = (viewId: string, file: number, start: number, end: number) =>
   invoke<SplitRow[]>("get_split_rows", { viewId, file, start, end });
 
+/** For line wrapping: `[offset, width]` of the code rows wider than `minWidth` columns, per (file, side by side). */
+export const getRowWidths = (viewId: string, files: [number, boolean][], minWidth: number) =>
+  invoke<[number, number][][]>("get_row_widths", { viewId, files, minWidth });
+
 export const getIgnorePatterns = (repo: string) => invoke<string[]>("get_ignore_patterns", { repo });
 
 export const setIgnorePatterns = (repo: string, patterns: string[]) =>

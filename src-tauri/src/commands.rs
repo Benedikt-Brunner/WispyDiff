@@ -220,19 +220,41 @@ pub async fn get_split_rows(
     end: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<SplitRow>, String> {
-    let key = format!("{view_id}#{file}");
-    let rows = match state.split_file(&key) {
-        Some(rows) => rows,
-        None => {
-            let (view, snapshot) = state.view_with_stack(&view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
-            let service = state.service()?;
-            let rows = Arc::new(blocking(move || service.split_rows(&snapshot, &view, file)).await?);
-            state.remember_split_file(&key, rows.clone());
-            rows
-        }
-    };
+    let rows = split_file(&state, &view_id, file).await?;
     let (start, end) = (start.max(1) as usize - 1, (end as usize).saturating_sub(1).min(rows.len()));
     Ok(rows[start.min(end)..end].to_vec())
+}
+
+/// A file's side-by-side rows, computed once per view.
+async fn split_file(state: &AppState, view_id: &str, file: usize) -> Result<Arc<Vec<SplitRow>>, String> {
+    let key = format!("{view_id}#{file}");
+    if let Some(rows) = state.split_file(&key) {
+        return Ok(rows);
+    }
+    let (view, snapshot) = state.view_with_stack(view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
+    let service = state.service()?;
+    let rows = Arc::new(blocking(move || service.split_rows(&snapshot, &view, file)).await?);
+    state.remember_split_file(&key, rows.clone());
+    Ok(rows)
+}
+
+/// For line wrapping: `[offset, width]` of the code rows wider than `min_width` columns, for
+/// each requested `(file, side_by_side)`.
+#[tauri::command]
+pub async fn get_row_widths(view_id: String, files: Vec<(usize, bool)>, min_width: u32, state: State<'_, AppState>) -> Result<Vec<Vec<[u32; 2]>>, String> {
+    let mut out = Vec::with_capacity(files.len());
+    for (file, split) in files {
+        out.push(if split {
+            wispy_core::wrap::split_widths(&split_file(&state, &view_id, file).await?, min_width)
+        } else {
+            let view = state.view(&view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
+            if file >= view.summary.files.len() {
+                return Err("no such file".into());
+            }
+            wispy_core::wrap::unified_widths(wispy_core::model::file_slice(&view, file), min_width)
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

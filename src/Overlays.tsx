@@ -100,6 +100,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
     [
       [["s"], "Side by side for this file"],
       [["S"], "Side by side for all files"],
+      [["z"], "Wrap long lines"],
       [["Space", "e"], "Collapse / expand the file"],
       [["v"], "Mark viewed and go to the next file"],
     ],

@@ -4,6 +4,7 @@ import {
   acceptsLineComment,
   createDraft,
   deleteDraft,
+  getRowWidths,
   grep,
   locateAnchors,
   locateLine,
@@ -34,7 +35,7 @@ import {
   type ShownDraft,
 } from "./comments";
 import { Composer, DraftCard, InsertBox, ThreadCard } from "./Inserts";
-import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment } from "./layout";
+import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment, type WrappedRows } from "./layout";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
 import { instantJumps } from "./themes";
@@ -73,6 +74,9 @@ interface Props {
   /** Global default for files without a per-file choice. */
   defaultMode: BaseMode;
   onDefaultModeChange: (mode: BaseMode) => void;
+  /** Wrap long lines instead of scrolling sideways (global, remembered). */
+  wrap: boolean;
+  onWrapChange: (wrap: boolean) => void;
   /** Files the user asked to collapse in this repo (ignore patterns). */
   isIgnored: (path: string) => boolean;
   /** Viewed marks, by file content key. */
@@ -81,12 +85,15 @@ interface Props {
 }
 
 export function DiffViewer(props: Props) {
-  const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, isIgnored } = props;
+  const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, wrap, onWrapChange, isIgnored } = props;
   const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(800);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  /** Width of one monospace column in the diff, in pixels. */
+  const [charWidth, setCharWidth] = useState(0);
   const [, setVersion] = useState(0);
 
   // Per-file choices, by path so they survive range switches.
@@ -259,7 +266,66 @@ export function DiffViewer(props: Props) {
     return out;
   }, [items, locations, baseLayout, summary, heights]);
 
-  const layout = useMemo(() => new Layout(summary, modeOf, placed), [summary, modeOf, placed]);
+  // ---------- line wrap ----------
+  const gutterChars = Math.max(3, String(summary.max_line_number).length);
+  /** Code columns per line when wrapping (see the .wrap rules in styles.css for the paddings). */
+  const columns = useMemo(() => {
+    if (!wrap || !charWidth || !viewportWidth) return null;
+    const fit = (px: number) => Math.max(20, Math.floor(px / charWidth));
+    return {
+      unified: fit(viewportWidth - (gutterChars * 2 * charWidth + 44) - WRAP_PAD_UNIFIED),
+      split: fit(viewportWidth / 2 - 1 - (gutterChars * charWidth + 30) - WRAP_PAD_SPLIT),
+    };
+  }, [wrap, charWidth, viewportWidth, gutterChars]);
+  /** Widths of the rows wider than `min` columns, per `file:mode`, fetched as files need them. */
+  const [rowWidths, setRowWidths] = useState<{ viewId: string; files: Map<string, { min: number; rows: [number, number][] }> }>({ viewId, files: new Map() });
+  const widths = rowWidths.viewId === viewId ? rowWidths.files : null;
+  const requested = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!columns) return;
+    if (!widths) {
+      requested.current = new Map();
+      setRowWidths({ viewId, files: new Map() });
+      return;
+    }
+    const wanted: [number, boolean][] = [];
+    let min = Infinity;
+    summary.files.forEach((_, file) => {
+      const mode = modeOf(file);
+      if (mode === "collapsed") return;
+      const key = `${file}:${mode}`;
+      const cols = columns[mode];
+      if ((widths.get(key)?.min ?? Infinity) <= cols || (requested.current.get(key) ?? Infinity) <= cols) return;
+      wanted.push([file, mode === "split"]);
+      // A bit below what fits now, so narrowing the window a little needs no new request.
+      min = Math.min(min, Math.floor(cols * 0.8));
+    });
+    if (!wanted.length) return;
+    for (const [file, split] of wanted) requested.current.set(`${file}:${split ? "split" : "unified"}`, min);
+    getRowWidths(viewId, wanted, min)
+      .then((result) =>
+        setRowWidths((current) => {
+          if (current.viewId !== viewId) return current;
+          const files = new Map(current.files);
+          wanted.forEach(([file, split], i) => files.set(`${file}:${split ? "split" : "unified"}`, { min, rows: result[i] }));
+          return { viewId, files };
+        }),
+      )
+      .catch((e) => console.error("row widths failed", e));
+  }, [columns, widths, summary, modeOf, viewId]);
+  const wrappedOf = useCallback(
+    (file: number, mode: Mode): WrappedRows => {
+      const known = columns && mode !== "collapsed" ? widths?.get(`${file}:${mode}`) : undefined;
+      if (!columns || !known) return NO_ROWS;
+      const cols = columns[mode as BaseMode];
+      const out: [number, number][] = [];
+      for (const [offset, width] of known.rows) if (width > cols) out.push([offset, Math.ceil(width / cols) - 1]);
+      return out;
+    },
+    [columns, widths],
+  );
+
+  const layout = useMemo(() => new Layout(summary, modeOf, placed, wrappedOf), [summary, modeOf, placed, wrappedOf]);
   const placedItems = useMemo(() => new Map(placed.map((p) => [p.key, p.item])), [placed]);
 
   /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
@@ -384,6 +450,9 @@ export function DiffViewer(props: Props) {
     if (!el) return;
     const measure = () => {
       setViewportHeight(el.clientHeight);
+      setViewportWidth(el.clientWidth);
+      const probe = canvasRef.current?.querySelector<HTMLElement>(".char-probe");
+      if (probe) setCharWidth(probe.getBoundingClientRect().width / probe.textContent!.length);
       // Side-by-side rows always span exactly the viewport (see .row-split).
       canvasRef.current?.style.setProperty("--vw", `${el.clientWidth}px`);
     };
@@ -624,6 +693,7 @@ export function DiffViewer(props: Props) {
     const offset = row - segment.start;
     const file = summary.files[segment.file];
     const y = layout.rowY(row);
+    const height = columns ? layout.rowHeight(row) : ROW_HEIGHT;
     const key = `${segment.file}:${segment.mode}:${offset}`;
     const selected =
       (selection !== null && selection.file === segment.file && selection.mode === segment.mode && offset >= selection.from && offset <= selection.to) ||
@@ -640,6 +710,7 @@ export function DiffViewer(props: Props) {
         <SplitRowView
           key={key}
           y={y}
+          height={height}
           row={split}
           showAttribution={showAttribution}
           selected={selected}
@@ -658,6 +729,7 @@ export function DiffViewer(props: Props) {
         <DiffRow
           key={key}
           y={y}
+          height={height}
           row={unified}
           prs={prs}
           showAttribution={showAttribution}
@@ -864,6 +936,9 @@ export function DiffViewer(props: Props) {
           keepFile.current = here.file;
           toggleFileMode(here);
           break;
+        case "z":
+          changeLayout(() => onWrapChange(!wrap));
+          break;
         case "S":
           changeLayout(() => {
             setOverrides(new Map());
@@ -925,9 +1000,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
-
-  const gutterChars = Math.max(3, String(summary.max_line_number).length);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
 
   return (
     <div className="diff-layout">
@@ -960,15 +1033,21 @@ export function DiffViewer(props: Props) {
         >
           <div
             ref={canvasRef}
-            className="diff-canvas"
+            className={`diff-canvas${columns ? " wrap" : ""}`}
             style={
               {
                 height: layout.height,
                 "--gutter-ch": gutterChars,
-                minWidth: `calc(${summary.max_line_chars + 4}ch + ${gutterChars * 2}ch + 48px)`,
+                // Wrapped: no sideways scrolling, and each line's code is exactly this many columns.
+                "--wrap-unified": columns?.unified,
+                "--wrap-split": columns?.split,
+                minWidth: columns ? undefined : `calc(${summary.max_line_chars + 4}ch + ${gutterChars * 2}ch + 48px)`,
               } as React.CSSProperties
             }
           >
+            <span className="char-probe" aria-hidden>
+              {"0".repeat(100)}
+            </span>
             {rendered}
           </div>
         </div>
@@ -1023,7 +1102,12 @@ function wordAt(x: number, y: number): string | null {
   return /^[A-Za-z_]/.test(word) ? word : null;
 }
 
-const at = (y: number): React.CSSProperties => ({ transform: `translateY(${y}px)` });
+const at = (y: number, height = ROW_HEIGHT): React.CSSProperties =>
+  height === ROW_HEIGHT ? { transform: `translateY(${y}px)` } : { transform: `translateY(${y}px)`, height };
+const NO_ROWS: WrappedRows = [];
+/** Horizontal padding of a wrapped line's code (unified leaves room for the PR tag). */
+const WRAP_PAD_UNIFIED = 8 + 48;
+const WRAP_PAD_SPLIT = 8 + 24;
 
 const FileHeader = memo(function FileHeader({ y, file, mode, onComment }: { y: number; file: FileSummary; mode: Mode; onComment: () => void }) {
   return (
@@ -1076,6 +1160,7 @@ type GutterHandler = (event: "down" | "enter" | "up" | "hover", file: number, mo
 
 interface RowProps {
   y: number;
+  height: number;
   row?: Row;
   prs: PullRequest[];
   showAttribution: boolean;
@@ -1099,8 +1184,8 @@ const gutterEvents = (onGutter: GutterHandler, file: number, mode: "unified" | "
   onMouseUp: () => onGutter("up", file, mode, offset, side),
 });
 
-const DiffRow = memo(function DiffRow({ y, row, prs, showAttribution, tag, selected, file, offset, onGutter, marker, onMarker }: RowProps) {
-  const style = at(y);
+const DiffRow = memo(function DiffRow({ y, height, row, prs, showAttribution, tag, selected, file, offset, onGutter, marker, onMarker }: RowProps) {
+  const style = at(y, height);
   if (!row) return <div className="row row-loading" style={style} />;
   switch (row.k) {
     case RowKind.Hunk:
@@ -1154,6 +1239,7 @@ const sideClass = (kind: number) =>
 
 interface SplitProps {
   y: number;
+  height: number;
   row?: SplitRow;
   showAttribution: boolean;
   selected: boolean;
@@ -1164,8 +1250,8 @@ interface SplitProps {
   onMarker: (threadId: string) => void;
 }
 
-const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selected, file, offset, onGutter, marker, onMarker }: SplitProps) {
-  if (!row) return <div className="row row-loading" style={at(y)} />;
+const SplitRowView = memo(function SplitRowView({ y, height, row, showAttribution, selected, file, offset, onGutter, marker, onMarker }: SplitProps) {
+  if (!row) return <div className="row row-loading" style={at(y, height)} />;
   const side = (no: number | null, kind: number, segs: Seg[], pr: number | null, left: boolean) => {
     const cls = sideClass(kind);
     const attributed = showAttribution && pr !== null;
@@ -1191,7 +1277,7 @@ const SplitRowView = memo(function SplitRowView({ y, row, showAttribution, selec
   return (
     <div
       className={`row row-split${selected ? " selected" : ""}`}
-      style={{ transform: `translate(var(--split-x, 0px), ${y}px)` }}
+      style={{ transform: `translate(var(--split-x, 0px), ${y}px)`, height: height === ROW_HEIGHT ? undefined : height }}
       onMouseEnter={() => onGutter("hover", file, "split", offset, "new")}
       data-file={file}
       data-mode="split"
