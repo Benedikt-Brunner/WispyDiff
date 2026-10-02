@@ -19,7 +19,8 @@ const MAX_OPEN_VIEWS: usize = 4;
 /// Side-by-side files kept in memory.
 const MAX_SPLIT_FILES: usize = 32;
 
-/// `WISPY_DATA_DIR` overrides the location (tests); default `~/Library/Application Support/WispyDiff`.
+/// `WISPY_DATA_DIR` overrides the location (tests); default `~/Library/Application Support/WispyDiff`
+/// on macOS, `$XDG_DATA_HOME/WispyDiff` (usually `~/.local/share/WispyDiff`) on Linux.
 pub fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Ok(dir) = std::env::var("WISPY_DATA_DIR") {
         return Ok(PathBuf::from(dir));

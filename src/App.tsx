@@ -28,6 +28,7 @@ import { loadPref, savePref } from "./prefs";
 import { rememberPr } from "./recent";
 import { rangeForKey, StackBar } from "./StackBar";
 import { prLabel, type Checkpoint, type OpenedRange, type OpenedStack, type Range } from "./types";
+import { mod, keyLabel } from "./platform";
 import "./styles.css";
 
 /** Which ranges the backend has precomputed, per stack (`"lo-hi"` keys). */
@@ -310,25 +311,25 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key === "k") {
+      if (mod(e) && e.key === "k") {
         e.preventDefault();
         setError(null);
         setOverlay(null);
         setPaletteOpen(true);
-      } else if (e.metaKey && e.key === "t") {
+      } else if (mod(e) && e.key === "t") {
         e.preventDefault();
         setPaletteOpen(false);
         setOverlay("theme");
-      } else if ((e.metaKey && e.key === "/") || (e.key === "?" && !e.metaKey && !isTypingIn(e.target))) {
+      } else if ((mod(e) && e.key === "/") || (e.key === "?" && !mod(e) && !isTypingIn(e.target))) {
         e.preventDefault();
         setPaletteOpen(false);
         setOverlay("shortcuts");
       } else if (overlay) {
         return;
-      } else if (e.metaKey && e.key === "i") {
+      } else if (mod(e) && e.key === "i") {
         e.preventDefault();
         setHome(true);
-      } else if (e.metaKey && e.key === "b") {
+      } else if (mod(e) && e.key === "b") {
         e.preventDefault();
         setShowFiles((s) => !s);
       } else if (!paletteOpen && !sheetOpen && !home && stack && shown && !e.metaKey && !e.ctrlKey && !e.altKey && !isTypingIn(e.target)) {
@@ -376,7 +377,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="titlebar" data-tauri-drag-region>
-        <button className="titlebar-home" title="Inbox (⌘I)" onClick={() => setHome(true)}>
+        <button className="titlebar-home" title={`Inbox (${keyLabel("I")})`} onClick={() => setHome(true)}>
           <Mark className="titlebar-mark" />
         </button>
         {showingDiff ? (

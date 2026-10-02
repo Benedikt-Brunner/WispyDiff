@@ -1,4 +1,4 @@
-import { click, exists, openViaPalette, pressShifted, scrollTop, selectedChips, settled, text, waitFor } from "./helpers";
+import { click, exists, openViaPalette, pressShifted, scrollTop, selectedChips, settled, text, waitFor, MOD } from "./helpers";
 
 const activeFile = () => browser.execute(() => document.querySelector(".file-list li.active")?.getAttribute("title") ?? null);
 const fileNames = () => browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")!));
@@ -107,22 +107,25 @@ describe("keyboard", () => {
 
   it("previews themes with ⌘T, reverts on Escape and keeps one on Enter", async () => {
     const before = await theme();
-    await browser.keys(["Meta", "t"]);
+    await browser.keys([MOD, "t"]);
     await waitFor(() => exists('[data-testid="theme-picker"]'));
-    await browser.keys("ArrowDown");
+    await browser.keys("ArrowDown"); // Light
+    if (before === "light") await browser.keys("ArrowDown"); // Dark: the system is light already
     await waitFor(async () => (await theme()) !== before);
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="theme-picker"]')));
-    expect(await theme()).toBe(before);
+    // WebKitGTK's prefers-color-scheme follows the window theme the preview set, so "system"
+    // settles once the window is back to following the desktop.
+    await waitFor(async () => (await theme()) === before, 5_000);
 
-    await browser.keys(["Meta", "t"]);
+    await browser.keys([MOD, "t"]);
     await waitFor(() => exists('[data-testid="theme-picker"]'));
     await click('[data-theme-id="nord"]');
     await waitFor(async () => (await theme()) === "nord");
     expect(await browser.execute(() => localStorage.getItem("wispy.theme"))).toBe("nord");
 
     // Back to following the system for the other specs.
-    await browser.keys(["Meta", "t"]);
+    await browser.keys([MOD, "t"]);
     await waitFor(() => exists('[data-testid="theme-picker"]'));
     await click('[data-theme-id="system"]');
     await waitFor(async () => (await theme()) === "light" || (await theme()) === "dark");

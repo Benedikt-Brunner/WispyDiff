@@ -124,17 +124,20 @@ body,
   height: 100%;
 }
 
-/* macOS overlay title bar: leave room for the traffic lights. */
 .titlebar {
   height: 40px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 14px 0 84px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--border);
   user-select: none;
   -webkit-user-select: none;
+}
+/* macOS overlay title bar: leave room for the traffic lights. */
+:root[data-platform="mac"] .titlebar {
+  padding-left: 84px;
 }
 .titlebar-hint {
   color: var(--fg-muted);

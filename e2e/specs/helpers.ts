@@ -6,6 +6,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
  * lookups (`$`, `$$`, `waitFor*`). All helpers therefore query the DOM through `execute`.
  */
 
+/** The app's shortcut modifier: ⌘ on macOS, Ctrl elsewhere. */
+export const MOD = process.platform === "darwin" ? "Meta" : "Control";
+
 export const count = (selector: string) =>
   browser.execute((s: string) => document.querySelectorAll(s).length, selector);
 
@@ -46,7 +49,7 @@ export const waitFor = (condition: () => Promise<boolean>, timeout = 30_000) =>
  * set through React's input path: the embedded driver drops spaces from typed text.
  */
 export async function typeInPalette(value: string) {
-  if (!(await exists(".palette-input"))) await browser.keys(["Meta", "k"]);
+  if (!(await exists(".palette-input"))) await browser.keys([MOD, "k"]);
   await waitFor(() =>
     browser.execute((v: string) => {
       const input = document.querySelector<HTMLInputElement>(".palette-input");
@@ -147,7 +150,7 @@ export const setOffline = async (offline: boolean) => {
 
 /** Shows the inbox (⌘I). */
 export async function goHome() {
-  await browser.keys(["Meta", "i"]);
+  await browser.keys([MOD, "i"]);
   await waitFor(() => exists('[data-testid="inbox"]'), 60_000);
 }
 
@@ -173,21 +176,22 @@ export function originWrite(path: string, content: string) {
   writeFileSync(full, content);
 }
 
-/** ⌘-clicks the first code token matching `selector` whose text is exactly `word`. */
+/** ⌘-clicks (Ctrl-clicks off macOS) the first code token matching `selector` whose text is exactly `word`. */
 export const cmdClickWord = (selector: string, word: string) =>
   browser.execute(
-    (s: string, w: string) => {
+    (s: string, w: string, mac: boolean) => {
       const span = [...document.querySelectorAll<HTMLElement>(s)].find((el) => el.textContent === w && el.closest(".code"));
       if (!span) return false;
       span.scrollIntoView({ block: "center" });
       const rect = span.getBoundingClientRect();
       span.dispatchEvent(
-        new MouseEvent("click", { bubbles: true, metaKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }),
+        new MouseEvent("click", { bubbles: true, metaKey: mac, ctrlKey: !mac, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }),
       );
       return true;
     },
     selector,
     word,
+    MOD === "Meta",
   );
 
 /** Sets an input's value through React's input path and presses Enter in it. */

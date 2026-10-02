@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { GrepHit, Hit, Usages } from "./api";
+import { mod } from "./platform";
 
 export type PanelState = { kind: "usages"; name: string } | { kind: "search"; query: string };
 
@@ -54,7 +55,7 @@ export function CodePanel({ state, usages, grepHits, grepStatus, grepUnsearched,
             if (e.key === "Enter" && query.trim()) onSearch(query.trim());
             if (e.key === "Escape") onClose();
             // Plain keys stay in the input; ⌘ shortcuts (⌘K, ⌘I, …) still reach the app.
-            if (!e.metaKey) e.stopPropagation();
+            if (!mod(e)) e.stopPropagation();
           }}
         />
         <button className="link" onClick={onClose}>

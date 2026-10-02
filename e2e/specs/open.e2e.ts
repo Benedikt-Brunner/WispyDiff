@@ -1,9 +1,9 @@
-import { click, clickChip, count, exists, isFocused, openViaPalette, scrollTop, selectedChips, settled, text, typeInPalette, waitFor } from "./helpers";
+import { click, clickChip, count, exists, isFocused, openViaPalette, scrollTop, selectedChips, settled, text, typeInPalette, waitFor, MOD } from "./helpers";
 
 describe("opening a pull request", () => {
   it("shows the palette focused (on launch, or with ⌘K once something is open)", async () => {
     // Spec files share one app process, so this spec may start after another left a PR open.
-    if (!(await exists(".palette-input"))) await browser.keys(["Meta", "k"]);
+    if (!(await exists(".palette-input"))) await browser.keys([MOD, "k"]);
     await waitFor(() => isFocused(".palette-input"));
   });
 
@@ -44,7 +44,7 @@ describe("opening a pull request", () => {
   });
 
   it("reopens the palette with Cmd+K and closes it with Escape", async () => {
-    await browser.keys(["Meta", "k"]);
+    await browser.keys([MOD, "k"]);
     await waitFor(() => isFocused(".palette-input"));
     await browser.keys("Escape");
     await waitFor(async () => !(await exists(".palette")));

@@ -22,7 +22,7 @@ let current: ThemeId = "system";
 
 export const savedTheme = (): ThemeId => loadPref("theme", THEMES.map((t) => t.id), "system");
 
-/** Shows `id` (without remembering it; `saveTheme` does that). "system" follows macOS. */
+/** Shows `id` (without remembering it; `saveTheme` does that). "system" follows the OS. */
 export function applyTheme(id: ThemeId) {
   current = id;
   const resolved = id === "system" ? (systemDark.matches ? "dark" : "light") : id;
