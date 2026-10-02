@@ -620,6 +620,44 @@ body,
   box-shadow: inset 3px 0 0 var(--pr);
 }
 
+/* ---------- line wrap ---------- */
+
+/* Measures one monospace column (DiffViewer lays wrapped rows out from it). */
+.char-probe {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+/* Wrapped code is exactly --wrap-* columns wide and breaks at any character, so a line takes
+   ceil(width / columns) lines, the height the layout gave its row. */
+.diff-canvas.wrap .row {
+  overflow: hidden;
+}
+.diff-canvas.wrap .row-add .code,
+.diff-canvas.wrap .row-del .code,
+.diff-canvas.wrap .row-ctx .code,
+.diff-canvas.wrap .half .code {
+  flex: none;
+  white-space: break-spaces;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.diff-canvas.wrap .row-add .code,
+.diff-canvas.wrap .row-del .code,
+.diff-canvas.wrap .row-ctx .code {
+  width: calc(var(--wrap-unified) * 1ch + 56px + 0.5px);
+  padding-right: 48px;
+}
+.diff-canvas.wrap .half .code {
+  width: calc(var(--wrap-split) * 1ch + 32px + 0.5px);
+  transform: none;
+}
+.diff-canvas.wrap .pr-tag {
+  position: absolute;
+  top: 2px;
+}
+
 /* ---------- collapsed files ---------- */
 
 .row-collapsed {
