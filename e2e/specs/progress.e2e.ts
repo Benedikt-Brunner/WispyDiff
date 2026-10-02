@@ -1,4 +1,4 @@
-import { click, count, exists, openViaPalette, originGit, originShow, originWrite, text, waitFor } from "./helpers";
+import { click, count, exists, goHome, openViaPalette, originGit, originShow, originWrite, text, waitFor } from "./helpers";
 
 const fileNames = () => browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")));
 const isViewedInList = (path: string) =>
@@ -81,5 +81,16 @@ describe("review progress", () => {
     await waitFor(() => exists(".update-banner"), 60_000);
     await click(".update-banner");
     await waitFor(async () => ((await fileNames()) as string[]).includes("docs/NOTES.md"), 60_000);
+  });
+
+  it("shows in the inbox that #5 changed since it was marked reviewed, until it's marked again", async () => {
+    const marked = 'li[data-pr="5"] .inbox-marked';
+    await goHome();
+    await waitFor(async () => (await text(marked)) === "marked reviewed · changed since", 60_000);
+    await openViaPalette("wispy/fixture#5");
+    await browser.keys("M");
+    await waitFor(async () => (await text(".toast"))?.includes("Marked #5 as reviewed") ?? false);
+    await goHome();
+    await waitFor(async () => (await text(marked)) === "marked reviewed");
   });
 });

@@ -110,6 +110,7 @@ const SEARCH_QUERY: &str = "query($q: String!) {
         number title url isDraft updatedAt headRefName baseRefName headRefOid
         author { login }
         repository { nameWithOwner }
+        viewerLatestReview { state submittedAt commit { oid } }
       }
     }
   }
@@ -253,6 +254,7 @@ impl GitHubClient {
                     updated_at: text("updatedAt"),
                     requested,
                     authored: !requested,
+                    my_review: parse_my_review(&node["viewerLatestReview"]),
                 });
             }
         }
@@ -303,6 +305,16 @@ impl GitHubClient {
         }
         Ok(response.json().await?)
     }
+}
+
+/// A pending (unsubmitted) review doesn't count.
+fn parse_my_review(node: &serde_json::Value) -> Option<crate::inbox::MyReview> {
+    let state = node["state"].as_str().filter(|s| *s != "PENDING")?;
+    Some(crate::inbox::MyReview {
+        state: state.to_string(),
+        commit: node["commit"]["oid"].as_str().unwrap_or_default().to_string(),
+        submitted_at: node["submittedAt"].as_str().unwrap_or_default().to_string(),
+    })
 }
 
 fn parse_thread(node: &serde_json::Value) -> ReviewThread {
