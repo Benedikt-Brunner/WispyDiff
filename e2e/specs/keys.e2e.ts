@@ -38,14 +38,19 @@ describe("keyboard", () => {
     await waitFor(async () => (await activeFile()) === files[0]);
   });
 
-  it("collapses a file with space without marking it viewed", async () => {
+  it("collapses a file with space without marking it viewed, moving on to the next file", async () => {
     await toTop();
     await browser.keys(" ");
-    await waitFor(() => listHas(files[0], "muted"));
+    await waitFor(async () => (await listHas(files[0], "muted")) && (await activeFile()) === files[1]);
     expect(await listHas(files[0], "viewed")).toBe(false);
     expect(await text(".row-collapsed .code")).toContain("collapsed");
+
+    // Expanding stays on the file.
+    await click(`.file-list li[title="${files[0]}"]`);
+    await waitFor(async () => (await activeFile()) === files[0]);
     await browser.keys(" ");
     await waitFor(async () => !(await listHas(files[0], "muted")));
+    expect(await activeFile()).toBe(files[0]);
   });
 
   it("moves on to the next file when marking one viewed, so v v marks two in a row", async () => {
