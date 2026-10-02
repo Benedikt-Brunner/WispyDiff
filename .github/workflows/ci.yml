@@ -47,7 +47,7 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@just
       # Fails on a stale Cargo.lock, and downloads every crate up front.
-      - run: cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+      - run: cargo fetch --locked --target "$(rustc --print host-tuple)"
       - uses: pnpm/action-setup@v4
         with:
           version: 11
