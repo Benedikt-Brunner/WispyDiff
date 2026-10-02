@@ -449,43 +449,63 @@ impl PrService {
         use std::io::{BufRead, BufReader};
         let head = &snapshot.heads[index];
         let git = self.git(snapshot)?;
-        let unsearched = match self.store.hydrate(&git, head) {
-            Ok(_) => 0,
-            Err(_) => self.store.missing_blobs(&git, head)?.len(),
+        // Offline, only the downloaded files are searched: newer git aborts `git grep` at the
+        // first missing blob instead of skipping it.
+        let (pathspecs, unsearched) = match self.store.hydrate(&git, head) {
+            Ok(_) => (None, 0),
+            Err(_) => {
+                let (downloaded, missing) = self.store.downloaded_files(&git, head)?;
+                (Some(downloaded), missing)
+            }
         };
-        let mut args = vec!["grep", "-z", "-n", "-I", "--fixed-strings", "--max-count=50"];
+        let mut args = vec!["--literal-pathspecs", "grep", "-z", "-n", "-I", "--fixed-strings", "--max-count=50"];
         if whole_word {
             args.push("-w");
         }
         args.extend(["-e", query, head.as_str(), "--"]);
-        let mut child = git.spawn_local(&args)?;
-        let reader = BufReader::new(child.stdout.take().expect("stdout is piped"));
+        // Chunked so a large offline clone stays under the argument-length limit.
+        let chunks: Vec<&[String]> = match &pathspecs {
+            None => vec![&[]],
+            Some(paths) => paths.chunks(2000).collect(),
+        };
         let prefix = format!("{head}:");
         let (mut batch, mut total, mut last_flush) = (Vec::new(), 0usize, std::time::Instant::now());
-        for line in reader.split(b'\n') {
-            let line = line?;
-            let mut fields = line.splitn(3, |b| *b == 0);
-            let (Some(path), Some(number), Some(text)) = (fields.next(), fields.next(), fields.next()) else { continue };
-            let path = String::from_utf8_lossy(path);
-            batch.push(GrepHit {
-                path: path.strip_prefix(&prefix).unwrap_or(&path).to_string(),
-                line: String::from_utf8_lossy(number).parse().unwrap_or(0),
-                text: String::from_utf8_lossy(text).trim().chars().take(200).collect(),
-            });
-            total += 1;
-            // First hits go out immediately; later ones in batches.
-            if total == 1 || batch.len() >= 50 || last_flush.elapsed().as_millis() > 40 {
-                if !on_hits(std::mem::take(&mut batch)) {
+        'chunks: for chunk in chunks {
+            let mut chunk_args = args.clone();
+            chunk_args.extend(chunk.iter().map(String::as_str));
+            let mut child = git.spawn_local(&chunk_args)?;
+            let reader = BufReader::new(child.stdout.take().expect("stdout is piped"));
+            let mut stop = false;
+            for line in reader.split(b'\n') {
+                let line = line?;
+                let mut fields = line.splitn(3, |b| *b == 0);
+                let (Some(path), Some(number), Some(text)) = (fields.next(), fields.next(), fields.next()) else { continue };
+                let path = String::from_utf8_lossy(path);
+                batch.push(GrepHit {
+                    path: path.strip_prefix(&prefix).unwrap_or(&path).to_string(),
+                    line: String::from_utf8_lossy(number).parse().unwrap_or(0),
+                    text: String::from_utf8_lossy(text).trim().chars().take(200).collect(),
+                });
+                total += 1;
+                // First hits go out immediately; later ones in batches.
+                if total == 1 || batch.len() >= 50 || last_flush.elapsed().as_millis() > 40 {
+                    if !on_hits(std::mem::take(&mut batch)) {
+                        stop = true;
+                        break;
+                    }
+                    last_flush = std::time::Instant::now();
+                }
+                if total >= MAX_GREP_HITS {
+                    stop = true;
                     break;
                 }
-                last_flush = std::time::Instant::now();
             }
-            if total >= MAX_GREP_HITS {
-                break;
+            let _ = child.kill();
+            let _ = child.wait();
+            if stop {
+                break 'chunks;
             }
         }
-        let _ = child.kill();
-        let _ = child.wait();
         if !batch.is_empty() {
             on_hits(batch);
         }

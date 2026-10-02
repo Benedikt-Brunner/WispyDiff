@@ -75,7 +75,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - **Rust core**: tests against real throwaway git repos and a fake local GitHub HTTP server. Services under test are constructed directly in each test, never via factory methods.
 - **Functional e2e** smoke tests and **performance e2e** tests via **WebdriverIO against the real Tauri build** (the service's embedded WebDriver server supports macOS and Linux/WebKitGTK), asserting each budget above via `performance.mark` + rAF frame timing.
 - Fixtures: **seeded synthetic repo** (4-PR stack, 500 files / 50k changed lines across PHP/TS/Vue/Twig, one 20k-line file), plus an optional local worst-case PR that is never committed.
-- **Local only** (`just test`, `just bench`), no CI.
+- **CI** (GitHub Actions, macOS + Linux) runs `just test`. **Performance budgets are local only** (`just bench`): shared runners fluctuate too much for timing assertions, so run it before merging anything touching rendering or the core.
 
 ## Milestones
 1. Walking skeleton + performance check (`Cmd+K` → PR URL → blobless clone → unified single-PR diff, virtualized + highlighted)

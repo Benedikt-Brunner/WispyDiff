@@ -5,8 +5,9 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const fixtureDir = path.join(root, "e2e/.fixtures/stack");
-const fixturesBin = path.join(root, "target/release/wispy-fixtures");
-const appBinary = path.join(root, "target/release/wispydiff");
+const fixturesBin = path.join(root, "target/e2e/wispy-fixtures");
+// Cargo profile of the app build (`just build-e2e`): `e2e` for functional specs, `release` for perf.
+const appBinary = path.join(root, "target", process.env.WISPY_E2E_PROFILE ?? "e2e", "wispydiff");
 // Overridable so two checkouts (e.g. worktrees) can run their suites at the same time.
 const apiPort = Number(process.env.WISPY_E2E_API_PORT ?? 4600);
 const driverPort = Number(process.env.WISPY_E2E_DRIVER_PORT ?? 4445);

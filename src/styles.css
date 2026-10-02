@@ -625,9 +625,12 @@ body,
 
 /* ---------- line wrap ---------- */
 
-/* Measures one monospace column (DiffViewer lays wrapped rows out from it). */
+/* Measures one monospace column (DiffViewer lays wrapped rows out from it). Fixed, so its width
+   never makes a narrow diff scroll sideways. */
 .char-probe {
-  position: absolute;
+  position: fixed;
+  top: 0;
+  left: 0;
   visibility: hidden;
   white-space: pre;
   pointer-events: none;
@@ -643,6 +646,8 @@ body,
 .diff-canvas.wrap .half .code {
   flex: none;
   white-space: break-spaces;
+  /* Not just inside words: break-all alone still won't break after "(" or before ")". */
+  line-break: anywhere;
   word-break: break-all;
   overflow-wrap: anywhere;
 }
