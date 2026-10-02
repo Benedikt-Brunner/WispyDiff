@@ -45,6 +45,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [showFiles, setShowFiles] = useState(true);
   const [defaultMode, setDefaultMode] = useState<BaseMode>(() => loadPref("defaultMode", ["unified", "split"] as const, "unified"));
+  const [wrap, setWrap] = useState(() => loadPref("wrap", ["on", "off"] as const, "off") === "on");
   const [ignorePatterns, setIgnore] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<ShownDraft[]>([]);
   const [threads, setThreads] = useState<PrThreads[]>([]);
@@ -183,6 +184,10 @@ export default function App() {
     setDefaultMode(mode);
     savePref("defaultMode", mode);
   }, []);
+  const changeWrap = useCallback((on: boolean) => {
+    setWrap(on);
+    savePref("wrap", on ? "on" : "off");
+  }, []);
 
   const open = useCallback(
     async (input: string) => {
@@ -288,6 +293,7 @@ export default function App() {
       label: defaultMode === "split" ? "Show all files unified" : "Show all files side by side",
       run: () => changeDefaultMode(defaultMode === "split" ? "unified" : "split"),
     });
+    list.push({ id: "wrap", label: wrap ? "Don't wrap long lines" : "Wrap long lines", run: () => changeWrap(!wrap) });
     if (repo) {
       list.push({
         id: "ignore",
@@ -300,7 +306,7 @@ export default function App() {
       }
     }
     return list.map((c) => ({ ...c, run: (arg: string) => (c.run(arg), setPaletteOpen(false)) }));
-  }, [shown, stack, repo, ignorePatterns, defaultMode, toggleWhitespace, changeDefaultMode, updateIgnore, markRangeReviewed, toggleSince]);
+  }, [shown, stack, repo, ignorePatterns, defaultMode, wrap, toggleWhitespace, changeDefaultMode, changeWrap, updateIgnore, markRangeReviewed, toggleSince]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -411,6 +417,8 @@ export default function App() {
             keyboardEnabled={!paletteOpen && !sheetOpen && !overlay && !home}
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}
+            wrap={wrap}
+            onWrapChange={changeWrap}
             isIgnored={isIgnored}
             isViewed={isViewed}
             onToggleViewed={toggleViewed}

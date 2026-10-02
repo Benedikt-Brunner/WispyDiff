@@ -24,5 +24,6 @@ pub mod split;
 pub mod stack;
 pub mod symbols;
 pub mod token;
+pub mod wrap;
 
 pub use error::{Error, Result};

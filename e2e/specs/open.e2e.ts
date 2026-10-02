@@ -126,6 +126,38 @@ describe("reading modes and noise", () => {
     await waitFor(async () => (await count('.row-file[data-mode="split"]')) === 0);
   });
 
+  it("wraps long lines with z instead of scrolling sideways", async () => {
+    await openViaPalette("wispy/fixture#1");
+    await browser.keys("S");
+    await waitFor(async () => (await count('.row-file[data-mode="split"]')) > 0);
+    await browser.keys("z");
+    await waitFor(() => exists(".diff-canvas.wrap"));
+    // Move down a screen at a time until a wrapped (taller) row is drawn.
+    await waitFor(() =>
+      browser.execute(() => {
+        if ([...document.querySelectorAll<HTMLElement>(".row-split")].some((r) => r.offsetHeight > 20)) return true;
+        const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+        el.scrollTop += el.clientHeight;
+        return false;
+      }),
+    );
+    const drawn = await browser.execute(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+      const codes = [...document.querySelectorAll<HTMLElement>(".row-split .half .code")];
+      return {
+        sideways: el.scrollWidth - el.clientWidth,
+        // Text that doesn't fit the height the layout gave its row would be cut off.
+        clipped: codes.filter((c) => c.scrollHeight > c.closest<HTMLElement>(".row")!.clientHeight + 1 || c.scrollWidth > c.clientWidth + 1).length,
+      };
+    });
+    expect(drawn).toEqual({ sideways: 0, clipped: 0 });
+    await browser.keys("z");
+    await waitFor(async () => !(await exists(".diff-canvas.wrap")));
+    expect(await browser.execute(() => [...document.querySelectorAll<HTMLElement>(".row-split")].every((r) => r.offsetHeight === 20))).toBe(true);
+    await browser.keys("S");
+    await waitFor(async () => (await count('.row-file[data-mode="split"]')) === 0);
+  });
+
   it("hides whitespace-only changes with w", async () => {
     await openViaPalette("wispy/fixture#2");
     expect(await count(".file-list li")).toBe(21);

@@ -25,9 +25,13 @@ export function segmentRows(file: FileSummary, mode: Mode) {
   return file.row_count;
 }
 
+/** `[offset, extra lines]` of a file's rows that wrap onto more than one line, by offset. */
+export type WrappedRows = readonly (readonly [number, number])[];
+
 /**
- * All files stacked in their modes, plus inserts. Rows have a fixed height; inserts add their
- * height below their row, so positions are `row * ROW_HEIGHT + (heights of inserts above)`.
+ * All files stacked in their modes, plus inserts. A row is ROW_HEIGHT tall, or a multiple when
+ * it wraps; inserts add their height below their row. So positions are
+ * `row * ROW_HEIGHT + (extra lines of wrapped rows above) + (heights of inserts above)`.
  */
 export class Layout {
   readonly segments: Segment[];
@@ -35,12 +39,20 @@ export class Layout {
   private readonly inserts: Insert[];
   /** cumulative[i] = total height of inserts[0..i). */
   private readonly cumulative: number[];
+  /** Global rows that wrap, ascending, and wrappedCumulative[i] = extra height of wrapped[0..i). */
+  private readonly wrapped: number[] = [];
+  private readonly wrappedCumulative: number[] = [0];
 
-  constructor(summary: DiffSummary, modeOf: (index: number) => Mode, inserts: Insert[] = []) {
+  constructor(summary: DiffSummary, modeOf: (index: number) => Mode, inserts: Insert[] = [], wrappedOf?: (file: number, mode: Mode) => WrappedRows) {
     let start = 0;
     this.segments = summary.files.map((file, index) => {
       const mode = modeOf(index);
       const segment = { file: index, mode, start, rows: segmentRows(file, mode) };
+      for (const [offset, extra] of wrappedOf?.(index, mode) ?? []) {
+        if (offset >= segment.rows) break;
+        this.wrapped.push(start + offset);
+        this.wrappedCumulative.push(this.wrappedCumulative[this.wrappedCumulative.length - 1] + extra * ROW_HEIGHT);
+      }
       start += segment.rows;
       return segment;
     });
@@ -51,12 +63,18 @@ export class Layout {
   }
 
   get height() {
-    return this.totalRows * ROW_HEIGHT + this.cumulative[this.cumulative.length - 1];
+    return this.totalRows * ROW_HEIGHT + this.wrappedCumulative[this.wrapped.length] + this.cumulative[this.cumulative.length - 1];
   }
 
   /** Top of global row `row`. */
   rowY(row: number) {
-    return row * ROW_HEIGHT + this.cumulative[this.insertsBefore(row)];
+    return row * ROW_HEIGHT + this.wrappedCumulative[this.wrappedBefore(row)] + this.cumulative[this.insertsBefore(row)];
+  }
+
+  /** Height of global row `row` (taller when it wraps). */
+  rowHeight(row: number) {
+    const i = this.wrappedBefore(row);
+    return this.wrapped[i] === row ? ROW_HEIGHT + this.wrappedCumulative[i + 1] - this.wrappedCumulative[i] : ROW_HEIGHT;
   }
 
   /** The row at vertical position `y` (an insert counts as part of the row above it). */
@@ -76,7 +94,8 @@ export class Layout {
     const out: (Insert & { y: number })[] = [];
     this.inserts.forEach((insert, i) => {
       if (insert.after >= first && insert.after <= last) {
-        out.push({ ...insert, y: (insert.after + 1) * ROW_HEIGHT + this.cumulative[i] });
+        const below = insert.after + 1;
+        out.push({ ...insert, y: below * ROW_HEIGHT + this.wrappedCumulative[this.wrappedBefore(below)] + this.cumulative[i] });
       }
     });
     return out;
@@ -100,6 +119,17 @@ export class Layout {
       if (s.mode === "collapsed") return [s.start];
       return (s.mode === "split" ? file.split_blocks : file.hunks).map((offset) => s.start + offset);
     });
+  }
+
+  private wrappedBefore(row: number) {
+    let lo = 0;
+    let hi = this.wrapped.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.wrapped[mid] < row) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   private insertsBefore(row: number) {
