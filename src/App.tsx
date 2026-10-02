@@ -29,6 +29,7 @@ import { rememberPr } from "./recent";
 import { rangeForKey, StackBar } from "./StackBar";
 import { prLabel, type Checkpoint, type OpenedRange, type OpenedStack, type Range } from "./types";
 import { mod, keyLabel } from "./platform";
+import { installZoomShortcuts } from "./zoom";
 import "./styles.css";
 
 /** Which ranges the backend has precomputed, per stack (`"lo-hi"` keys). */
@@ -61,6 +62,7 @@ export default function App() {
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 3500);
   }, []);
+  useEffect(() => installZoomShortcuts((level) => say(`Zoom ${Math.round(level * 100)}%`)), [say]);
   const [, setReadyVersion] = useState(0);
   const rangeRequest = useRef(0);
 

@@ -361,15 +361,39 @@ body,
 
 /* ---------- diff ---------- */
 
+/* A sidebar's draggable edge; it straddles the border so it's easy to grab. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 5;
+  cursor: col-resize;
+}
+.resize-handle.right {
+  right: -4px;
+}
+.resize-handle.left {
+  left: -4px;
+}
+.resize-handle:hover,
+.resizing .resize-handle {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .diff-layout {
   display: flex;
   height: 100%;
 }
 
 .file-list {
-  width: 280px;
+  position: relative;
   flex: none;
-  overflow-y: auto;
+  max-width: 60vw;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
 }
@@ -377,6 +401,9 @@ body,
   list-style: none;
   margin: 0;
   padding: 6px 0;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
 }
 .file-list li {
   display: flex;
@@ -1122,8 +1149,9 @@ body,
 /* ---------- code intelligence ---------- */
 
 .code-panel {
-  width: 380px;
+  position: relative;
   flex: none;
+  max-width: 60vw;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--border);
@@ -1236,9 +1264,6 @@ body,
 
 /* ---------- assistant ---------- */
 
-.assistant-panel {
-  width: 420px;
-}
 .assistant-body {
   flex: 1;
   padding: 10px 12px;

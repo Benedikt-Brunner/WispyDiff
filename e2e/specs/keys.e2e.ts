@@ -136,6 +136,70 @@ describe("keyboard", () => {
     await waitFor(async () => (await theme()) === "light" || (await theme()) === "dark");
   });
 
+  it("zooms with ⌘+ / ⌘- / ⌘0 and ⌘+wheel, remembering the level", async () => {
+    // The whole webview scales, so the window gets narrower in CSS pixels as it zooms in.
+    const width = () => browser.execute(() => window.innerWidth);
+    const zoomPref = () => browser.execute(() => localStorage.getItem("wispy.zoom"));
+    const base = await width();
+    await browser.keys([MOD, "-"]);
+    await waitFor(async () => (await width()) > base && (await zoomPref()) === "0.9");
+    await browser.keys([MOD, "0"]);
+    await waitFor(async () => (await width()) === base && (await zoomPref()) === "1");
+    // "+" needs Shift on most layouts, so it's dispatched directly.
+    await browser.execute((mac: boolean) => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
+    }, MOD === "Meta");
+    await waitFor(async () => (await width()) < base && (await zoomPref()) === "1.1");
+
+    const before = await scrollTop();
+    const wheel = (deltaY: number) =>
+      browser.execute(
+        (dy: number, mac: boolean) => {
+          const el = document.querySelector('[data-testid="diff-scroll"]')!;
+          el.dispatchEvent(new WheelEvent("wheel", { deltaY: dy, metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
+        },
+        deltaY,
+        MOD === "Meta",
+      );
+    await wheel(-100);
+    await waitFor(async () => (await zoomPref()) === "1.25");
+    await wheel(100);
+    await wheel(100);
+    await waitFor(async () => (await zoomPref()) === "1");
+    expect(await scrollTop()).toBe(before); // zooming doesn't scroll the diff
+    await waitFor(async () => (await width()) === base);
+  });
+
+  it("resizes the file list by dragging its edge, remembering the width", async () => {
+    const listWidth = () => browser.execute(() => Math.round(document.querySelector(".file-list")!.getBoundingClientRect().width));
+    const drag = (dx: number) =>
+      browser.execute((d: number) => {
+        const handle = document.querySelector<HTMLElement>(".file-list .resize-handle")!;
+        const x = handle.getBoundingClientRect().left + 3;
+        const fire = (target: EventTarget, type: string, clientX: number) =>
+          target.dispatchEvent(new PointerEvent(type, { clientX, button: 0, bubbles: true, cancelable: true }));
+        fire(handle, "pointerdown", x);
+        fire(window, "pointermove", x + d / 2);
+        fire(window, "pointermove", x + d);
+        fire(window, "pointerup", x + d);
+      }, dx);
+    const start = await listWidth();
+    await drag(100);
+    await waitFor(async () => (await listWidth()) === start + 100);
+
+    // Hidden and shown again (⌘B), it keeps its width.
+    await browser.keys([MOD, "b"]);
+    await waitFor(async () => !(await exists(".file-list")));
+    await browser.keys([MOD, "b"]);
+    await waitFor(async () => (await listWidth()) === start + 100);
+
+    // Double-clicking the edge restores the default.
+    await browser.execute(() =>
+      document.querySelector(".file-list .resize-handle")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+    );
+    await waitFor(async () => (await listWidth()) === 280);
+  });
+
   it("lists the keyboard shortcuts with ?", async () => {
     await browser.keys("?");
     await waitFor(() => exists('[data-testid="shortcuts"]'));

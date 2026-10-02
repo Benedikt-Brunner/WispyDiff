@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { GrepHit, Hit, Usages } from "./api";
 import { mod } from "./platform";
+import { ResizeHandle, useSidebarWidth } from "./Resizable";
 
 export type PanelState = { kind: "usages"; name: string } | { kind: "search"; query: string };
 
@@ -17,6 +18,7 @@ interface Props {
 
 /** Usages of a symbol in the touched files, and whole-repo search (git grep). */
 export function CodePanel({ state, usages, grepHits, grepStatus, grepUnsearched, onSearch, onJump, onClose }: Props) {
+  const width = useSidebarWidth("code", 380);
   const [query, setQuery] = useState(state.kind === "search" ? state.query : state.name);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -42,7 +44,8 @@ export function CodePanel({ state, usages, grepHits, grepStatus, grepUnsearched,
     );
 
   return (
-    <aside className="code-panel" data-testid="code-panel">
+    <aside className="code-panel" style={{ width: width.width }} data-testid="code-panel">
+      <ResizeHandle edge="left" {...width} />
       <div className="panel-head">
         <input
           ref={input}
