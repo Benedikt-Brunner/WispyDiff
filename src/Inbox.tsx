@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Wordmark } from "./Logo";
+import { keyLabel } from "./platform";
 
 export interface InboxPr {
   repo: string;
@@ -56,7 +57,7 @@ export function Inbox({ entries, online, keyboardEnabled, onOpen, onRefresh }: P
       <div className="empty">
         <Wordmark className="empty-wordmark" />
         <span className="empty-hint">
-          {online === false ? "Offline — no cached inbox yet" : "Nothing waiting for you · ⌘K to open any pull request"}
+          {online === false ? "Offline — no cached inbox yet" : `Nothing waiting for you · ${keyLabel("K")} to open any pull request`}
         </span>
       </div>
     );

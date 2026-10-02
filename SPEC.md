@@ -1,10 +1,11 @@
 # WispyDiff — Spec
 
-A distraction-free, keyboard-first macOS desktop app for reviewing **stacked GitHub PRs**, written by humans or agents. Personal use.
+A distraction-free, keyboard-first desktop app (macOS, Linux) for reviewing **stacked GitHub PRs**, written by humans or agents. Personal use.
 
 ## Platform & architecture
 - **Tauri 2.** Rust backend (git, GitHub sync, SQLite, tree-sitter, assistant CLIs) + React/TS/Vite frontend.
-- Personal, macOS only, unsigned, no telemetry. Nothing hard-coded: CLIs via `PATH`, token via `gh auth token`, data in `~/Library/Application Support/WispyDiff`.
+- Personal, macOS and Linux, unsigned, no telemetry. Nothing hard-coded: CLIs via `PATH`, token via `gh auth token`, data in `~/Library/Application Support/WispyDiff` (Linux: `~/.local/share/WispyDiff`).
+- Shortcuts are written with `⌘`; on Linux it is `Ctrl` (Super belongs to the desktop), and the UI labels say so.
 - Any **github.com** repo. The app keeps its own **blobless partial clones** (`--filter=blob:none`), fetches `refs/pull/*/head`, and computes all diffs locally with git. GitHub API is used only for metadata, threads, and posting. The user's own working copies are never touched.
 
 ## Performance budget (binding)
@@ -37,7 +38,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
   - Files: `s`/`S` side-by-side (file/all); `z` line wrap; `Space` or `e` collapse/expand without touching the viewed mark; `v` viewed — marking moves on to the next file not yet viewed, so `v v v` ticks off consecutive files. A file reached by `n`/`p`/the file list/`v` stays the current file while the view stays put, even when it is one of the last files and can't scroll to the top (so a collapsed file above it never takes over).
   - Review: `c` comment, `⌘`-click / `u` usages, `/` search repo, `a` assistant; `Esc` closes the assistant first, then other panels, then an open comment box.
   - Anywhere: `⌘K` palette, `⌘I` inbox, `⌘T` theme.
-- **Themes** (`⌘T`, or `> Change theme…`): System (follows macOS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia, E-Ink (black on white, syntax by weight instead of colour, no shadows, jumps land instantly instead of gliding). Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
+- **Themes** (`⌘T`, or `> Change theme…`): System (follows the OS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia, E-Ink (black on white, syntax by weight instead of colour, no shadows, jumps land instantly instead of gliding). Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
 - Scrolling never shows blank rows: rows for a new scroll position render before the frame paints, a screen of rows is drawn beyond each edge, and rows two screens ahead are fetched.
 
 ## Offline
@@ -72,7 +73,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 
 ## Testing
 - **Rust core**: tests against real throwaway git repos and a fake local GitHub HTTP server. Services under test are constructed directly in each test, never via factory methods.
-- **Functional e2e** smoke tests and **performance e2e** tests via **WebdriverIO against the real Tauri build** (the service's embedded WebDriver server supports macOS), asserting each budget above via `performance.mark` + rAF frame timing.
+- **Functional e2e** smoke tests and **performance e2e** tests via **WebdriverIO against the real Tauri build** (the service's embedded WebDriver server supports macOS and Linux/WebKitGTK), asserting each budget above via `performance.mark` + rAF frame timing.
 - Fixtures: **seeded synthetic repo** (4-PR stack, 500 files / 50k changed lines across PHP/TS/Vue/Twig, one 20k-line file), plus an optional local worst-case PR that is never committed.
 - **Local only** (`just test`, `just bench`), no CI.
 

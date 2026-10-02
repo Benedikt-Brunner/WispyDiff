@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/logo/wordmark.svg" alt="WispyDiff" height="64"></p>
 
-A distraction-free, keyboard-first macOS app for reviewing **stacked GitHub PRs**.
+A distraction-free, keyboard-first desktop app (macOS and Linux) for reviewing **stacked GitHub PRs**.
 
 - Opens a whole stack of PRs and lets you review any contiguous range as one combined diff,
   with every line attributed to the PR that last touched it.
@@ -9,13 +9,22 @@ A distraction-free, keyboard-first macOS app for reviewing **stacked GitHub PRs*
 - Draft comments offline and submit a review per PR; ask Claude Code or Codex about the code
   you're looking at.
 
-It's a personal tool: macOS only, unsigned, no telemetry. [SPEC.md](SPEC.md) describes the
-behaviour and performance budgets in detail.
+It's a personal tool: unsigned, no telemetry. [SPEC.md](SPEC.md) describes the behaviour and
+performance budgets in detail. Shortcuts are written with ⌘; on Linux use Ctrl instead.
 
 ## Requirements
 
-- macOS, [Rust](https://rustup.rs), [Node](https://nodejs.org) with [pnpm](https://pnpm.io),
-  and [just](https://github.com/casey/just)
+- macOS or Linux, [Rust](https://rustup.rs), [Node](https://nodejs.org) with
+  [pnpm](https://pnpm.io), and [just](https://github.com/casey/just)
+- Git 2.44 or newer (older versions break repo search while offline)
+- Linux only: the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/#linux)
+  (WebKitGTK 4.1). On Debian/Ubuntu:
+  ```sh
+  sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+    libssl-dev libayatana-appindicator3-dev librsvg2-dev
+  ```
+  Ubuntu 24.04 ships Git 2.43; get a newer one from the
+  [git-core PPA](https://launchpad.net/~git-core/+archive/ubuntu/ppa).
 - The [GitHub CLI](https://cli.github.com), signed in (`gh auth login`); WispyDiff reads its
   token via `gh auth token`
 - Optional: the `claude` or `codex` CLI on your `PATH` for the assistant panel
@@ -25,11 +34,12 @@ behaviour and performance budgets in detail.
 ```sh
 pnpm install
 just dev     # run with hot reload
-just build   # target/release/bundle/macos/WispyDiff.app
+just build   # macOS: target/release/bundle/macos/WispyDiff.app
+             # Linux: target/release/bundle/{deb,appimage}/
 ```
 
-WispyDiff keeps its own blobless clones under `~/Library/Application Support/WispyDiff` and
-never touches your working copies.
+WispyDiff keeps its own blobless clones under `~/Library/Application Support/WispyDiff` (macOS)
+or `~/.local/share/WispyDiff` (Linux) and never touches your working copies.
 
 ## Development
 

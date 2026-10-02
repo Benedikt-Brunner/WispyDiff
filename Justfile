@@ -7,7 +7,7 @@ default:
 dev:
     pnpm tauri dev
 
-# Build the app bundle (target/release/bundle/macos/WispyDiff.app).
+# Build the app bundle (macOS: bundle/macos/WispyDiff.app, Linux: bundle/{deb,appimage}).
 build:
     pnpm tauri build
 

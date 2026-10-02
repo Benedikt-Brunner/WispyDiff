@@ -40,6 +40,7 @@ import { mark } from "./perf";
 import { RowStore } from "./rowStore";
 import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
+import { mod } from "./platform";
 
 /** Rows drawn beyond the viewport, at least this many and at least a screen on each side. */
 const OVERSCAN = 20;
@@ -1023,7 +1024,7 @@ export function DiffViewer(props: Props) {
           data-testid="diff-scroll"
           onMouseMove={(e) => (lastPointer.current = { x: e.clientX, y: e.clientY })}
           onClick={(e) => {
-            if (!e.metaKey) return;
+            if (!mod(e)) return;
             const word = wordAt(e.clientX, e.clientY);
             if (word) {
               e.preventDefault();

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReviewThread, ShownDraft } from "./comments";
+import { mod, keyLabel } from "./platform";
 
 /** Measures its content and reports the height, so the layout can make room for it. */
 export function InsertBox({ y, onHeight, children }: { y: number; onHeight: (h: number) => void; children: React.ReactNode }) {
@@ -67,14 +68,14 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
         ref={ref}
         className="composer-input"
         value={text}
-        placeholder={`Leave a comment · ⌘↵ to save${canSuggest ? " · ⌘G to suggest a change" : ""} · Esc to cancel`}
+        placeholder={`Leave a comment · ${keyLabel("↵")} to save${canSuggest ? ` · ${keyLabel("G")} to suggest a change` : ""} · Esc to cancel`}
         rows={Math.min(20, Math.max(3, text.split("\n").length))}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && e.metaKey) {
+          if (e.key === "Enter" && mod(e)) {
             e.preventDefault();
             save();
-          } else if (e.key.toLowerCase() === "g" && e.metaKey && canSuggest) {
+          } else if (e.key.toLowerCase() === "g" && mod(e) && canSuggest) {
             e.preventDefault();
             e.stopPropagation();
             suggest();
@@ -83,7 +84,7 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
             onCancel();
           }
           // Plain keys stay in the editor; ⌘ shortcuts (⌘K, ⌘I, …) still reach the app.
-          if (!e.metaKey) e.stopPropagation();
+          if (!mod(e)) e.stopPropagation();
         }}
       />
       <div className="card-actions">
@@ -94,7 +95,7 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
           Cancel
         </button>
         {canSuggest && (
-          <button className="button composer-suggest" onClick={suggest} title="Suggest a change to these lines (⌘G)">
+          <button className="button composer-suggest" onClick={suggest} title={`Suggest a change to these lines (${keyLabel("G")})`}>
             ± Suggest change
           </button>
         )}

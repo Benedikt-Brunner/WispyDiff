@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AssistantSelection, AssistantThread, Provider, ThreadAnchor } from "./api";
 import { loadPref, savePref } from "./prefs";
+import { mod, keyLabel } from "./platform";
 
 const MODELS: Record<Provider, string[]> = {
   claude: ["", "opus", "sonnet", "haiku", "fable"],
@@ -131,14 +132,14 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
           className="composer-input"
           rows={3}
           value={question}
-          placeholder={active ? "Follow up… (⌘↵)" : "Ask… (⌘↵)"}
+          placeholder={`${active ? "Follow up…" : "Ask…"} (${keyLabel("↵")})`}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && e.metaKey) {
+            if (e.key === "Enter" && mod(e)) {
               e.preventDefault();
               send();
             } else if (e.key === "Escape") onClose();
-            if (!e.metaKey) e.stopPropagation();
+            if (!mod(e)) e.stopPropagation();
           }}
           data-testid="assistant-input"
         />
