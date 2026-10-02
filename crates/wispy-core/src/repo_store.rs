@@ -150,8 +150,7 @@ impl RepoStore {
     /// batch (whole-repo search needs them; git would otherwise fetch them one by one).
     /// Returns how many were fetched.
     pub fn hydrate(&self, git: &Git, commit: &str) -> Result<usize> {
-        let listing = git.run_string(&["rev-list", "--objects", "--missing=print", "--no-walk", commit])?;
-        let missing: Vec<&str> = listing.lines().filter_map(|l| l.strip_prefix('?')).collect();
+        let missing = self.missing_blobs(git, commit)?;
         if missing.is_empty() {
             return Ok(0);
         }
@@ -175,6 +174,12 @@ impl RepoStore {
             input.as_bytes(),
         )?;
         Ok(missing.len())
+    }
+
+    /// The blobs of `commit`'s tree that the partial clone hasn't downloaded yet.
+    pub fn missing_blobs(&self, git: &Git, commit: &str) -> Result<Vec<String>> {
+        let listing = git.run_string(&["rev-list", "--objects", "--missing=print", "--no-walk", commit])?;
+        Ok(listing.lines().filter_map(|l| l.strip_prefix('?')).map(str::to_string).collect())
     }
 }
 

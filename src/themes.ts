@@ -11,6 +11,7 @@ export const THEMES = [
   { id: "nord", name: "Nord" },
   { id: "dracula", name: "Dracula" },
   { id: "sepia", name: "Sepia" },
+  { id: "eink", name: "E-Ink" },
 ] as const;
 
 export type ThemeId = (typeof THEMES)[number]["id"];
@@ -37,5 +38,8 @@ export function saveTheme(id: ThemeId) {
   savePref("theme", id);
   applyTheme(id);
 }
+
+/** E-Ink panels ghost on animation: jumps land at once instead of gliding there. */
+export const instantJumps = () => current === "eink";
 
 systemDark.addEventListener("change", () => current === "system" && applyTheme("system"));

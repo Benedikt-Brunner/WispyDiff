@@ -26,15 +26,33 @@ interface ComposerProps {
   fileFallback: boolean | null;
   initial?: string;
   saveLabel?: string;
+  /** The commented lines on the PR's head, offered as a GitHub suggestion to edit (null: not possible). */
+  suggestion?: string | null;
   onSave: (text: string) => void;
   onCancel: () => void;
 }
 
-export function Composer({ title, fileFallback, initial = "", saveLabel = "Save draft", onSave, onCancel }: ComposerProps) {
+export function Composer({ title, fileFallback, initial = "", saveLabel = "Save draft", suggestion = null, onSave, onCancel }: ComposerProps) {
   const [text, setText] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
   const save = () => text.trim() && onSave(text.trim());
+  // A file comment can't carry a suggestion.
+  const canSuggest = suggestion !== null && fileFallback !== true;
+  /** Inserts a ```suggestion block with the lines at the caret, and leaves the caret at their end. */
+  const suggest = () => {
+    const el = ref.current;
+    if (!el || !canSuggest) return;
+    const before = text.slice(0, el.selectionStart);
+    const after = text.slice(el.selectionEnd);
+    const block = `${before && !before.endsWith("\n") ? "\n" : ""}\`\`\`suggestion\n${suggestion}\n\`\`\``;
+    setText(before + block + (after && !after.startsWith("\n") ? "\n" : "") + after);
+    const caret = before.length + block.length - "\n```".length;
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  };
   return (
     <div className="card composer">
       <div className="card-head">
@@ -49,13 +67,17 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
         ref={ref}
         className="composer-input"
         value={text}
-        placeholder="Leave a comment · ⌘↵ to save · Esc to cancel"
-        rows={3}
+        placeholder={`Leave a comment · ⌘↵ to save${canSuggest ? " · ⌘G to suggest a change" : ""} · Esc to cancel`}
+        rows={Math.min(20, Math.max(3, text.split("\n").length))}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && e.metaKey) {
             e.preventDefault();
             save();
+          } else if (e.key.toLowerCase() === "g" && e.metaKey && canSuggest) {
+            e.preventDefault();
+            e.stopPropagation();
+            suggest();
           } else if (e.key === "Escape") {
             e.preventDefault();
             onCancel();
@@ -71,6 +93,11 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
         <button className="button" onClick={onCancel}>
           Cancel
         </button>
+        {canSuggest && (
+          <button className="button composer-suggest" onClick={suggest} title="Suggest a change to these lines (⌘G)">
+            ± Suggest change
+          </button>
+        )}
       </div>
     </div>
   );

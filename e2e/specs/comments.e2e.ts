@@ -24,6 +24,18 @@ describe("comments", () => {
     expect(await draftCount()).toBe(1);
   });
 
+  it("offers the commented lines as a suggested change", async () => {
+    await gutterDrag(".row-add", 1);
+    await waitFor(() => exists(".composer-input"));
+    const line = await browser.execute(() => document.querySelectorAll(".row-add")[1].querySelector(".code")!.textContent);
+    await setTextarea(".composer-input", "Simpler:");
+    expect(await clickButton(".composer", "Suggest change")).toBe(true);
+    const value = await browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")!.value);
+    expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists(".composer-input")));
+  });
+
   it("drafts a range comment by dragging across lines", async () => {
     await gutterDrag(".row-ctx", 0, 2);
     await waitFor(() => exists(".composer-input"));
