@@ -36,7 +36,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
   - Files: `s`/`S` side-by-side (file/all); `Space` or `e` collapse/expand without touching the viewed mark; `v` viewed — marking moves on to the next file not yet viewed, so `v v v` ticks off consecutive files. A file reached by `n`/`p`/the file list/`v` stays the current file while the view stays put, even when it is one of the last files and can't scroll to the top (so a collapsed file above it never takes over).
   - Review: `c` comment, `⌘`-click / `u` usages, `/` search repo, `a` assistant; `Esc` closes the assistant first, then other panels, then an open comment box.
   - Anywhere: `⌘K` palette, `⌘I` inbox, `⌘T` theme.
-- **Themes** (`⌘T`, or `> Change theme…`): System (follows macOS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia. Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
+- **Themes** (`⌘T`, or `> Change theme…`): System (follows macOS light/dark), Light, Dark, Solarized Light/Dark, Nord, Dracula, Sepia, E-Ink (black on white, syntax by weight instead of colour, no shadows, jumps land instantly instead of gliding). Moving through the list previews; Enter keeps, Esc reverts. Remembered locally; the native window follows the theme's light/dark.
 - Scrolling never shows blank rows: rows for a new scroll position render before the frame paints, a screen of rows is drawn beyond each edge, and rows two screens ahead are fetched.
 
 ## Offline
@@ -50,7 +50,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 
 ## Code intelligence
 - **Name-based tree-sitter** symbol matching over **full contents of touched files** at the range head (`⌘`-click a name, or `u` for the name under the mouse). The panel lists definitions, uses in changed lines, and uses in unchanged code. Jump in-tool (a line outside the hunks switches its file to side-by-side and flashes); files outside the diff open in a read-only file view. The index is built per view in the background right after it opens.
-- **Streamed `git grep`** over the whole repo (`/`, or "Search the whole repo" from usages). The first search of a head downloads that tree's missing blobs in one batch (the clone is blobless); hits stream to the panel as they're found.
+- **Streamed `git grep`** over the whole repo (`/`, or "Search the whole repo" from usages). The first search of a head downloads that tree's missing blobs in one batch (the clone is blobless); hits stream to the panel as they're found. Prefetching downloads every inbox stack head's files, so search works offline; when blobs can't be downloaded, the files already present are searched and the panel says how many weren't.
 - Languages: PHP, TS/JS, Vue SFC (HTML with `<script>`/`<style>` in their languages), Twig (HTML with Twig tags tokenized on top), HTML, CSS (+ highlight-only JSON, YAML, SQL).
 
 ## Comments
@@ -60,7 +60,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - Outdated handling: when the head moved, re-map to the new head if the line still exists unchanged; otherwise flag "outdated — re-anchor or post as file comment".
 - Existing GitHub threads shown inline and cached; **offline replies and resolves** are queued.
 - **Submit sheet**: per PR choose verdict (Comment / Approve / Request changes, default Comment) + optional summary, then **Submit all** creates one GitHub review per PR — or **Submit #N** (⌘↵ in its summary) sends just that PR, leaving the other PRs' drafts, verdicts and summaries in place. Failures keep drafts local with the error; nothing is double-posted.
-- Writing: click a line's gutter (or `c` on the hovered line) for a line comment, drag across gutters for a range, "Comment" on a file header (or `c` with no hovered line) for a file comment. `⌘↵` saves, `Esc` cancels. Threads show inline with Reply / Resolve (queued until submit); resolved threads collapse.
+- Writing: click a line's gutter (or `c` on the hovered line) for a line comment, drag across gutters for a range, "Comment" on a file header (or `c` with no hovered line) for a file comment. `⌘↵` saves, `Esc` cancels. On new-side lines, "Suggest change" (`⌘G`) inserts a GitHub ```` ```suggestion ```` block holding the commented lines to edit (not offered when it would post as a file comment). Threads show inline with Reply / Resolve (queued until submit); resolved threads collapse.
 - Mechanics: line numbers are tracked per PR (the attribution walk records each line's number in its PR's own diff), so a comment on a lower PR's line in a combined view lands on that PR. Line comments go in the review; file comments (GitHub has none inside reviews) and replies are posted individually. Everything sent carries a hidden `<!-- wispydiff:… -->` marker and each draft's status is persisted around its request; after a network failure the next submit looks for the marker on GitHub instead of resending. Submitting first re-fetches the stack, so drafts are planned against the PRs' current heads.
 
 ## Assistant

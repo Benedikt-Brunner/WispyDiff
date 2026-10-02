@@ -115,6 +115,7 @@ async fn searches_review_requests_and_authored_prs() {
 async fn prefetching_makes_a_group_ready_and_finished_prs_are_evicted() {
     let origin = OriginRepo::init();
     origin.write("a.php", "<?php\n$a = 1;\n");
+    origin.write("untouched.php", "<?php\n$b = 1;\n");
     origin.commit("base");
     origin.checkout_new("feature");
     origin.write("a.php", "<?php\n$a = 2;\n");
@@ -165,6 +166,9 @@ async fn prefetching_makes_a_group_ready_and_finished_prs_are_evicted() {
     let pr = wispy_core::pr_ref::PrRef::parse("acme/shop#4").unwrap();
     let snapshot = service.cached_stack(&pr).unwrap().unwrap();
     assert!(service.cached_range(&snapshot, 0, 0).unwrap().is_some());
+    let git = wispy_core::git::Git::new(data.path().join("repos/acme/shop.git"), None);
+    let listing = git.run_string(&["rev-list", "--objects", "--missing=print", "--no-walk", &snapshot.heads[0]]).unwrap();
+    assert!(!listing.contains('?'), "every file of the head is downloaded, so search works offline");
 
     // Still listed: kept.
     assert_eq!(service.evict_finished(&groups).await.unwrap(), 0);

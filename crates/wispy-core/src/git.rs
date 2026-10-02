@@ -40,6 +40,12 @@ impl Git {
         Ok(self.command(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?)
     }
 
+    /// Like [`Git::spawn`], but objects missing from the partial clone are skipped instead of
+    /// downloaded one by one (so it works offline, on whatever has been downloaded).
+    pub fn spawn_local(&self, args: &[&str]) -> Result<std::process::Child> {
+        Ok(self.command(args).env("GIT_NO_LAZY_FETCH", "1").stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?)
+    }
+
     pub fn run_string(&self, args: &[&str]) -> Result<String> {
         let out = self.run(args)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())

@@ -8,13 +8,14 @@ interface Props {
   usages: Usages | null;
   grepHits: GrepHit[];
   grepStatus: "idle" | "running" | "done" | string;
+  grepUnsearched: number;
   onSearch: (query: string) => void;
   onJump: (target: { path: string; line: number; file?: number }) => void;
   onClose: () => void;
 }
 
 /** Usages of a symbol in the touched files, and whole-repo search (git grep). */
-export function CodePanel({ state, usages, grepHits, grepStatus, onSearch, onJump, onClose }: Props) {
+export function CodePanel({ state, usages, grepHits, grepStatus, grepUnsearched, onSearch, onJump, onClose }: Props) {
   const [query, setQuery] = useState(state.kind === "search" ? state.query : state.name);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -93,6 +94,11 @@ export function CodePanel({ state, usages, grepHits, grepStatus, onSearch, onJum
             ))}
             {grepStatus !== "idle" && grepStatus !== "running" && grepStatus !== "done" && <div className="card-error">{grepStatus}</div>}
             {grepStatus === "done" && grepHits.length === 0 && <div className="panel-empty">No matches.</div>}
+            {grepStatus === "done" && grepUnsearched > 0 && (
+              <div className="panel-empty" data-testid="grep-unsearched">
+                Offline — {grepUnsearched} file{grepUnsearched === 1 ? "" : "s"} not downloaded yet {grepUnsearched === 1 ? "wasn’t" : "weren’t"} searched.
+              </div>
+            )}
           </div>
         )}
       </div>

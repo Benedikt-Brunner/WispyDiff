@@ -410,7 +410,7 @@ pub async fn usages(view_id: String, name: String, app: AppHandle) -> Result<wis
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum GrepEvent {
     Hits { hits: Vec<wispy_core::service::GrepHit> },
-    Done { total: usize },
+    Done { total: usize, unsearched: usize },
     Failed { message: String },
 }
 
@@ -428,7 +428,7 @@ pub async fn grep(
     tauri::async_runtime::spawn_blocking(move || {
         let result = service.grep(&snapshot, pr_index, &query, whole_word, |hits| on_event.send(GrepEvent::Hits { hits }).is_ok());
         let _ = on_event.send(match result {
-            Ok(total) => GrepEvent::Done { total },
+            Ok(summary) => GrepEvent::Done { total: summary.total, unsearched: summary.unsearched },
             Err(err) => GrepEvent::Failed { message: err.to_string() },
         });
     })

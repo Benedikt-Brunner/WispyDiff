@@ -80,14 +80,15 @@ fn greps_the_whole_repo_after_downloading_its_blobs_in_one_batch() {
     assert!(missing(&git) > 0, "blobless before the first search");
 
     let mut batches = Vec::new();
-    let total = service.grep(&snapshot, 0, "allocate", true, |hits| {
+    let summary = service.grep(&snapshot, 0, "allocate", true, |hits| {
         batches.push(hits);
         true
     }).unwrap();
     assert_eq!(missing(&git), 0);
     let mut hits: Vec<(String, u32)> = batches.concat().into_iter().map(|h| (h.path, h.line)).collect();
     hits.sort();
-    assert_eq!(total, hits.len());
+    assert_eq!(summary.total, hits.len());
+    assert_eq!(summary.unsearched, 0);
     assert_eq!(
         hits,
         vec![
@@ -106,6 +107,25 @@ fn greps_the_whole_repo_after_downloading_its_blobs_in_one_batch() {
     let mut seen = 0;
     service.grep(&snapshot, 0, "allocate", true, |h| { seen += h.len(); false }).unwrap();
     assert_eq!(seen, 1);
+}
+
+#[test]
+fn greps_the_downloaded_files_when_offline_and_counts_the_rest() {
+    let (origin, service, snapshot, _data) = setup();
+    // Viewing the range downloads the changed files; Unrelated.php stays blobless.
+    service.range(&snapshot, 0, 0).unwrap();
+    let gone = origin.path().with_extension("offline");
+    std::fs::rename(origin.path(), &gone).unwrap();
+
+    let mut hits = Vec::new();
+    let summary = service.grep(&snapshot, 0, "allocate", true, |h| { hits.extend(h); true }).unwrap();
+    std::fs::rename(&gone, origin.path()).unwrap();
+
+    let mut spots: Vec<(String, u32)> = hits.into_iter().map(|h| (h.path, h.line)).collect();
+    spots.sort();
+    assert_eq!(spots, vec![("src/Allocator.php".into(), 4), ("src/Picker.ts".into(), 1), ("src/Picker.ts".into(), 4)]);
+    assert_eq!(summary.total, 3);
+    assert_eq!(summary.unsearched, 1, "Unrelated.php was never downloaded");
 }
 
 #[test]
