@@ -7,6 +7,13 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # Clean CI builds gain nothing from incremental artifacts or debug info; both only cost
+  # compile time and cache size. (Overrides `incremental = true` in the e2e profile.)
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_TERM_COLOR: always
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -39,6 +46,8 @@ jobs:
           # Otherwise a red run (or one cancelled by a newer push) rebuilds everything next time.
           cache-on-failure: true
       - uses: taiki-e/install-action@just
+      # Fails on a stale Cargo.lock, and downloads every crate up front.
+      - run: cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
       - uses: pnpm/action-setup@v4
         with:
           version: 11
