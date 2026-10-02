@@ -37,6 +37,7 @@ import { Composer, DraftCard, InsertBox, ThreadCard } from "./Inserts";
 import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment } from "./layout";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
+import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
 
 /** Rows drawn beyond the viewport, at least this many and at least a screen on each side. */
@@ -126,6 +127,8 @@ export function DiffViewer(props: Props) {
   const [usageResult, setUsageResult] = useState<Usages | null>(null);
   const [grepHits, setGrepHits] = useState<GrepHit[]>([]);
   const [grepStatus, setGrepStatus] = useState<string>("idle");
+  /** Files the last search skipped because they couldn't be downloaded (offline). */
+  const [grepUnsearched, setGrepUnsearched] = useState(0);
   const [fileView, setFileView] = useState<{ path: string; line: number; lines: Seg[][] | null; error: string | null } | null>(null);
   const [flash, setFlash] = useState<{ file: number; offset: number } | null>(null);
   const pendingJump = useRef<{ file: number; line: number } | null>(null);
@@ -168,6 +171,7 @@ export function DiffViewer(props: Props) {
       setPanel((p) => (p?.kind === "usages" ? p : { kind: "search", query }));
       setGrepHits([]);
       setGrepStatus("running");
+      setGrepUnsearched(0);
       let first = true;
       grep(stackId, hi, query, /^[A-Za-z0-9_$]+$/.test(query), (event) => {
         if (run !== grepRun.current) return;
@@ -177,8 +181,10 @@ export function DiffViewer(props: Props) {
             first = false;
             requestAnimationFrame(() => mark("grep:first-hit"));
           }
-        } else if (event.kind === "done") setGrepStatus("done");
-        else setGrepStatus(event.message);
+        } else if (event.kind === "done") {
+          setGrepUnsearched(event.unsearched);
+          setGrepStatus("done");
+        } else setGrepStatus(event.message);
       }).catch((e) => setGrepStatus(String(e)));
     },
     [stackId, hi],
@@ -408,11 +414,34 @@ export function DiffViewer(props: Props) {
     [summary, store, hi],
   );
 
+  /** The new-side text of the rows from `start` to `end` (null unless that's exactly `count` loaded lines). */
+  const headText = useCallback(
+    (start: Target, end: Target, count: number): string | null => {
+      const lines: string[] = [];
+      for (let offset = start.offset; offset <= end.offset; offset++) {
+        let kind: number, segs: Seg[];
+        if (start.mode === "unified") {
+          const row = store.unified(start.file, offset);
+          if (!row) return null;
+          [kind, segs] = [row.k, row.s];
+        } else {
+          const row = store.split(start.file, offset);
+          if (!row) return null;
+          [kind, segs] = [row.nk, row.ns];
+        }
+        if (kind === RowKind.Added || kind === RowKind.Context) lines.push(segs.map((s) => s[1]).join(""));
+      }
+      return lines.length === count ? lines.join("\n") : null;
+    },
+    [store],
+  );
+
   const openComposer = useCallback(
     (start: Target, end: Target) => {
       const same = start.anchor.pr === end.anchor.pr && start.anchor.side === end.anchor.side && start.anchor.path === end.anchor.path;
       const from = same ? start : end;
       const lines = [from.anchor.line, end.anchor.line].sort((a, b) => a - b);
+      const suggestion = end.anchor.side === "RIGHT" ? headText(from, end, lines[1] - lines[0] + 1) : null;
       const state: ComposerState = {
         key: `composer:${anchorKey(end.anchor)}`,
         kind: "line",
@@ -422,6 +451,7 @@ export function DiffViewer(props: Props) {
         line: lines[1],
         startLine: lines[0] !== lines[1] ? lines[0] : null,
         fallback: null,
+        suggestion,
       };
       setComposer(state);
       setSelection(null);
@@ -429,7 +459,7 @@ export function DiffViewer(props: Props) {
         .then((accepted) => setComposer((c) => (c?.key === state.key ? { ...c, fallback: !accepted } : c)))
         .catch(() => undefined);
     },
-    [stackId],
+    [stackId, headText],
   );
 
   const openFileComposer = useCallback(
@@ -437,7 +467,7 @@ export function DiffViewer(props: Props) {
       const summaryFile = summary.files[file];
       const touched = summaryFile.prs.filter((p) => p >= lo && p <= hi);
       const pr = touched.length ? Math.max(...touched) : hi;
-      setComposer({ key: `composer:file:${summaryFile.path}`, kind: "file", prIndex: pr, path: pathInPr(summaryFile, pr, "RIGHT"), side: null, line: null, startLine: null, fallback: false });
+      setComposer({ key: `composer:file:${summaryFile.path}`, kind: "file", prIndex: pr, path: pathInPr(summaryFile, pr, "RIGHT"), side: null, line: null, startLine: null, fallback: false, suggestion: null });
     },
     [summary, lo, hi],
   );
@@ -712,7 +742,7 @@ export function DiffViewer(props: Props) {
         glide.current.held = held;
         return;
       }
-      if (!held && Math.abs(top - el.scrollTop) > el.clientHeight) {
+      if (!held && (instantJumps() || Math.abs(top - el.scrollTop) > el.clientHeight)) {
         el.scrollTop = top;
         flushSync(() => setScrollTop(el.scrollTop));
         return;
@@ -949,6 +979,7 @@ export function DiffViewer(props: Props) {
           usages={panel.kind === "usages" ? usageResult : null}
           grepHits={grepHits}
           grepStatus={grepStatus}
+          grepUnsearched={grepUnsearched}
           onSearch={search}
           onJump={jump}
           onClose={() => setPanel(null)}
@@ -1291,6 +1322,8 @@ interface ComposerState {
   startLine: number | null;
   /** Whether it'll go out as a file comment (null while checking). */
   fallback: boolean | null;
+  /** The commented lines' text, for a suggested change (new side only). */
+  suggestion: string | null;
 }
 
 /** Where a comment on this unified row goes: the PR that last touched it, at its line there. */
@@ -1406,6 +1439,7 @@ function commentItems(src: ItemSources): CommentItem[] {
         <Composer
           title={`Comment on #${prs[composer.prIndex].number} · ${where}`}
           fileFallback={composer.fallback}
+          suggestion={composer.suggestion}
           onSave={(body) => {
             src.closeComposer();
             void src.saveDraft({

@@ -73,6 +73,14 @@ pub struct GrepHit {
 /// Whole-repo search stops after this many hits.
 pub const MAX_GREP_HITS: usize = 1000;
 
+/// How a whole-repo search went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrepSummary {
+    pub total: usize,
+    /// Files that couldn't be searched because their contents couldn't be downloaded (offline).
+    pub unsearched: usize,
+}
+
 /// Starting a new assistant thread.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -371,7 +379,8 @@ impl PrService {
     }
 
     /// Makes a group openable offline: discovers and fetches its full stack, precomputes each
-    /// member alone and the whole stack, and caches review threads.
+    /// member alone and the whole stack, downloads every head's files (for whole-repo search),
+    /// and caches review threads.
     pub async fn prefetch(&self, group: &InboxGroup) -> Result<StackSnapshot> {
         let pr = PrRef { owner: owner_of(&group.repo).into(), repo: name_of(&group.repo).into(), number: group.prs[0].number };
         let stack = self.discover(&pr).await?;
@@ -385,6 +394,10 @@ impl PrService {
             self.precompute(&snapshot, index, index)?;
         }
         self.precompute(&snapshot, 0, snapshot.len() - 1)?;
+        let git = self.git(&snapshot)?;
+        for head in &snapshot.heads {
+            self.store.hydrate(&git, head)?;
+        }
         self.refresh_threads(&snapshot).await?;
         Ok(snapshot)
     }
@@ -430,18 +443,22 @@ impl PrService {
 
     /// Streams `git grep` hits for `query` (fixed string) on the head of stack PR `index`,
     /// in batches to `on_hits` (return `false` to stop). The first search of a head downloads
-    /// its missing blobs in one batch. Returns the number of hits.
-    pub fn grep(&self, snapshot: &StackSnapshot, index: usize, query: &str, whole_word: bool, mut on_hits: impl FnMut(Vec<GrepHit>) -> bool) -> Result<usize> {
+    /// its missing blobs in one batch; if that fails (offline), the files already downloaded
+    /// are searched and the rest are counted as unsearched.
+    pub fn grep(&self, snapshot: &StackSnapshot, index: usize, query: &str, whole_word: bool, mut on_hits: impl FnMut(Vec<GrepHit>) -> bool) -> Result<GrepSummary> {
         use std::io::{BufRead, BufReader};
         let head = &snapshot.heads[index];
         let git = self.git(snapshot)?;
-        self.store.hydrate(&git, head)?;
+        let unsearched = match self.store.hydrate(&git, head) {
+            Ok(_) => 0,
+            Err(_) => self.store.missing_blobs(&git, head)?.len(),
+        };
         let mut args = vec!["grep", "-z", "-n", "-I", "--fixed-strings", "--max-count=50"];
         if whole_word {
             args.push("-w");
         }
         args.extend(["-e", query, head.as_str(), "--"]);
-        let mut child = git.spawn(&args)?;
+        let mut child = git.spawn_local(&args)?;
         let reader = BufReader::new(child.stdout.take().expect("stdout is piped"));
         let prefix = format!("{head}:");
         let (mut batch, mut total, mut last_flush) = (Vec::new(), 0usize, std::time::Instant::now());
@@ -472,7 +489,7 @@ impl PrService {
         if !batch.is_empty() {
             on_hits(batch);
         }
-        Ok(total)
+        Ok(GrepSummary { total, unsearched })
     }
 
     /// The highlighted contents of `path` on the head of stack PR `index` (read-only file view).

@@ -109,6 +109,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
     [
       [["c"], "Comment on the line under the mouse (or the file)"],
       [["⌘↵"], "Save the comment"],
+      [["⌘G"], "Suggest a change to the commented lines"],
       [["⌘-click", "u"], "Usages of the name under the mouse"],
       [["/"], "Search the repo"],
       [["a"], "Ask the assistant (about the selected lines, if any)"],

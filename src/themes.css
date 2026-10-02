@@ -204,3 +204,75 @@
   --pr4: #6f7a1d;
   --pr5: #6a4fa0;
 }
+
+/* E-Ink: pure black on white, greys only where they carry meaning, no soft shadows.
+   Syntax is told apart by weight and style rather than colour. */
+:root[data-theme="eink"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #ffffff;
+  --fg: #000000;
+  --fg-muted: #4d4d4d;
+  --border: #8c8c8c;
+  --accent: #000000;
+  --add-bg: #e6e6e6;
+  --add-gutter: #bfbfbf;
+  --add-fg: #000000;
+  --del-bg: #ffffff;
+  --del-gutter: #000000;
+  --del-fg: #000000;
+  --hunk-bg: #ffffff;
+  --hunk-fg: #000000;
+  --file-bg: #e6e6e6;
+  --selection: #bfbfbf;
+  --t-keyword: #000000;
+  --t-string: #000000;
+  --t-comment: #4d4d4d;
+  --t-number: #000000;
+  --t-function: #000000;
+  --t-type: #000000;
+  --t-constant: #000000;
+  --t-property: #000000;
+  --t-variable: #000000;
+  --t-operator: #000000;
+  --t-punctuation: #4d4d4d;
+  --t-tag: #000000;
+  --t-attribute: #000000;
+  --t-escape: #000000;
+  --pr0: #000000;
+  --pr1: #737373;
+  --pr2: #404040;
+  --pr3: #a6a6a6;
+  --pr4: #262626;
+  --pr5: #8c8c8c;
+}
+:root[data-theme="eink"] .t1,
+:root[data-theme="eink"] .t14 {
+  font-weight: 700;
+}
+:root[data-theme="eink"] .t7,
+:root[data-theme="eink"] .t9 {
+  font-weight: 600;
+}
+/* Deleted lines: an inverted gutter (white numbers on black) instead of a red tint. */
+:root[data-theme="eink"] .row-del .gutter,
+:root[data-theme="eink"] .half-del .gutter {
+  color: #ffffff;
+}
+/* Hunk headers: a hairline on top (a border would change the row height). */
+:root[data-theme="eink"] .row-hunk,
+:root[data-theme="eink"] .row-hunk .gutter {
+  background-image: linear-gradient(var(--border), var(--border));
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+}
+/* Blurred shadows turn into dithering on e-ink: frame floating panels instead. */
+:root[data-theme="eink"] .palette,
+:root[data-theme="eink"] .sheet,
+:root[data-theme="eink"] .toast,
+:root[data-theme="eink"] .file-view,
+:root[data-theme="eink"] .card {
+  box-shadow: none;
+  border: 1px solid #000000;
+}

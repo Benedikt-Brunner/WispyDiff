@@ -83,7 +83,7 @@ export interface GrepHit {
   text: string;
 }
 
-export type GrepEvent = { kind: "hits"; hits: GrepHit[] } | { kind: "done"; total: number } | { kind: "failed"; message: string };
+export type GrepEvent = { kind: "hits"; hits: GrepHit[] } | { kind: "done"; total: number; unsearched: number } | { kind: "failed"; message: string };
 
 export const usages = (viewId: string, name: string) => invoke<Usages>("usages", { viewId, name });
 
