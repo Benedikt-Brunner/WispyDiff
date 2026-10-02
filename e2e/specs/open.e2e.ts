@@ -127,6 +127,9 @@ describe("reading modes and noise", () => {
   });
 
   it("wraps long lines with z instead of scrolling sideways", async () => {
+    // Narrow, so nothing wider than the diff pane (e.g. the column probe) hides behind a wide window.
+    const size = await browser.getWindowSize();
+    await browser.setWindowSize(900, size.height);
     await openViaPalette("wispy/fixture#1");
     await browser.keys("S");
     await waitFor(async () => (await count('.row-file[data-mode="split"]')) > 0);
@@ -156,6 +159,7 @@ describe("reading modes and noise", () => {
     expect(await browser.execute(() => [...document.querySelectorAll<HTMLElement>(".row-split")].every((r) => r.offsetHeight === 20))).toBe(true);
     await browser.keys("S");
     await waitFor(async () => (await count('.row-file[data-mode="split"]')) === 0);
+    await browser.setWindowSize(size.width, size.height);
   });
 
   it("hides whitespace-only changes with w", async () => {
