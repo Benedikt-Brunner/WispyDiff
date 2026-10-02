@@ -15,6 +15,14 @@ opt-level = 3
 panic = "abort"
 strip = true
 
+# The functional e2e build: optimized, but without the slow LTO / single-codegen-unit link.
+# Performance budgets (`just bench`) still run against the real release build.
+[profile.e2e]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 # Keep the core fast in dev builds so `tauri dev` feels like the real thing.
 [profile.dev.package.wispy-core]
 opt-level = 2

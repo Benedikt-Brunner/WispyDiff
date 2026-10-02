@@ -8,7 +8,7 @@ behaviour, performance budgets and milestones — read it before changing anythi
 - `crates/wispy-fixtures` — seeded synthetic stack generator + fake GitHub API (`generate`, `serve`).
 - `src-tauri` — thin Tauri shell: commands in `commands.rs`, state in `state.rs`. Feature `e2e` embeds the WebDriver server.
 - `src` — React/TS frontend. The owner doesn't read this code; keep it simple and fast.
-- `e2e` — WebdriverIO suites against the real release build (`open.e2e.ts` functional, `perf.e2e.ts` budgets).
+- `e2e` — WebdriverIO suites against the real app (`open.e2e.ts` etc. functional, built with the fast-linking `e2e` Cargo profile; `perf.e2e.ts` budgets, against the full `release` build).
 
 ## Commands
 - `just test` — core tests, type-check, all functional e2e specs.
