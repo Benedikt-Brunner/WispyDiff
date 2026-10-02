@@ -646,6 +646,8 @@ body,
 .diff-canvas.wrap .half .code {
   flex: none;
   white-space: break-spaces;
+  /* Not just inside words: break-all alone still won't break after "(" or before ")". */
+  line-break: anywhere;
   word-break: break-all;
   overflow-wrap: anywhere;
 }

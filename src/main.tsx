@@ -4,6 +4,13 @@ import App from "./App";
 import { isMac } from "./platform";
 import { applyTheme, savedTheme } from "./themes";
 
+// e2e builds share WebKit storage across runs (it's not under WISPY_DATA_DIR), so a run that
+// stopped midway would leave its view modes behind. Start each app launch from defaults.
+if (import.meta.env.VITE_E2E === "1" && !sessionStorage.getItem("wispy.e2e-launched")) {
+  localStorage.clear();
+  sessionStorage.setItem("wispy.e2e-launched", "1");
+}
+
 applyTheme(savedTheme());
 if (isMac) document.documentElement.dataset.platform = "mac";
 
