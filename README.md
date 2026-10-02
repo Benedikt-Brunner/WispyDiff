@@ -53,8 +53,9 @@ just test    # core tests, type-check, functional e2e suites
 just bench   # performance budgets from SPEC.md
 ```
 
-There is no CI; everything runs locally. Tests use throwaway git repos and a fake GitHub API
-(`crates/wispy-fixtures`), never the real GitHub, Claude Code or Codex.
+CI runs `just test` on macOS and Linux for every push and PR. The performance budgets only run
+locally (`just bench`), since shared runners are too noisy for timing assertions. Tests use throwaway git repos and a fake GitHub API (`crates/wispy-fixtures`),
+never the real GitHub, Claude Code or Codex.
 
 ## License
 

@@ -1,4 +1,4 @@
-# WispyDiff — everything runs locally; there is no CI.
+# WispyDiff — CI runs `just test`; the performance budgets (`just bench`) only run locally.
 
 default:
     @just --list
