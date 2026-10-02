@@ -30,9 +30,9 @@ bench: (build-e2e "release")
 e2e-functional: (build-e2e "e2e")
     pnpm exec wdio run e2e/wdio.conf.ts
 
-# App build with the embedded WebDriver server, plus the fixture generator. Functional specs use
-# the quick-to-link `e2e` profile; the performance budgets need `release`.
+# App build with the embedded WebDriver server, plus the fixture generator (always `e2e`). Functional
+# specs use the quick-to-link `e2e` profile; the performance budgets need `release`.
 build-e2e profile="e2e":
-    cargo build --release -p wispy-fixtures
-    ./target/release/wispy-fixtures generate --out e2e/.fixtures/stack --seed 42 > /dev/null
+    cargo build --profile e2e -p wispy-fixtures
+    ./target/e2e/wispy-fixtures generate --out e2e/.fixtures/stack --seed 42 > /dev/null
     pnpm tauri build --features e2e --no-bundle --config src-tauri/tauri.e2e.conf.json -- --profile {{profile}}

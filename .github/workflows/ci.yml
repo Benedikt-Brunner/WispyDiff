@@ -35,6 +35,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Otherwise a red run (or one cancelled by a newer push) rebuilds everything next time.
+          cache-on-failure: true
       - uses: taiki-e/install-action@just
       - uses: pnpm/action-setup@v4
         with:
