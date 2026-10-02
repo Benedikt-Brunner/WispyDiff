@@ -176,6 +176,25 @@ impl RepoStore {
         Ok(missing.len())
     }
 
+    /// The paths of `commit`'s files whose blobs are downloaded, and how many aren't.
+    pub fn downloaded_files(&self, git: &Git, commit: &str) -> Result<(Vec<String>, usize)> {
+        let missing: std::collections::HashSet<String> = self.missing_blobs(git, commit)?.into_iter().collect();
+        let listing = git.run(&["ls-tree", "-r", "-z", commit])?;
+        let mut downloaded = Vec::new();
+        for entry in listing.split(|b| *b == 0) {
+            // `<mode> <type> <oid>\t<path>`
+            let entry = String::from_utf8_lossy(entry);
+            let Some((meta, path)) = entry.split_once('\t') else { continue };
+            let mut meta = meta.split(' ');
+            if let (_, Some("blob"), Some(oid)) = (meta.next(), meta.next(), meta.next()) {
+                if !missing.contains(oid) {
+                    downloaded.push(path.to_string());
+                }
+            }
+        }
+        Ok((downloaded, missing.len()))
+    }
+
     /// The blobs of `commit`'s tree that the partial clone hasn't downloaded yet.
     pub fn missing_blobs(&self, git: &Git, commit: &str) -> Result<Vec<String>> {
         let listing = git.run_string(&["rev-list", "--objects", "--missing=print", "--no-walk", commit])?;
