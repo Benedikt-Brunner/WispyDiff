@@ -1,4 +1,4 @@
-import { click, clickButton, count, exists, goHome, gutterDrag, selectedChips, setOffline, setTextarea, text, waitFor } from "./helpers";
+import { MOD, click, clickButton, count, exists, goHome, gutterDrag, selectedChips, setOffline, setTextarea, text, waitFor } from "./helpers";
 
 const openFromInbox = async (pr: number) => {
   await browser.execute((n: number) => document.querySelector<HTMLElement>(`[data-testid="inbox"] li[data-pr="${n}"]`)!.click(), pr);
@@ -24,6 +24,32 @@ describe("inbox", () => {
     await waitFor(async () => (await text('li[data-pr="2"] .inbox-review')) === "you approved", 60_000);
     expect(await exists('li[data-pr="2"] .inbox-review.ok')).toBe(true);
     expect(await exists('li[data-pr="1"] .inbox-review')).toBe(false);
+  });
+
+  it("keeps every PR title visible when the row is crowded", async () => {
+    // Narrowest window, zoomed in: the badges and branch names don't all fit next to the titles.
+    const size = await browser.getWindowSize();
+    const zoomIn = (times: number) =>
+      browser.execute(
+        (n: number, mac: boolean) => {
+          for (let i = 0; i < n; i++) window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
+        },
+        times,
+        MOD === "Meta",
+      );
+    await browser.setWindowSize(720, size.height);
+    try {
+      await zoomIn(5);
+      await waitFor(async () => (await browser.execute(() => localStorage.getItem("wispy.zoom"))) === "2");
+      await waitFor(async () => (await browser.execute(() => window.innerWidth)) < 400);
+      const squeezed = await browser.execute(() =>
+        [...document.querySelectorAll<HTMLElement>(".inbox-pr-title")].filter((t) => t.offsetWidth < Math.min(t.scrollWidth, 60)).map((t) => t.textContent),
+      );
+      expect(squeezed).toEqual([]);
+    } finally {
+      await browser.keys([MOD, "0"]);
+      await browser.setWindowSize(size.width, size.height);
+    }
   });
 
   it("collapses and expands a stack with its toggle, Space/e and Enter", async () => {

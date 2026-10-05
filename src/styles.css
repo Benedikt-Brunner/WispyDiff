@@ -1130,7 +1130,10 @@ body.resizing {
   white-space: nowrap;
 }
 .inbox-pr-title {
+  /* Up to half the row; the branch names in .inbox-meta give way first. */
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 50%;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -1138,7 +1141,11 @@ body.resizing {
 }
 .inbox-meta {
   margin-left: auto;
-  flex: none;
+  flex: 0 100 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-muted);
   font-size: 12px;
 }
