@@ -749,6 +749,20 @@ body.resizing {
 .row-collapsed:hover .code {
   color: var(--fg);
 }
+.collapsed-tally svg {
+  vertical-align: -1px;
+}
+.collapsed-tally.open svg,
+.file-open-threads {
+  color: var(--accent);
+}
+.file-open-threads {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  font-size: 11px;
+}
 .file-badge {
   font-weight: 400;
   font-size: 11px;
@@ -800,13 +814,6 @@ body.resizing {
 .card.failed {
   border-color: var(--del-fg);
 }
-.card.thread.collapsed {
-  cursor: pointer;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 12px;
-}
 .card.thread.resolved {
   opacity: 0.8;
 }
@@ -823,6 +830,138 @@ body.resizing {
 .card-body {
   white-space: pre-wrap;
   line-height: 1.45;
+}
+/* GitHub's rendering of a comment (Markdown, HTML). */
+.card-body.markdown {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre,
+.markdown blockquote,
+.markdown table,
+.markdown details,
+.markdown .highlight {
+  margin: 0 0 8px;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 20px;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-size: 13px;
+  margin: 10px 0 6px;
+}
+.markdown a {
+  color: var(--accent);
+}
+.markdown code {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+.markdown pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: pre;
+}
+.markdown pre code {
+  padding: 0;
+  background: none;
+}
+.markdown .highlight pre {
+  margin: 0;
+}
+.markdown .pl-mi1 {
+  color: var(--add-fg);
+}
+.markdown .pl-md {
+  color: var(--del-fg);
+}
+.markdown blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+.markdown summary {
+  cursor: pointer;
+}
+.markdown details[open] > summary {
+  margin-bottom: 6px;
+}
+.markdown table {
+  border-collapse: collapse;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+}
+.markdown img {
+  max-width: 100%;
+}
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.card-hide {
+  margin-left: auto;
+}
+/* A hidden thread: an icon at the gutter's left edge (the right half's, side by side). */
+.comment-mark {
+  position: absolute;
+  top: 0;
+  left: 1px;
+  z-index: 2;
+  display: flex;
+  height: 20px;
+  align-items: center;
+  padding: 0 1px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+.comment-mark.right {
+  left: calc(var(--vw, 100%) / 2 + 1px);
+}
+.comment-mark.settled,
+.file-hidden-comments.settled {
+  color: var(--fg-muted);
+}
+.comment-mark:hover {
+  color: var(--fg);
+}
+.file-hidden-comments {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  font: inherit;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
 }
 .card-error {
   color: var(--del-fg);

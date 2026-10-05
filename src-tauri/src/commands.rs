@@ -600,3 +600,13 @@ fn spawn_precompute(app: AppHandle, stack_id: String, snapshot: Arc<StackSnapsho
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> wispy_core::Result<T> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
+
+/// Opens a web link (from a rendered comment) in the default browser.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("not a web link: {url}"));
+    }
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    std::process::Command::new(opener).arg(&url).spawn().map(drop).map_err(|e| format!("{opener}: {e}"))
+}

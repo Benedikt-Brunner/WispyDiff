@@ -23,6 +23,7 @@ import { AssistantPanel, type AskContext } from "./AssistantPanel";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileView } from "./FileView";
 import {
+  prKey,
   anchorKey,
   fileIndexFor,
   lineLabel,
@@ -34,13 +35,14 @@ import {
   type ReviewThread,
   type ShownDraft,
 } from "./comments";
-import { Composer, DraftCard, InsertBox, ThreadCard } from "./Inserts";
+import { Composer, DraftCard, InsertBox, settledReason, ThreadCard, threadPreview } from "./Inserts";
 import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment, type WrappedRows } from "./layout";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
 import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
 import { mod } from "./platform";
+import { loadList, saveList } from "./prefs";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
 import { loadPref, savePref } from "./prefs";
 import { allDirs, ancestors, buildTree, treeRows } from "./fileTree";
@@ -81,6 +83,9 @@ interface Props {
   /** Wrap long lines instead of scrolling sideways (global, remembered). */
   wrap: boolean;
   onWrapChange: (wrap: boolean) => void;
+  /** PRs (`prKey`) whose review threads are all hidden, leaving icons in the gutter (remembered). */
+  hiddenCommentPrs: Set<string>;
+  onCommentsHiddenChange: (prKeys: string[], hide: boolean) => void;
   /** Files the user asked to collapse in this repo (ignore patterns). */
   isIgnored: (path: string) => boolean;
   /** Viewed marks, by file content key. */
@@ -90,6 +95,7 @@ interface Props {
 
 export function DiffViewer(props: Props) {
   const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, wrap, onWrapChange, isIgnored } = props;
+  const { hiddenCommentPrs, onCommentsHiddenChange } = props;
   const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -235,9 +241,49 @@ export function DiffViewer(props: Props) {
     [onDraftsChanged],
   );
 
+  // Threads hidden one by one (remembered), and the ones shown again from their gutter icon. The
+  // rest follow `h` (hide all) or, by default, GitHub: resolved / outdated / minimized ones hidden.
+  const [hiddenThreads, setHiddenThreads] = useState(() => new Set(loadList("hiddenThreads")));
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const changeHidden = useCallback((change: (s: Set<string>) => void) => {
+    setHiddenThreads((current) => {
+      const next = new Set(current);
+      change(next);
+      saveList("hiddenThreads", [...next].slice(-500));
+      return next;
+    });
+  }, []);
+  // Hiding or showing a PR's threads (h) starts over: the ones shown from their icons follow it.
+  const [hiddenPrsSeen, setHiddenPrsSeen] = useState(hiddenCommentPrs);
+  if (hiddenPrsSeen !== hiddenCommentPrs) {
+    setHiddenPrsSeen(hiddenCommentPrs);
+    setRevealed(new Set());
+  }
+  const rangeKeys = useMemo(() => prs.slice(lo, hi + 1).map(prKey), [prs, lo, hi]);
+  const rangeHidden = rangeKeys.every((k) => hiddenCommentPrs.has(k));
+  const isHidden = useCallback(
+    (thread: ReviewThread, prIndex: number) =>
+      !revealed.has(thread.id) && (hiddenCommentPrs.has(prKey(prs[prIndex])) || hiddenThreads.has(thread.id) || settledReason(thread) !== null),
+    [prs, hiddenCommentPrs, revealed, hiddenThreads],
+  );
+  const hideThread = useCallback(
+    (id: string) => {
+      setRevealed((s) => withOut(s, id));
+      changeHidden((s) => s.add(id));
+    },
+    [changeHidden],
+  );
+  const showThreads = useCallback(
+    (ids: string[]) => {
+      setRevealed((s) => new Set([...s, ...ids]));
+      changeHidden((s) => ids.forEach((id) => s.delete(id)));
+    },
+    [changeHidden],
+  );
+
   const items = useMemo(
-    () => commentItems({ drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, closeComposer: () => setComposer(null) }),
-    [drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft],
+    () => commentItems({ drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, closeComposer: () => setComposer(null), isHidden, hideThread }),
+    [drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, isHidden, hideThread],
   );
   const anchorList = useMemo(() => {
     const unique = new Map<string, Anchor>();
@@ -260,9 +306,13 @@ export function DiffViewer(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewId, anchorsSignature]);
 
-  const placed = useMemo(() => {
+  const { placed, marks, tallies } = useMemo(() => {
     const locations = located?.viewId === viewId ? located.locations : new Map<string, Location | null>();
     const out: (Insert & { item: CommentItem })[] = [];
+    /** Hidden threads by the row their icon goes on (and the side, side by side). */
+    const marks = new Map<string, CommentMarkItem>();
+    /** Threads and drafts per file, by tally (a collapsed file sums them up instead of showing them). */
+    const tallies = new Map<number, Map<string, number>>();
     for (const item of items) {
       let file: number;
       let offset: number | null = null;
@@ -278,9 +328,24 @@ export function DiffViewer(props: Props) {
       }
       const segment = baseLayout.segments[file];
       const after = segment.start + (offset ?? (segment.mode === "collapsed" ? 1 : 0));
+      if (item.tally) {
+        const counts = tallies.get(file) ?? new Map<string, number>();
+        counts.set(item.tally, (counts.get(item.tally) ?? 0) + 1);
+        tallies.set(file, counts);
+        if (segment.mode === "collapsed") continue;
+      }
+      if (item.hidden) {
+        const right = segment.mode === "split" && item.anchor?.side === "RIGHT";
+        const key = `${after}:${right}`;
+        const mark = marks.get(key) ?? { row: after, header: after === segment.start, right, settled: true, threads: [] };
+        mark.threads.push(item.hidden);
+        mark.settled &&= item.hidden.settled;
+        marks.set(key, mark);
+        continue;
+      }
       out.push({ key: item.key, after, height: heights.get(item.key) ?? 72, item });
     }
-    return out;
+    return { placed: out, marks: [...marks.values()], tallies };
   }, [items, located, viewId, baseLayout, summary, heights]);
 
   // ---------- line wrap ----------
@@ -716,10 +781,32 @@ export function DiffViewer(props: Props) {
       (selection !== null && selection.file === segment.file && selection.mode === segment.mode && offset >= selection.from && offset <= selection.to) ||
       (flash !== null && flash.file === segment.file && flash.offset === offset);
     if (offset === 0) {
-      rendered.push(<FileHeader key={key} y={y} file={file} mode={segment.mode} onComment={() => openFileComposer(segment.file)} />);
+      rendered.push(
+        <FileHeader
+          key={key}
+          y={y}
+          file={file}
+          mode={segment.mode}
+          onComment={() => openFileComposer(segment.file)}
+          hidden={marks.find((m) => m.header && m.row === row)}
+          onShowHidden={showThreads}
+        />,
+      );
     } else if (segment.mode === "collapsed") {
       const why = file.noise ?? (isViewed(file.content_key) ? "viewed" : isIgnored(file.path) ? "ignored" : "collapsed");
-      rendered.push(<CollapsedNotice key={key} y={y} file={file} why={why} onExpand={() => setExpanded((s) => new Set(s).add(file.path))} />);
+      rendered.push(
+        <CollapsedNotice
+          key={key}
+          y={y}
+          file={file}
+          why={why}
+          tally={tallies.get(segment.file)}
+          onExpand={() => {
+            setExpanded((s) => new Set(s).add(file.path));
+            setCollapsed((s) => withOut(s, file.path));
+          }}
+        />,
+      );
     } else if (segment.mode === "split") {
       const split = store.split(segment.file, offset);
       if (!split) visibleLoaded = false;
@@ -760,6 +847,10 @@ export function DiffViewer(props: Props) {
         />,
       );
     }
+  }
+  for (const mark of marks) {
+    if (mark.header || mark.row < first || mark.row >= last) continue;
+    rendered.push(<CommentMark key={`mark:${mark.row}:${mark.right}`} y={layout.rowY(mark.row)} mark={mark} onShow={showThreads} />);
   }
   for (const insert of layout.insertsBetween(first - 1, last)) {
     rendered.push(
@@ -956,6 +1047,9 @@ export function DiffViewer(props: Props) {
         case "z":
           changeLayout(() => onWrapChange(!wrap));
           break;
+        case "h":
+          changeLayout(() => onCommentsHiddenChange(rangeKeys, !rangeHidden));
+          break;
         case "t":
           toggleListMode();
           break;
@@ -1024,7 +1118,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode]);
 
   return (
     <div className="diff-layout">
@@ -1035,6 +1129,7 @@ export function DiffViewer(props: Props) {
           segments={layout.segments}
           current={current.file}
           showPrs={multiPr}
+          openThreads={(i) => tallies.get(i)?.get("open") ?? 0}
           mode={listMode}
           onToggleMode={toggleListMode}
           onSelect={(index) => scrollToRow(layout.segments[index].start, 0, index)}
@@ -1135,7 +1230,17 @@ const NO_ROWS: WrappedRows = [];
 const WRAP_PAD_UNIFIED = 8 + 48;
 const WRAP_PAD_SPLIT = 8 + 24;
 
-const FileHeader = memo(function FileHeader({ y, file, mode, onComment }: { y: number; file: FileSummary; mode: Mode; onComment: () => void }) {
+interface FileHeaderProps {
+  y: number;
+  file: FileSummary;
+  mode: Mode;
+  onComment: () => void;
+  /** Hidden file-level (or outdated) threads of this file. */
+  hidden?: CommentMarkItem;
+  onShowHidden: (threadIds: string[]) => void;
+}
+
+const FileHeader = memo(function FileHeader({ y, file, mode, onComment, hidden, onShowHidden }: FileHeaderProps) {
   return (
     <div className="row row-file" style={at(y)} data-file={file.path} data-mode={mode}>
       <span className={`file-status status-${file.status}`}>{statusLetter(file.status)}</span>
@@ -1151,16 +1256,93 @@ const FileHeader = memo(function FileHeader({ y, file, mode, onComment }: { y: n
       <button className="file-comment" title="Comment on this file" onClick={onComment}>
         Comment
       </button>
+      {hidden && (
+        <button
+          className={`file-hidden-comments${hidden.settled ? " settled" : ""}`}
+          title={markTitle(hidden)}
+          onClick={() => onShowHidden(hidden.threads.map((t) => t.id))}
+        >
+          <CommentIcon settled={hidden.settled} />
+          {hidden.threads.length}
+        </button>
+      )}
     </div>
   );
 });
 
-function CollapsedNotice({ y, file, why, onExpand }: { y: number; file: FileSummary; why: string; onExpand: () => void }) {
+/** Hidden threads that share a row (and side): an icon at the gutter's edge that shows them again. */
+interface CommentMarkItem {
+  row: number;
+  /** On the file header (file-level threads, outdated ones that can't be placed). */
+  header: boolean;
+  /** On the right half, side by side. */
+  right: boolean;
+  /** Every thread here is one GitHub folds away (resolved, outdated, minimized). */
+  settled: boolean;
+  threads: HiddenThread[];
+}
+
+interface HiddenThread {
+  id: string;
+  preview: string;
+  settled: boolean;
+}
+
+const markTitle = (mark: CommentMarkItem) => `${mark.threads.map((t) => t.preview).join("\n")}\n\nClick to show`;
+
+function CommentMark({ y, mark, onShow }: { y: number; mark: CommentMarkItem; onShow: (threadIds: string[]) => void }) {
   return (
-    <div className="row row-collapsed" style={at(y)} onClick={onExpand}>
+    <button
+      className={`comment-mark${mark.right ? " right" : ""}${mark.settled ? " settled" : ""}`}
+      style={{ transform: `translate(var(--split-x, 0px), ${y}px)` }}
+      title={markTitle(mark)}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={() => onShow(mark.threads.map((t) => t.id))}
+    >
+      <CommentIcon settled={mark.settled} />
+    </button>
+  );
+}
+
+/** A speech bubble; with a check mark for settled threads. */
+const CommentIcon = ({ settled }: { settled: boolean }) => (
+  <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden>
+    <path fill="currentColor" d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v7a1.5 1.5 0 0 1-1.5 1.5H7.4l-3 2.8A.75.75 0 0 1 3 13.25V11A1.5 1.5 0 0 1 2 9.5Z" />
+    {settled && <path d="m5 6.2 2 2 4-4" fill="none" stroke="var(--bg)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />}
+  </svg>
+);
+
+interface CollapsedNoticeProps {
+  y: number;
+  file: FileSummary;
+  why: string;
+  /** The file's threads and drafts, by tally. */
+  tally?: Map<string, number>;
+  onExpand: () => void;
+}
+
+function CollapsedNotice({ y, file, why, tally, onExpand }: CollapsedNoticeProps) {
+  const count = (key: string) => tally?.get(key) ?? 0;
+  const settled = [...(tally ?? [])].filter(([key]) => key !== "open" && key !== "draft");
+  const drafts = count("draft");
+  return (
+    <div className="row row-collapsed" style={at(y)} onClick={onExpand} data-file={file.path}>
       <span className="gutter" />
       <span className="code">
-        {why} · +{file.additions} −{file.deletions} · click or press {why === "viewed" ? "v" : "e"} to expand
+        {why} · +{file.additions} −{file.deletions}
+        {count("open") > 0 && (
+          <span className="collapsed-tally open">
+            {" · "}
+            <CommentIcon settled={false} /> {count("open")} open
+          </span>
+        )}
+        {settled.map(([reason, n]) => (
+          <span className="collapsed-tally" key={reason}>
+            {" · "}
+            <CommentIcon settled /> {n} {reason.toLowerCase()}
+          </span>
+        ))}
+        {drafts > 0 && ` · ${drafts} draft${drafts === 1 ? "" : "s"}`} · click or press {why === "viewed" ? "v" : "e"} to expand
       </span>
     </div>
   );
@@ -1324,12 +1506,14 @@ interface FileListProps {
   segments: Segment[];
   current: number;
   showPrs: boolean;
+  /** Open (not settled) review threads, by file index. */
+  openThreads: (file: number) => number;
   mode: ListMode;
   onToggleMode: () => void;
   onSelect: (index: number) => void;
 }
 
-function FileList({ files, isViewed, segments, current, showPrs, mode, onToggleMode, onSelect }: FileListProps) {
+function FileList({ files, isViewed, segments, current, showPrs, openThreads, mode, onToggleMode, onSelect }: FileListProps) {
   const activeRef = useRef<HTMLLIElement>(null);
   const width = useSidebarWidth("files", 280);
   const tree = useMemo(() => buildTree(files.map((f) => f.path)), [files]);
@@ -1376,6 +1560,12 @@ function FileList({ files, isViewed, segments, current, showPrs, mode, onToggleM
             {f.prs.map((p) => (
               <span key={p} className="file-pr-dot" style={{ background: prColor(p) }} />
             ))}
+          </span>
+        )}
+        {openThreads(i) > 0 && (
+          <span className="file-open-threads" title={`${openThreads(i)} open thread${openThreads(i) === 1 ? "" : "s"}`}>
+            <CommentIcon settled={false} />
+            {openThreads(i)}
           </span>
         )}
         <span className="file-counts">
@@ -1544,6 +1734,10 @@ interface CommentItem {
   /** Line items are placed at their anchor; file items under their file's header. */
   anchor: Anchor | null;
   path: string;
+  /** A hidden thread: drawn as a gutter icon instead. */
+  hidden: HiddenThread | null;
+  /** What a collapsed file counts this as: "open", a settled reason ("Resolved", …), or "draft"; null: always shown. */
+  tally: string | null;
   render: () => React.ReactNode;
 }
 
@@ -1558,6 +1752,8 @@ interface ItemSources {
   removeDraft: (id: string) => Promise<void>;
   editDraft: (id: string, body: string) => Promise<void>;
   closeComposer: () => void;
+  isHidden: (thread: ReviewThread, prIndex: number) => boolean;
+  hideThread: (threadId: string) => void;
 }
 
 /** Threads, drafts and the open composer of the PRs in the range, as placeable items. */
@@ -1578,6 +1774,8 @@ function commentItems(src: ItemSources): CommentItem[] {
         key: `thread:${thread.id}`,
         anchor,
         path: thread.path,
+        hidden: src.isHidden(thread, prIndex) ? { id: thread.id, preview: threadPreview(thread), settled: settledReason(thread) !== null } : null,
+        tally: settledReason(thread) ?? "open",
         render: () => (
           <ThreadCard
             thread={thread}
@@ -1591,6 +1789,7 @@ function commentItems(src: ItemSources): CommentItem[] {
               void src.saveDraft({ prIndex, kind: "resolve", path: thread.path, side: null, line: null, startLine: null, body: "", threadId: thread.id, replyTo: null })
             }
             onDeleteDraft={(id) => void src.removeDraft(id)}
+            onHide={() => src.hideThread(thread.id)}
           />
         ),
       });
@@ -1608,6 +1807,8 @@ function commentItems(src: ItemSources): CommentItem[] {
       key: `draft:${draft.id}`,
       anchor,
       path,
+      hidden: null,
+      tally: "draft",
       render: () => (
         <DraftCard
           shown={shown}
@@ -1629,6 +1830,8 @@ function commentItems(src: ItemSources): CommentItem[] {
       key: composer.key,
       anchor,
       path: composer.path,
+      hidden: null,
+      tally: null,
       render: () => (
         <Composer
           title={`Comment on #${prs[composer.prIndex].number} · ${where}`}

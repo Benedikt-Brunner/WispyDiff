@@ -56,6 +56,12 @@ pub struct ThreadComment {
     pub database_id: u64,
     pub author: String,
     pub body: String,
+    /// GitHub's rendering of `body` (sanitized; empty in caches from before it was fetched).
+    #[serde(default)]
+    pub body_html: String,
+    /// Hidden on GitHub (minimized as spam, off-topic, outdated, resolved, …).
+    #[serde(default)]
+    pub minimized: bool,
     pub created_at: String,
     pub url: String,
 }
@@ -96,7 +102,7 @@ const THREADS_QUERY: &str = "query($owner: String!, $repo: String!, $number: Int
         pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved isOutdated path line startLine originalLine diffSide subjectType
-          comments(first: 100) { nodes { id databaseId body createdAt url author { login } } }
+          comments(first: 100) { nodes { id databaseId body bodyHTML isMinimized createdAt url author { login } } }
         }
       }
     }
@@ -338,6 +344,8 @@ fn parse_thread(node: &serde_json::Value) -> ReviewThread {
                 database_id: c["databaseId"].as_u64().unwrap_or_default(),
                 author: c["author"]["login"].as_str().unwrap_or("ghost").to_string(),
                 body: c["body"].as_str().unwrap_or_default().to_string(),
+                body_html: c["bodyHTML"].as_str().unwrap_or_default().to_string(),
+                minimized: c["isMinimized"].as_bool().unwrap_or(false),
                 created_at: c["createdAt"].as_str().unwrap_or_default().to_string(),
                 url: c["url"].as_str().unwrap_or_default().to_string(),
             })

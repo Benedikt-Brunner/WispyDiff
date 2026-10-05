@@ -267,7 +267,7 @@ async fn fetches_review_threads_over_graphql() {
             "nodes": [{
                 "id": "PRRT_1", "isResolved": false, "isOutdated": false, "path": "a.txt", "line": 10, "startLine": null,
                 "originalLine": 10, "diffSide": "RIGHT", "subjectType": "LINE",
-                "comments": { "nodes": [{ "id": "C1", "databaseId": 4242, "body": "why?", "createdAt": "2026-09-30T10:00:00Z", "url": "u", "author": { "login": "octocat" } }] }
+                "comments": { "nodes": [{ "id": "C1", "databaseId": 4242, "body": "why?", "bodyHTML": "<p>why?</p>", "isMinimized": true, "createdAt": "2026-09-30T10:00:00Z", "url": "u", "author": { "login": "octocat" } }] }
             }]
         } } } } })))
         .mount(&server)
@@ -278,4 +278,6 @@ async fn fetches_review_threads_over_graphql() {
     assert_eq!((threads[0].line, threads[0].side, threads[0].file_level), (Some(10), Side::Right, false));
     assert_eq!(threads[0].comments[0].database_id, 4242);
     assert_eq!(threads[0].comments[0].author, "octocat");
+    assert_eq!(threads[0].comments[0].body_html, "<p>why?</p>");
+    assert!(threads[0].comments[0].minimized);
 }
