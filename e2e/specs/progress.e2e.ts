@@ -1,4 +1,4 @@
-import { click, count, exists, goHome, openViaPalette, originGit, originShow, originWrite, text, waitFor } from "./helpers";
+import { click, clickButton, count, exists, goHome, gutterDrag, openViaPalette, originGit, originShow, originWrite, setTextarea, text, waitFor } from "./helpers";
 
 const fileNames = () => browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")));
 const isViewedInList = (path: string) =>
@@ -92,5 +92,30 @@ describe("review progress", () => {
     await waitFor(async () => (await text(".toast"))?.includes("Marked #5 as reviewed") ?? false);
     await goHome();
     await waitFor(async () => (await text(marked)) === "marked reviewed");
+  });
+
+  it("switches to the changes since the checkpoint with a comment on a file that isn't in them", async () => {
+    await openViaPalette("wispy/fixture#5");
+    // #5 is now docs/NOTES.md and `path`; comment on the second file.
+    expect(await fileNames()).toEqual(["docs/NOTES.md", path]);
+    await gutterDrag('.row-add[data-file="1"]', 0);
+    await waitFor(() => exists(".composer-input"));
+    await setTextarea(".composer-input", "Still needed?");
+    await clickButton(".composer", "Save draft");
+    await waitFor(async () => (await text(".card.draft")) !== null);
+
+    originGit("checkout", "--quiet", "solo");
+    originWrite("docs/NOTES.md", "pushed while the PR was open, then reworded\n");
+    originGit("commit", "--quiet", "-am", "reword notes");
+    originGit("update-ref", "refs/pull/5/head", "solo");
+    originGit("checkout", "--quiet", "main");
+    await openLatest(true);
+
+    await browser.keys("d");
+    await waitFor(async () => (await text(".pr-meta"))?.includes("changes since") ?? false, 60_000);
+    expect(await fileNames()).toEqual(["docs/NOTES.md"]);
+    await browser.keys("d");
+    await waitFor(async () => !((await text(".pr-meta"))?.includes("changes since") ?? true));
+    await waitFor(async () => (await text(".card.draft"))?.includes("Still needed?") ?? false);
   });
 });
