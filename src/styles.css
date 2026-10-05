@@ -393,6 +393,8 @@ body.resizing {
 .file-list {
   position: relative;
   flex: none;
+  display: flex;
+  flex-direction: column;
   max-width: 60vw;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -401,9 +403,51 @@ body.resizing {
   list-style: none;
   margin: 0;
   padding: 6px 0;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   box-sizing: border-box;
   overflow-y: auto;
+}
+.file-list li.file-tree-dir .file-name {
+  direction: ltr;
+  color: var(--fg-muted);
+}
+.file-tree-count,
+.file-tree-done {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.file-tree-done {
+  color: var(--add-fg);
+}
+.file-list-footer {
+  flex: none;
+  display: flex;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+}
+.file-list-modes {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.file-list-modes button {
+  display: flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.file-list-modes button + button {
+  border-left: 1px solid var(--border);
+}
+.file-list-modes button.active {
+  background: var(--selection);
+  color: var(--fg);
 }
 .file-list li {
   display: flex;
