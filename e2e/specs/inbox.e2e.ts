@@ -26,6 +26,21 @@ describe("inbox", () => {
     expect(await exists('li[data-pr="1"] .inbox-review')).toBe(false);
   });
 
+  it("keeps every PR title visible when the row is crowded", async () => {
+    // A narrow inbox, so the badges and branch names don't all fit next to the titles.
+    const squeezed = await browser.execute(() => {
+      const inbox = document.querySelector<HTMLElement>('[data-testid="inbox"]')!;
+      // Its side padding follows the window width, so it's pinned too.
+      Object.assign(inbox.style, { width: "420px", padding: "18px 24px" });
+      try {
+        return [...inbox.querySelectorAll<HTMLElement>(".inbox-pr-title")].filter((t) => t.offsetWidth < Math.min(t.scrollWidth, 60)).map((t) => t.textContent);
+      } finally {
+        Object.assign(inbox.style, { width: "", padding: "" });
+      }
+    });
+    expect(squeezed).toEqual([]);
+  });
+
   it("collapses and expands a stack with its toggle, Space/e and Enter", async () => {
     const stack = '.inbox-group[data-group="1,2,3,4"]';
     const collapsed = () => exists(`${stack}[data-collapsed]`);
