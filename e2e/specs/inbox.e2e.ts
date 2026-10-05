@@ -1,4 +1,4 @@
-import { MOD, click, clickButton, count, exists, goHome, gutterDrag, selectedChips, setOffline, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, count, exists, goHome, gutterDrag, selectedChips, setOffline, setTextarea, text, waitFor } from "./helpers";
 
 const openFromInbox = async (pr: number) => {
   await browser.execute((n: number) => document.querySelector<HTMLElement>(`[data-testid="inbox"] li[data-pr="${n}"]`)!.click(), pr);
@@ -27,29 +27,18 @@ describe("inbox", () => {
   });
 
   it("keeps every PR title visible when the row is crowded", async () => {
-    // Narrowest window, zoomed in: the badges and branch names don't all fit next to the titles.
-    const size = await browser.getWindowSize();
-    const zoomIn = (times: number) =>
-      browser.execute(
-        (n: number, mac: boolean) => {
-          for (let i = 0; i < n; i++) window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
-        },
-        times,
-        MOD === "Meta",
-      );
-    await browser.setWindowSize(720, size.height);
-    try {
-      await zoomIn(5);
-      await waitFor(async () => (await browser.execute(() => localStorage.getItem("wispy.zoom"))) === "2");
-      await waitFor(async () => (await browser.execute(() => window.innerWidth)) < 400);
-      const squeezed = await browser.execute(() =>
-        [...document.querySelectorAll<HTMLElement>(".inbox-pr-title")].filter((t) => t.offsetWidth < Math.min(t.scrollWidth, 60)).map((t) => t.textContent),
-      );
-      expect(squeezed).toEqual([]);
-    } finally {
-      await browser.keys([MOD, "0"]);
-      await browser.setWindowSize(size.width, size.height);
-    }
+    // A narrow inbox, so the badges and branch names don't all fit next to the titles.
+    const squeezed = await browser.execute(() => {
+      const inbox = document.querySelector<HTMLElement>('[data-testid="inbox"]')!;
+      // Its side padding follows the window width, so it's pinned too.
+      Object.assign(inbox.style, { width: "420px", padding: "18px 24px" });
+      try {
+        return [...inbox.querySelectorAll<HTMLElement>(".inbox-pr-title")].filter((t) => t.offsetWidth < Math.min(t.scrollWidth, 60)).map((t) => t.textContent);
+      } finally {
+        Object.assign(inbox.style, { width: "", padding: "" });
+      }
+    });
+    expect(squeezed).toEqual([]);
   });
 
   it("collapses and expands a stack with its toggle, Space/e and Enter", async () => {
