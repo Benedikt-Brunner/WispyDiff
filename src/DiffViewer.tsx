@@ -42,6 +42,8 @@ import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
 import { mod } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
+import { loadPref, savePref } from "./prefs";
+import { allDirs, ancestors, buildTree, treeRows } from "./fileTree";
 
 /** Rows drawn beyond the viewport, at least this many and at least a screen on each side. */
 const OVERSCAN = 20;
@@ -102,6 +104,17 @@ export function DiffViewer(props: Props) {
   const [overrides, setOverrides] = useState<Map<string, BaseMode>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  /** The file list as a flat list or a directory tree (`t`, remembered). */
+  const [listMode, setListMode] = useState(() => loadPref("fileList", LIST_MODES, "list"));
+  const toggleListMode = useCallback(
+    () =>
+      setListMode((m) => {
+        const next = m === "list" ? "tree" : "list";
+        savePref("fileList", next);
+        return next;
+      }),
+    [],
+  );
 
   /** Which perf mark to set once the visible rows are loaded ("view" / "layout"). */
   const pendingMark = useRef<string | null>("view");
@@ -941,6 +954,9 @@ export function DiffViewer(props: Props) {
         case "z":
           changeLayout(() => onWrapChange(!wrap));
           break;
+        case "t":
+          toggleListMode();
+          break;
         case "S":
           changeLayout(() => {
             setOverrides(new Map());
@@ -1006,7 +1022,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode]);
 
   return (
     <div className="diff-layout">
@@ -1017,6 +1033,8 @@ export function DiffViewer(props: Props) {
           segments={layout.segments}
           current={current.file}
           showPrs={multiPr}
+          mode={listMode}
+          onToggleMode={toggleListMode}
           onSelect={(index) => scrollToRow(layout.segments[index].start, 0, index)}
         />
       )}
@@ -1295,55 +1313,135 @@ const SplitRowView = memo(function SplitRowView({ y, height, row, showAttributio
   );
 });
 
+const LIST_MODES = ["list", "tree"] as const;
+type ListMode = (typeof LIST_MODES)[number];
+
 interface FileListProps {
   files: FileSummary[];
   isViewed: (key: string) => boolean;
   segments: Segment[];
   current: number;
   showPrs: boolean;
+  mode: ListMode;
+  onToggleMode: () => void;
   onSelect: (index: number) => void;
 }
 
-function FileList({ files, isViewed, segments, current, showPrs, onSelect }: FileListProps) {
+function FileList({ files, isViewed, segments, current, showPrs, mode, onToggleMode, onSelect }: FileListProps) {
   const activeRef = useRef<HTMLLIElement>(null);
-  useEffect(() => activeRef.current?.scrollIntoView({ block: "nearest" }), [current]);
   const width = useSidebarWidth("files", 280);
+  const tree = useMemo(() => buildTree(files.map((f) => f.path)), [files]);
+  const [closed, setClosed] = useState<Set<string>>(new Set());
+  // A directory folds once every file in it is viewed.
+  const done = useMemo(() => allDirs(tree).filter((d) => d.files.every((i) => isViewed(files[i].content_key))).map((d) => d.path), [tree, files, isViewed]);
+  const wasDone = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const newly = done.filter((d) => !wasDone.current.has(d));
+    wasDone.current = new Set(done);
+    if (newly.length) setClosed((c) => new Set([...c, ...newly]));
+  }, [done]);
+  // The current file's directories open when it is reached (n/p, v, scrolling…).
+  const currentPath = files[current]?.path;
+  useEffect(() => {
+    if (!currentPath) return;
+    setClosed((c) => {
+      const inside = ancestors(currentPath).filter((d) => c.has(d));
+      return inside.length ? new Set([...c].filter((d) => !inside.includes(d))) : c;
+    });
+  }, [currentPath]);
+  useEffect(() => activeRef.current?.scrollIntoView({ block: "nearest" }), [current, mode]);
+  const toggleDir = (path: string) => setClosed((c) => (c.has(path) ? withOut(c, path) : new Set(c).add(path)));
+
+  const fileRow = (i: number, depth?: number) => {
+    const f = files[i];
+    const viewed = isViewed(f.content_key);
+    return (
+      <li
+        key={f.path + i}
+        ref={i === current ? activeRef : undefined}
+        className={[i === current && "active", segments[i]?.mode === "collapsed" && "muted", viewed && "viewed"].filter(Boolean).join(" ")}
+        style={depth === undefined ? undefined : { paddingLeft: indent(depth) }}
+        onClick={() => onSelect(i)}
+        title={f.path}
+      >
+        <span className={`file-status status-${f.status}`}>{viewed ? "✓" : statusLetter(f.status)}</span>
+        <span className="file-name">
+          {depth === undefined && <span className="file-dir">{dirname(f.path)}</span>}
+          {basename(f.path)}
+        </span>
+        {showPrs && (
+          <span className="file-prs">
+            {f.prs.map((p) => (
+              <span key={p} className="file-pr-dot" style={{ background: prColor(p) }} />
+            ))}
+          </span>
+        )}
+        <span className="file-counts">
+          {f.additions > 0 && <span className="add">+{f.additions}</span>}
+          {f.deletions > 0 && <span className="del">−{f.deletions}</span>}
+        </span>
+      </li>
+    );
+  };
+
   return (
     <nav className="file-list" style={{ width: width.width }}>
       <ResizeHandle edge="right" {...width} />
       <ul>
-        {files.map((f, i) => (
-          <li
-            key={f.path + i}
-            ref={i === current ? activeRef : undefined}
-            className={[i === current && "active", segments[i]?.mode === "collapsed" && "muted", isViewed(f.content_key) && "viewed"]
-              .filter(Boolean)
-              .join(" ")}
-            onClick={() => onSelect(i)}
-            title={f.path}
-          >
-            <span className={`file-status status-${f.status}`}>{isViewed(f.content_key) ? "✓" : statusLetter(f.status)}</span>
-            <span className="file-name">
-              <span className="file-dir">{dirname(f.path)}</span>
-              {basename(f.path)}
-            </span>
-            {showPrs && (
-              <span className="file-prs">
-                {f.prs.map((p) => (
-                  <span key={p} className="file-pr-dot" style={{ background: prColor(p) }} />
-                ))}
-              </span>
-            )}
-            <span className="file-counts">
-              {f.additions > 0 && <span className="add">+{f.additions}</span>}
-              {f.deletions > 0 && <span className="del">−{f.deletions}</span>}
-            </span>
-          </li>
-        ))}
+        {mode === "list"
+          ? files.map((_, i) => fileRow(i))
+          : treeRows(tree, closed).map((row) => {
+              if ("file" in row) return fileRow(row.file, row.depth);
+              const { dir } = row;
+              const open = !closed.has(dir.path);
+              const allViewed = dir.files.every((i) => isViewed(files[i].content_key));
+              return (
+                <li
+                  key={`dir:${dir.path}`}
+                  className={["file-tree-dir", allViewed && "viewed"].filter(Boolean).join(" ")}
+                  style={{ paddingLeft: indent(row.depth) }}
+                  onClick={() => toggleDir(dir.path)}
+                  data-dir={dir.path}
+                >
+                  <span className="file-status">{open ? "▾" : "▸"}</span>
+                  <span className="file-name">{dir.name}</span>
+                  {allViewed ? <span className="file-tree-done">✓</span> : !open && <span className="file-tree-count">{dir.files.length}</span>}
+                </li>
+              );
+            })}
       </ul>
+      <div className="file-list-footer">
+        <span className="file-list-modes" role="group" aria-label="File list layout">
+          {LIST_MODES.map((m) => (
+            <button
+              key={m}
+              className={m === mode ? "active" : undefined}
+              onClick={() => m !== mode && onToggleMode()}
+              title={`${m === "list" ? "Flat list" : "Directory tree"} (t)`}
+              data-testid={`file-list-${m}`}
+            >
+              {m === "list" ? <ListIcon /> : <TreeIcon />}
+            </button>
+          ))}
+        </span>
+      </div>
     </nav>
   );
 }
+
+const indent = (depth: number) => 12 + depth * 8;
+
+const ListIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+    <path d="M2 3.5h10M2 7h10M2 10.5h10" />
+  </svg>
+);
+
+const TreeIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+    <path d="M2 2.5h6M5 6h7M5 9.5h7M3 3v6.5h2M3 6h2" />
+  </svg>
+);
 
 function AssistantMark({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
   return (

@@ -200,6 +200,48 @@ describe("keyboard", () => {
     await waitFor(async () => (await listWidth()) === 280);
   });
 
+  it("shows the file list as a tree with t, folding directories and opening the current file's", async () => {
+    await toTop();
+    const dirs = () => browser.execute(() => [...document.querySelectorAll(".file-list li[data-dir]")].map((li) => li.getAttribute("data-dir")!));
+    const shown = (path: string) => browser.execute((p: string) => !!document.querySelector(`.file-list li[title="${p}"]`), path);
+    await browser.keys("t");
+    await waitFor(async () => (await dirs()).length > 0);
+    expect(await browser.execute(() => document.querySelectorAll(".file-list li[title]").length)).toBe(files.length);
+    expect(await activeFile()).toBe(files[0]);
+
+    // Folding the next file's directory hides it; moving on to it (n) opens the directory again.
+    const dir = (await dirs()).filter((d) => files[1].startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0];
+    await click(`.file-list li[data-dir="${dir}"]`);
+    await waitFor(async () => !(await shown(files[1])));
+    await browser.keys("n");
+    await waitFor(async () => (await activeFile()) === files[1]);
+
+    // Viewing every file in a directory folds it.
+    const inDir = (d: string) => files.filter((f) => f.startsWith(`${d}/`));
+    const small = (await dirs()).sort((a, b) => inDir(a).length - inDir(b).length)[0];
+    for (const path of inDir(small)) {
+      await click(`.file-list li[title="${path}"]`);
+      await waitFor(async () => (await activeFile()) === path);
+      await browser.keys("v");
+      // (Its row goes away once the last one folds the directory.)
+      await waitFor(async () => (await listHas(path, "viewed")) || !(await shown(path)));
+    }
+    await waitFor(async () => !(await shown(inDir(small)[0])));
+    // Opened again and un-viewed, for the other specs.
+    await click(`.file-list li[data-dir="${small}"]`);
+    for (const path of inDir(small)) {
+      await click(`.file-list li[title="${path}"]`);
+      await waitFor(async () => (await activeFile()) === path);
+      await browser.keys("v");
+      await waitFor(async () => !(await listHas(path, "viewed")));
+    }
+
+    // The footer toggle goes back to the flat list.
+    await click('[data-testid="file-list-list"]');
+    await waitFor(async () => (await dirs()).length === 0);
+    expect(await fileNames()).toEqual(files);
+  });
+
   it("lists the keyboard shortcuts with ?", async () => {
     await browser.keys("?");
     await waitFor(() => exists('[data-testid="shortcuts"]'));

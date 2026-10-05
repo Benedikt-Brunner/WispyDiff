@@ -85,6 +85,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [["n", "p"], "Next / previous file"],
       [["j", "k"], "Next / previous change (hold to scroll through them)"],
       [[keyLabel("B")], "Show / hide the file list"],
+      [["t"], "File list as a directory tree / flat list"],
     ],
   ],
   [
