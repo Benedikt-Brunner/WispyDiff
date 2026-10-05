@@ -127,7 +127,8 @@ export function DiffViewer(props: Props) {
   const [composer, setComposer] = useState<ComposerState | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [heights, setHeights] = useState<Map<string, number>>(new Map());
-  const [locations, setLocations] = useState<Map<string, Location | null>>(new Map());
+  /** Where the comment anchors are in `viewId` (file indices differ between views, so stale ones are ignored). */
+  const [located, setLocated] = useState<{ viewId: string; locations: Map<string, Location | null> } | null>(null);
   const hovered = useRef<Target | null>(null);
   const dragging = useRef<Target | null>(null);
 
@@ -237,7 +238,7 @@ export function DiffViewer(props: Props) {
     locateAnchors(viewId, anchorList)
       .then((found) => {
         if (cancelled) return;
-        setLocations(new Map(anchorList.map((a, i) => [anchorKey(a), found[i]])));
+        setLocated({ viewId, locations: new Map(anchorList.map((a, i) => [anchorKey(a), found[i]])) });
       })
       .catch((e) => console.error("locate failed", e));
     return () => {
@@ -247,6 +248,7 @@ export function DiffViewer(props: Props) {
   }, [viewId, anchorsSignature]);
 
   const placed = useMemo(() => {
+    const locations = located?.viewId === viewId ? located.locations : new Map<string, Location | null>();
     const out: (Insert & { item: CommentItem })[] = [];
     for (const item of items) {
       let file: number;
@@ -266,7 +268,7 @@ export function DiffViewer(props: Props) {
       out.push({ key: item.key, after, height: heights.get(item.key) ?? 72, item });
     }
     return out;
-  }, [items, locations, baseLayout, summary, heights]);
+  }, [items, located, viewId, baseLayout, summary, heights]);
 
   // ---------- line wrap ----------
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
