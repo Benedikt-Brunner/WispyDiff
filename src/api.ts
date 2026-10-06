@@ -129,6 +129,8 @@ export interface AssistantMessage {
   text: string;
   at: number;
   error: boolean;
+  /** The failure was the CLI's sign-in (expired or missing). */
+  signIn: boolean;
 }
 
 export interface AssistantThread {
@@ -170,6 +172,13 @@ export function askAssistant(
   const channel = new Channel<AssistantEvent>();
   channel.onmessage = onEvent;
   return invoke<AssistantThread>("ask_assistant", { stackId, lo, hi, threadId, newThread, question, onEvent: channel });
+}
+
+/** Runs the CLI's sign-in; `onUrl` gets the sign-in page (already opened in the browser). Resolves once signed in. */
+export function signInAssistant(provider: Provider, onUrl: (url: string) => void) {
+  const channel = new Channel<string>();
+  channel.onmessage = onUrl;
+  return invoke<void>("sign_in_assistant", { provider, onUrl: channel });
 }
 
 export const listAssistantThreads = (stackId: string) => invoke<AssistantThread[]>("list_assistant_threads", { stackId });

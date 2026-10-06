@@ -176,6 +176,78 @@ pub fn run(ask: &Ask, cwd: &Path, mut on_event: impl FnMut(&AssistantEvent)) -> 
     Ok(answer)
 }
 
+/// Whether a failed turn's `message` means the CLI's sign-in expired or is missing.
+pub fn needs_sign_in(provider: Provider, message: &str) -> bool {
+    let message = message.to_lowercase();
+    let signs: &[&str] = match provider {
+        Provider::Claude => &["failed to authenticate", "oauth", "not logged in", "/login", "invalid api key", "authentication_error"],
+        Provider::Codex => &["401", "unauthorized", "not logged in", "codex login", "token_expired", "refresh token"],
+    };
+    signs.iter().any(|sign| message.contains(sign))
+}
+
+/// The CLI's sign-in command. Its own browser launch is suppressed (`BROWSER=true`); the app
+/// opens the sign-in page itself.
+pub fn sign_in_command(provider: Provider) -> Command {
+    let mut cmd = Command::new(provider.binary());
+    match provider {
+        Provider::Claude => cmd.args(["auth", "login"]),
+        Provider::Codex => cmd.arg("login"),
+    };
+    cmd.env("BROWSER", "true").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd
+}
+
+/// The sign-in page in a line of the sign-in command's output (the first `https://` link;
+/// Codex also prints its `http://localhost` callback, terminals may wrap links in escapes).
+pub fn sign_in_url(line: &str) -> Option<String> {
+    let start = line.find("https://")?;
+    let url: String = line[start..].chars().take_while(|c| !c.is_whitespace() && !c.is_control()).collect();
+    Some(url)
+}
+
+/// Runs the CLI's sign-in in the background: `on_url` gets the sign-in page as soon as the CLI
+/// prints it, then this waits until the user has finished signing in (the CLI exits). Blocking.
+pub fn sign_in(provider: Provider, on_url: impl FnOnce(&str)) -> Result<()> {
+    let mut child = sign_in_command(provider).spawn()?;
+    // Held open until the CLI exits: it offers to read a pasted code from stdin.
+    let _stdin = child.stdin.take();
+    let (lines, received) = std::sync::mpsc::channel::<String>();
+    let readers: Vec<_> = [
+        Box::new(child.stdout.take().expect("stdout is piped")) as Box<dyn std::io::Read + Send>,
+        Box::new(child.stderr.take().expect("stderr is piped")),
+    ]
+    .into_iter()
+    .map(|pipe| {
+        let lines = lines.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(std::result::Result::ok) {
+                let _ = lines.send(line);
+            }
+        })
+    })
+    .collect();
+    drop(lines);
+    let mut on_url = Some(on_url);
+    let mut last = String::new();
+    for line in received {
+        if let Some(url) = sign_in_url(&line) {
+            if let Some(on_url) = on_url.take() {
+                on_url(&url);
+            }
+        }
+        if !line.trim().is_empty() {
+            last = line;
+        }
+    }
+    readers.into_iter().for_each(|r| drop(r.join()));
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(crate::Error::Assistant(format!("{} sign-in failed: {}", provider.binary(), last.trim())));
+    }
+    Ok(())
+}
+
 /// What the assistant is asked about.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -245,6 +317,9 @@ pub struct Message {
     /// Set on a failed assistant turn.
     #[serde(default)]
     pub error: bool,
+    /// Set on a failed turn caused by the CLI's sign-in (offers to sign in again).
+    #[serde(default)]
+    pub sign_in: bool,
 }
 
 /// A conversation, stored locally per repo.
@@ -263,6 +338,9 @@ pub struct Thread {
     pub selection: Option<ThreadAnchor>,
     pub messages: Vec<Message>,
     pub created_at: i64,
+    /// The review context while no turn has succeeded yet, so asking again still sends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsent_context: Option<Context>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -498,6 +498,26 @@ pub async fn ask_assistant(
     .await
 }
 
+/// Signs the assistant CLI in again: runs its sign-in in the background, opens the sign-in page
+/// in the browser (and sends it to `on_url`), and returns once the user has signed in.
+#[tauri::command]
+pub async fn sign_in_assistant(provider: wispy_core::assistant::Provider, on_url: tauri::ipc::Channel<String>) -> Result<(), String> {
+    blocking(move || {
+        wispy_core::assistant::sign_in(provider, |url| {
+            open_in_browser(url);
+            let _ = on_url.send(url.to_string());
+        })
+    })
+    .await
+}
+
+/// Opens `url` in the default browser (`WISPY_OPENER` overrides the opener; tests use a fake).
+fn open_in_browser(url: &str) {
+    let default = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let opener = std::env::var("WISPY_OPENER").unwrap_or_else(|_| default.to_string());
+    let _ = std::process::Command::new(opener).arg(url).status();
+}
+
 #[tauri::command]
 pub async fn list_assistant_threads(stack_id: String, state: State<'_, AppState>) -> Result<Vec<wispy_core::assistant::Thread>, String> {
     let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);

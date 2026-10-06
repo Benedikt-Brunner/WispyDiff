@@ -3,7 +3,7 @@ mod support;
 use std::path::PathBuf;
 
 use support::{pull_request, OriginRepo};
-use wispy_core::assistant::{command, parse_line, Ask, AssistantEvent, Provider, Selection};
+use wispy_core::assistant::{command, needs_sign_in, parse_line, sign_in, sign_in_command, sign_in_url, Ask, AssistantEvent, Provider, Selection};
 use wispy_core::cache::Cache;
 use wispy_core::github::GitHubClient;
 use wispy_core::highlight::Highlighter;
@@ -14,6 +14,12 @@ use wispy_core::stack::Stack;
 fn fake(name: &str) -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fake-cli").join(name);
     root.canonicalize().unwrap().to_string_lossy().into_owned()
+}
+
+/// The questions the fake CLIs were asked (the sign-in test runs alongside and logs there too).
+fn asks(log: &std::path::Path) -> Vec<serde_json::Value> {
+    let entries = std::fs::read_to_string(log).unwrap();
+    entries.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).filter(|c| c.get("prompt").is_some()).collect()
 }
 
 fn args(ask: &Ask) -> Vec<String> {
@@ -123,7 +129,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert_eq!(streamed.trim(), answer.text);
     assert_eq!(thread.session.as_deref(), Some("fake-claude-session"));
 
-    let calls: Vec<serde_json::Value> = std::fs::read_to_string(log.path()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let calls = asks(log.path());
     let prompt = calls[0]["prompt"].as_str().unwrap();
     assert!(prompt.contains("Under review: acme/shop #3"));
     assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
@@ -138,14 +144,31 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     let followed = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "And 'shipped'?", |_| {}).unwrap();
     assert_eq!(followed.messages.len(), 4);
     assert!(followed.messages[3].text.starts_with("(follow-up)"));
-    let calls: Vec<serde_json::Value> = std::fs::read_to_string(log.path()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let calls = asks(log.path());
     assert_eq!(calls[1]["prompt"], "And 'shipped'?");
     assert!(calls[1]["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
 
     // Failures are kept in the thread; Codex works the same way.
     let failed = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "fail", |_| {}).unwrap();
     assert!(failed.messages.last().unwrap().error);
-    assert!(failed.messages.last().unwrap().text.contains("Failed to authenticate (fake)"));
+    assert!(failed.messages.last().unwrap().text.contains("Something went wrong (fake)"));
+    assert!(!failed.messages.last().unwrap().sign_in);
+    let expired = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "expired", |_| {}).unwrap();
+    assert!(expired.messages.last().unwrap().sign_in, "an expired sign-in offers to sign in again");
+
+    // A thread whose first turn failed sends the review context again when asked again.
+    let new = NewThread { provider: Provider::Claude, model: None, effort: None, selection: None, anchor: None };
+    let first = service.ask(&snapshot, (0, 0), None, Some(new), "expired", |_| {}).unwrap();
+    assert_eq!(first.session, None);
+    let retried = service.ask(&snapshot, (0, 0), Some(&first.id), None, "What changed?", |_| {}).unwrap();
+    assert!(!retried.messages.last().unwrap().error);
+    assert_eq!(retried.session.as_deref(), Some("fake-claude-session"));
+    assert!(retried.unsent_context.is_none());
+    let calls = asks(log.path());
+    let call = calls.last().unwrap();
+    assert!(call["prompt"].as_str().unwrap().contains("Under review: acme/shop #3"));
+    assert!(!call["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
+    service.delete_assistant_thread(&first.id).unwrap();
     let codex = service
         .ask(&snapshot, (0, 0), None, Some(NewThread { provider: Provider::Codex, model: None, effort: None, selection: None, anchor: None }), "Summarize", |_| {})
         .unwrap();
@@ -155,4 +178,41 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 2);
     service.delete_assistant_thread(&thread.id).unwrap();
     assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 1);
+}
+
+#[test]
+fn recognizes_expired_sign_ins() {
+    assert!(needs_sign_in(Provider::Claude, "Failed to authenticate: OAuth session expired and could not be refreshed"));
+    assert!(needs_sign_in(Provider::Claude, "Not logged in · Please run /login"));
+    assert!(!needs_sign_in(Provider::Claude, "claude exited with exit status: 1: rate limited"));
+    assert!(needs_sign_in(Provider::Codex, "unexpected status 401 Unauthorized"));
+    assert!(!needs_sign_in(Provider::Codex, "model not available (fake)"));
+}
+
+#[test]
+fn signs_in_without_letting_the_cli_open_a_browser() {
+    let claude = sign_in_command(Provider::Claude);
+    assert_eq!(claude.get_args().collect::<Vec<_>>(), ["auth", "login"]);
+    assert!(claude.get_envs().any(|(k, v)| k == "BROWSER" && v == Some("true".as_ref())));
+    assert_eq!(sign_in_command(Provider::Codex).get_args().collect::<Vec<_>>(), ["login"]);
+
+    assert_eq!(
+        sign_in_url("If the browser didn't open, visit: \x1b]8;;https://claude.ai/oauth?a=1\x07https://claude.ai/oauth?a=1\x1b]8;;\x07").as_deref(),
+        Some("https://claude.ai/oauth?a=1")
+    );
+    assert_eq!(sign_in_url("Starting local login server on http://localhost:1455."), None);
+}
+
+#[test]
+fn signs_in_through_the_cli_and_reports_the_sign_in_page() {
+    // SAFETY: see above; both tests point at the same fakes.
+    unsafe {
+        std::env::set_var("WISPY_CLAUDE_BIN", fake("claude"));
+        std::env::set_var("WISPY_CODEX_BIN", fake("codex"));
+    }
+    for (provider, expected) in [(Provider::Claude, "https://claude.example.test/"), (Provider::Codex, "https://codex.example.test/")] {
+        let mut opened = None;
+        sign_in(provider, |url| opened = Some(url.to_string())).unwrap();
+        assert!(opened.as_deref().is_some_and(|u| u.starts_with(expected)), "{opened:?}");
+    }
 }

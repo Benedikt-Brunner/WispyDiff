@@ -84,6 +84,24 @@ describe("assistant", () => {
     await waitFor(async () => (await count(".card.draft")) === 0);
   });
 
+  it("offers to sign in again when the CLI's sign-in expired, then asks again", async () => {
+    await clickButton('[data-testid="assistant-panel"]', "delete");
+    await ask("expired");
+    await waitFor(async () => (await text(".assistant-message.error"))?.includes("OAuth session expired") ?? false, 60_000);
+    await clickButton('[data-testid="assistant-sign-in"]', "Sign in to Claude Code again");
+    await waitFor(async () => (await text('[data-testid="assistant-sign-in"]'))?.includes("Signed in.") ?? false, 30_000);
+    const calls = readFileSync(process.env.WISPY_FAKE_LOG!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(calls.some((c) => c.args?.join(" ") === "auth login" && c.browser === "true")).toBe(true);
+    expect(calls.at(-1).opened).toBe("https://claude.example.test/oauth/authorize?state=fake");
+
+    // Asking again sends the question with the review context (the failed turn left no session).
+    await clickButton('[data-testid="assistant-sign-in"]', "Ask again");
+    await waitFor(async () => fakeCalls().at(-1)!.prompt?.includes("Question: expired") ?? false, 60_000);
+    expect(fakeCalls().at(-1)!.prompt).toContain("Under review: wispy/fixture #2");
+    expect(fakeCalls().at(-1)!.args).not.toContain("--resume");
+    await waitFor(async () => (await count(".assistant-message.error")) === 2, 60_000);
+  });
+
   it("asks Codex about the whole range, and shows failures in the thread", async () => {
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));

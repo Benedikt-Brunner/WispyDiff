@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AssistantSelection, AssistantThread, Provider, ThreadAnchor } from "./api";
+import { signInAssistant, type AssistantSelection, type AssistantThread, type Provider, type ThreadAnchor } from "./api";
 import { loadPref, savePref } from "./prefs";
 import { mod, keyLabel } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
@@ -8,6 +8,7 @@ const MODELS: Record<Provider, string[]> = {
   claude: ["", "opus", "sonnet", "haiku", "fable"],
   codex: [""],
 };
+const PROVIDER_NAMES: Record<Provider, string> = { claude: "Claude Code", codex: "Codex" };
 const EFFORTS: Record<Provider, string[]> = {
   claude: ["", "low", "medium", "high", "xhigh", "max"],
   codex: ["", "minimal", "low", "medium", "high"],
@@ -43,11 +44,13 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
   const [model, setModel] = useState(() => localValue(`assistant.model.${provider}`));
   const [effort, setEffort] = useState(() => localValue(`assistant.effort.${provider}`));
   const [question, setQuestion] = useState("");
+  const [signIn, setSignIn] = useState<{ state: "waiting" | "done" | "failed"; url?: string; message?: string } | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const active = threads.find((t) => t.id === activeId) ?? null;
 
   useEffect(() => input.current?.focus(), [activeId, context]);
+  useEffect(() => setSignIn(null), [activeId]);
   useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [active?.messages.length, pending?.text]);
 
   const changeProvider = (next: Provider) => {
@@ -64,6 +67,19 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
     if (!question.trim() || pending) return;
     onAsk(question.trim(), { provider, model: model || null, effort: effort || null });
     setQuestion("");
+  };
+
+  const startSignIn = (thread: AssistantThread) => {
+    setSignIn({ state: "waiting" });
+    signInAssistant(thread.provider, (url) => setSignIn({ state: "waiting", url }))
+      .then(() => setSignIn({ state: "done" }))
+      .catch((e) => setSignIn({ state: "failed", message: String(e) }));
+  };
+  const askAgain = (thread: AssistantThread) => {
+    const last = [...thread.messages].reverse().find((m) => m.role === "user");
+    if (!last || pending) return;
+    setSignIn(null);
+    onAsk(last.text, { provider: thread.provider, model: thread.model, effort: thread.effort });
   };
 
   return (
@@ -95,6 +111,37 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
               <button className="link" onClick={() => onDraft(active, m.text)}>
                 turn into draft comment
               </button>
+            )}
+            {m.signIn && active && i === active.messages.length - 1 && !pending && (
+              <div className="assistant-sign-in" data-testid="assistant-sign-in">
+                {signIn === null && (
+                  <button className="button primary" onClick={() => startSignIn(active)}>
+                    Sign in to {PROVIDER_NAMES[active.provider]} again
+                  </button>
+                )}
+                {signIn?.state === "waiting" && (
+                  <span>
+                    {signIn.url ? "Finish signing in in your browser…" : "Starting sign-in…"}
+                    {signIn.url && <span className="assistant-sign-in-url">{signIn.url}</span>}
+                  </span>
+                )}
+                {signIn?.state === "done" && (
+                  <>
+                    <span>Signed in.</span>
+                    <button className="button primary" onClick={() => askAgain(active)}>
+                      Ask again
+                    </button>
+                  </>
+                )}
+                {signIn?.state === "failed" && (
+                  <>
+                    <span>{signIn.message}</span>
+                    <button className="link" onClick={() => startSignIn(active)}>
+                      try again
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
         ))}
@@ -148,8 +195,11 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
         />
         <div className="assistant-options">
           <select className="verdict" value={provider} onChange={(e) => changeProvider(e.target.value as Provider)} disabled={!!active}>
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
+            {(["claude", "codex"] as const).map((p) => (
+              <option key={p} value={p}>
+                {PROVIDER_NAMES[p]}
+              </option>
+            ))}
           </select>
           {provider === "claude" ? (
             <select className="verdict" value={model} onChange={(e) => remember("model", e.target.value)} disabled={!!active}>

@@ -25,6 +25,8 @@ process.env.WISPY_GITHUB_TOKEN = "fixture-token";
 process.env.WISPY_CLAUDE_BIN = path.join(root, "e2e/fake-cli/claude");
 process.env.WISPY_CODEX_BIN = path.join(root, "e2e/fake-cli/codex");
 process.env.WISPY_FAKE_LOG = path.join(dataDir, "fake-cli.log");
+// Sign-in pages are logged, not opened in a real browser.
+process.env.WISPY_OPENER = path.join(root, "e2e/fake-cli/open");
 
 let fakeGitHub: ChildProcess | undefined;
 

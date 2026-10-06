@@ -74,6 +74,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - **Claude Code** (`claude -p --output-format stream-json --model --effort`) or **Codex** (`codex exec --json -m -c model_reasoning_effort=…`). Selection remembered globally, overridable per question.
 - Runs in a **read-only worktree** at the range head (a `git worktree` of the app's clone, blobs fetched in one batch first). Read-only is enforced by the CLIs: Claude with only `Read,Grep,Glob` allowed and `--permission-mode dontAsk`; Codex with `sandbox_mode="read-only"`.
 - **Side-panel resumable threads** with gutter markers for selection threads (click to reopen), local history per stack, "turn answer into draft comment" (a line draft on the selected lines, or the top PR's review-summary draft for whole-range threads). CLI failures (auth, unavailable model) are shown in the thread. Offline: read-only.
+- **Expired/missing sign-in**: the failed turn offers "Sign in again", which runs `claude auth login` / `codex login` in the background (the CLI's own browser launch suppressed with `BROWSER=true`), opens the sign-in page it prints in the default browser, and once the CLI reports success offers "Ask again". A thread whose first turn failed keeps its review context and starts a fresh CLI session when asked again.
 
 ## Testing
 - **Rust core**: tests against real throwaway git repos and a fake local GitHub HTTP server. Services under test are constructed directly in each test, never via factory methods.

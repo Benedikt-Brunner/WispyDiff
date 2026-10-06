@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""Stand-in for `open` / `xdg-open` in tests: logs the URL instead of opening a browser."""
+import json, os, sys
+log = os.environ.get("WISPY_FAKE_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(json.dumps({"opened": sys.argv[1]}) + "\n")
