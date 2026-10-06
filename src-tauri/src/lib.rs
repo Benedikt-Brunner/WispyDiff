@@ -8,6 +8,8 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     shell_env::adopt_login_shell_path();
+    #[cfg(target_os = "linux")]
+    disable_webkit_dmabuf_renderer();
 
     let builder = tauri::Builder::default();
     #[cfg(feature = "e2e")]
@@ -64,4 +66,15 @@ pub fn run() {
             commands::open_url])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
+}
+
+/// WebKitGTK's DMA-BUF renderer hangs Intel Raptor Lake GPUs (i915 with GuC), and because the
+/// GuC then fails to reset the engine, the whole chip resets and the desktop freezes for seconds.
+/// See https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/15708. Drop this once that is fixed.
+/// Must run before the webview (or any other thread) starts; an explicit setting wins.
+#[cfg(target_os = "linux")]
+fn disable_webkit_dmabuf_renderer() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
 }

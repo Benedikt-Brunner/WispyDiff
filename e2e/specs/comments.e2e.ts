@@ -58,9 +58,11 @@ describe("comments", () => {
   });
 
   it("offers the commented lines as a suggested change", async () => {
+    // Read the line before dragging: opening the composer scrolls it into view, which can shift
+    // which off-screen rows are rendered and so what `.row-add` index 1 is (it did on macOS CI).
+    const line = await browser.execute(() => document.querySelectorAll(".row-add")[1].querySelector(".code")!.textContent);
     await gutterDrag(".row-add", 1);
     await waitFor(() => exists(".composer-input"));
-    const line = await browser.execute(() => document.querySelectorAll(".row-add")[1].querySelector(".code")!.textContent);
     await setTextarea(".composer-input", "Simpler:");
     expect(await clickButton(".composer", "Suggest change")).toBe(true);
     const value = await browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")!.value);
