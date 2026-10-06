@@ -613,16 +613,18 @@ impl PrService {
                     selection: new.anchor,
                     messages: Vec::new(),
                     created_at: now(),
+                    unsent_context: None,
                 };
                 (thread, Some(context))
             }
         };
         // Follow-ups resume the CLI session, which already has the context.
-        let prompt = match (&thread.session, context) {
-            (None, Some(context)) => first_prompt(&context, question),
+        let context = context.or_else(|| thread.unsent_context.take());
+        let prompt = match (&thread.session, &context) {
+            (None, Some(context)) => first_prompt(context, question),
             _ => question.to_string(),
         };
-        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false });
+        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false, sign_in: false });
 
         let ask = Ask { provider: thread.provider, model: thread.model.clone(), effort: thread.effort.clone(), prompt, resume: thread.session.clone() };
         let mut session = None;
@@ -633,14 +635,19 @@ impl PrService {
             }
             forward(event);
         });
+        // A session is only kept once a turn succeeded; until then asking again starts afresh.
         if thread.session.is_none() {
-            thread.session = session;
+            match &result {
+                Ok(_) => thread.session = session,
+                Err(_) => thread.unsent_context = context,
+            }
         }
         let (text, error) = match result {
             Ok(text) => (text, false),
             Err(err) => (err.to_string(), true),
         };
-        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error });
+        let sign_in = error && crate::assistant::needs_sign_in(thread.provider, &text);
+        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error, sign_in });
         self.cache.put_assistant_thread(&thread)?;
         Ok(thread)
     }

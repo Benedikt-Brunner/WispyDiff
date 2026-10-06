@@ -1500,6 +1500,22 @@ body.resizing {
   border-color: var(--del-fg);
   color: var(--del-fg);
 }
+.assistant-sign-in {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--fg);
+}
+.assistant-sign-in-url {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  word-break: break-all;
+  user-select: text;
+}
 .assistant-message.streaming .card-body {
   color: var(--fg-muted);
 }

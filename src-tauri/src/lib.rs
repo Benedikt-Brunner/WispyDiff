@@ -60,6 +60,7 @@ pub fn run() {
             commands::locate_line,
             commands::ask_assistant,
             commands::list_assistant_threads,
+            commands::sign_in_assistant,
             commands::delete_assistant_thread,
             commands::get_inbox,
             commands::refresh_inbox,
