@@ -175,3 +175,6 @@ export function askAssistant(
 export const listAssistantThreads = (stackId: string) => invoke<AssistantThread[]>("list_assistant_threads", { stackId });
 
 export const deleteAssistantThread = (id: string) => invoke<void>("delete_assistant_thread", { id });
+
+/** Opens a web link in the default browser. */
+export const openUrl = (url: string) => invoke<void>("open_url", { url });

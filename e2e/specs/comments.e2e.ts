@@ -13,6 +13,39 @@ describe("comments", () => {
     expect(await text(".card.thread")).toContain("teammate");
   });
 
+  it("renders the thread's comments as GitHub formats them", async () => {
+    expect(await text(".card.thread .card-body.markdown strong")).toBe("threshold");
+    expect(await text(".card.thread .card-body")).not.toContain("**");
+  });
+
+  it("hides a thread to a gutter icon and shows it again", async () => {
+    await clickButton(".card.thread", "hide");
+    await waitFor(async () => !(await exists(".card.thread")) && (await exists(".comment-mark")));
+    await click(".comment-mark");
+    await waitFor(async () => (await exists(".card.thread")) && !(await exists(".comment-mark")));
+  });
+
+  it("hides and shows the PR's threads with h, remembered per PR", async () => {
+    await browser.keys("h");
+    await waitFor(async () => !(await exists(".card.thread")) && (await exists(".comment-mark")));
+    expect(await browser.execute(() => localStorage.getItem("wispy.hiddenCommentPrs"))).toBe('["wispy/fixture#2"]');
+    await browser.keys("h");
+    await waitFor(async () => (await exists(".card.thread")) && !(await exists(".comment-mark")));
+  });
+
+  it("sums up a collapsed file's threads on its notice and counts open ones in the file list", async () => {
+    const file = '.file-list li[title="src/Module0/Service0.php"]';
+    const notice = '.row-collapsed[data-file="src/Module0/Service0.php"]';
+    expect(await text(`${file} .file-open-threads`)).toBe("1");
+    await click(file);
+    await browser.keys("e");
+    await waitFor(async () => (await text(notice))?.includes("1 open") ?? false);
+    expect(await exists(".card.thread")).toBe(false);
+    expect(await text(`${file} .file-open-threads`)).toBe("1");
+    await click(notice);
+    await waitFor(() => exists(".card.thread"));
+  });
+
   it("drafts a comment on a changed line from the gutter", async () => {
     await gutterDrag(".row-add", 0);
     await waitFor(() => exists(".composer-input"));
@@ -112,8 +145,13 @@ describe("comments", () => {
     await waitFor(async () => (await draftCount()) === 0);
   });
 
-  it("shows the posted comments as threads and the resolved thread collapsed", async () => {
-    await waitFor(async () => (await text(".card.thread.collapsed"))?.includes("Resolved") ?? false);
+  it("shows the posted comments as threads and the resolved thread as a gutter icon", async () => {
+    await waitFor(() => exists(".comment-mark.settled"));
+    expect(await browser.execute(() => document.querySelector(".comment-mark.settled")!.getAttribute("title"))).toMatch(/^Resolved · teammate: /);
+    await click(".comment-mark.settled");
+    await waitFor(async () => (await text(".card.thread .badge.ok")) === "resolved");
+    await clickButton(".card.thread:has(.badge.ok)", "hide");
+    await waitFor(async () => !(await exists(".card.thread .badge.ok")) && (await exists(".comment-mark.settled")));
     const bodies = await browser.execute(() => [...document.querySelectorAll(".card.thread .card-body")].map((b) => b.textContent));
     expect(bodies).toContain("Why this threshold?");
     expect(bodies).toContain("These three lines");

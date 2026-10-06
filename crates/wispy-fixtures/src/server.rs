@@ -35,7 +35,7 @@ impl State {
         let id = self.id();
         self.comments.entry(pr).or_default().push(body.to_string());
         json!({
-            "id": format!("PRRC_{id}"), "databaseId": id, "body": body, "createdAt": "2026-09-30T10:00:00Z",
+            "id": format!("PRRC_{id}"), "databaseId": id, "body": body, "bodyHTML": body_html(body), "isMinimized": false, "createdAt": "2026-09-30T10:00:00Z",
             "url": format!("https://github.com/wispy/fixture/pull/{pr}#discussion_r{id}"), "author": { "login": author }
         })
     }
@@ -49,6 +49,20 @@ impl State {
             "comments": { "nodes": [first] }
         }));
     }
+}
+
+/// A stand-in for GitHub's Markdown rendering: paragraphs of escaped text, HTML comments dropped,
+/// `**bold**` as `<strong>`.
+fn body_html(body: &str) -> String {
+    let mut text = body.to_string();
+    while let Some(start) = text.find("<!--") {
+        let end = text[start..].find("-->").map_or(text.len(), |e| start + e + 3);
+        text.replace_range(start..end, "");
+    }
+    let escaped = text.trim().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let bold = escaped.split("**").enumerate().map(|(i, part)| if i % 2 == 1 { format!("<strong>{part}</strong>") } else { part.to_string() });
+    let html: String = bold.collect();
+    html.split("\n\n").map(|p| format!("<p>{}</p>", p.replace('\n', "<br>\n"))).collect()
 }
 
 pub fn serve(fixture: Fixture, port: u16) {
@@ -71,7 +85,7 @@ fn seed(fixture: &Fixture) -> State {
         .lines()
         .find_map(|l| l.strip_prefix("@@ ")?.split(" +").nth(1)?.split([',', ' ']).next()?.parse::<u64>().ok());
     if let Some(line) = line {
-        let first = state.comment(2, "teammate", "Is this threshold right?");
+        let first = state.comment(2, "teammate", "Is this **threshold** right?");
         state.thread(2, "src/Module0/Service0.php", Some(line), None, "RIGHT", false, first);
     }
     state

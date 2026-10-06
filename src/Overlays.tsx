@@ -113,6 +113,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
     "Review",
     [
       [["c"], "Comment on the line under the mouse (or the file)"],
+      [["h"], "Hide / show the selected PRs' comment threads"],
       [[keyLabel("↵")], "Save the comment"],
       [[keyLabel("G")], "Suggest a change to the commented lines"],
       [[clickLabel, "u"], "Usages of the name under the mouse"],

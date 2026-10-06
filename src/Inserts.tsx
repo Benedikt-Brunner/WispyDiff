@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ReviewThread, ShownDraft } from "./comments";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { openUrl } from "./api";
+import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
 import { mod, keyLabel } from "./platform";
 
 /** Measures its content and reports the height, so the layout can make room for it. */
@@ -152,6 +153,78 @@ export function DraftCard({ shown, label, onEdit, onDelete }: DraftCardProps) {
   );
 }
 
+/** A GitHub comment as GitHub renders it (Markdown, HTML), or its text when there's no rendering cached. */
+function CommentBody({ comment }: { comment: ThreadComment }) {
+  const html = useMemo(() => (comment.body_html ? sanitize(comment.body_html) : null), [comment.body_html]);
+  if (html === null) return <div className="card-body">{comment.body.replace(/<!-- wispydiff:[^>]* -->/g, "").trim()}</div>;
+  return (
+    <div
+      className="card-body markdown"
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={(e) => {
+        // Links open in the browser; the app's window never navigates away.
+        const link = (e.target as HTMLElement).closest("a");
+        if (!link) return;
+        e.preventDefault();
+        if (/^https?:/.test(link.href)) void openUrl(link.href);
+      }}
+    />
+  );
+}
+
+/** GitHub already sanitizes its rendering; this only makes sure nothing in it can run here. */
+function sanitize(html: string) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script, style, iframe, object, embed, form, input, link, meta, base").forEach((el) => el.remove());
+  for (const el of doc.body.querySelectorAll("*")) {
+    for (const attr of [...el.attributes]) {
+      const value = attr.value.trim().toLowerCase();
+      if (attr.name.startsWith("on") || ((attr.name === "href" || attr.name === "src") && /^(javascript|data|vbscript):/.test(value))) el.removeAttribute(attr.name);
+    }
+  }
+  return doc.body.innerHTML;
+}
+
+/**
+ * Why GitHub would show the thread folded away (resolved, outdated, or its first comment
+ * minimized), or null for an open thread. Such threads start hidden here too.
+ */
+export function settledReason(thread: ReviewThread) {
+  if (thread.resolved) return "Resolved";
+  if (thread.outdated) return "Outdated";
+  if (thread.comments[0]?.minimized) return "Hidden on GitHub";
+  return null;
+}
+
+/** A hidden thread's gutter icon; the tooltip previews the first comment. */
+export function threadPreview(thread: ReviewThread) {
+  const first = thread.comments[0];
+  if (!first) return "Hidden comment";
+  const text = first.body.replace(/<!--[\s\S]*?-->/g, "").replace(/\s+/g, " ").trim();
+  const more = thread.comments.length > 1 ? ` (+${thread.comments.length - 1} more)` : "";
+  const reason = settledReason(thread);
+  return `${reason ? `${reason} · ` : ""}${first.author}: ${text.length > 120 ? `${text.slice(0, 120)}…` : text}${more}`;
+}
+
+/** One comment of a thread; a minimized one stays folded until clicked, like on GitHub. */
+function ThreadCommentView({ comment }: { comment: ThreadComment }) {
+  const [unfolded, setUnfolded] = useState(false);
+  const folded = comment.minimized && !unfolded;
+  return (
+    <div className="comment">
+      <div className="comment-meta">
+        <span className="comment-author">{comment.author}</span> · {comment.created_at.slice(0, 10)}
+        {folded && (
+          <button className="link" onClick={() => setUnfolded(true)}>
+            hidden on GitHub · show
+          </button>
+        )}
+      </div>
+      {!folded && <CommentBody comment={comment} />}
+    </div>
+  );
+}
+
 interface ThreadCardProps {
   thread: ReviewThread;
   label: string;
@@ -160,43 +233,35 @@ interface ThreadCardProps {
   onReply: (text: string) => void;
   onResolve: () => void;
   onDeleteDraft: (id: string) => void;
+  /** Hide the thread, leaving an icon in the gutter. */
+  onHide: () => void;
 }
 
-export function ThreadCard({ thread, label, replies, resolving, onReply, onResolve, onDeleteDraft }: ThreadCardProps) {
-  const [open, setOpen] = useState(!thread.resolved);
+const HideButton = ({ onHide }: { onHide: () => void }) => (
+  <button
+    className="link card-hide"
+    title="Hide this thread (a comment icon in the gutter brings it back)"
+    onClick={(e) => {
+      e.stopPropagation();
+      onHide();
+    }}
+  >
+    hide
+  </button>
+);
+
+export function ThreadCard({ thread, label, replies, resolving, onReply, onResolve, onDeleteDraft, onHide }: ThreadCardProps) {
   const [replying, setReplying] = useState(false);
-  // Collapse when the thread becomes resolved (e.g. after submitting a queued resolve).
-  useEffect(() => {
-    if (thread.resolved) setOpen(false);
-  }, [thread.resolved]);
-  if (!open) {
-    return (
-      <div className="card thread collapsed" onClick={() => setOpen(true)}>
-        <span className="badge">{thread.resolved ? "Resolved" : "Thread"}</span>
-        <span className="card-title">
-          {label} · {thread.comments.length} comment{thread.comments.length === 1 ? "" : "s"}
-        </span>
-      </div>
-    );
-  }
   return (
     <div className={`card thread${thread.resolved ? " resolved" : ""}`} data-thread={thread.id}>
       <div className="card-head">
         <span className="card-title">{label}</span>
+        {thread.resolved && <span className="badge ok">resolved</span>}
         {thread.outdated && <span className="badge">outdated</span>}
-        {thread.resolved && (
-          <button className="link" onClick={() => setOpen(false)}>
-            collapse
-          </button>
-        )}
+        <HideButton onHide={onHide} />
       </div>
       {thread.comments.map((c) => (
-        <div className="comment" key={c.id}>
-          <div className="comment-meta">
-            <span className="comment-author">{c.author}</span> · {c.created_at.slice(0, 10)}
-          </div>
-          <div className="card-body">{c.body.replace(/<!-- wispydiff:[^>]* -->/g, "").trim()}</div>
-        </div>
+        <ThreadCommentView key={c.id} comment={c} />
       ))}
       {replies.map((r) => (
         <div className="comment pending" key={r.draft.id}>

@@ -1,4 +1,5 @@
 {
+  "identifier": "dev.wispydiff.WispyDiff.e2e",
   "build": {
     "beforeBuildCommand": "pnpm build:e2e"
   },

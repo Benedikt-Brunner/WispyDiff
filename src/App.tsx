@@ -15,7 +15,7 @@ import {
   setIgnorePatterns,
   setViewed,
 } from "./api";
-import type { PrThreads, ShownDraft } from "./comments";
+import { prKey, type PrThreads, type ShownDraft } from "./comments";
 import { SubmitSheet } from "./SubmitSheet";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { DiffViewer, type BaseMode } from "./DiffViewer";
@@ -24,7 +24,7 @@ import { Inbox, type InboxEntry } from "./Inbox";
 import { Mark } from "./Logo";
 import { ShortcutsHelp, ThemePicker } from "./Overlays";
 import { mark } from "./perf";
-import { loadPref, savePref } from "./prefs";
+import { loadList, loadPref, saveList, savePref } from "./prefs";
 import { rememberPr } from "./recent";
 import { rangeForKey, StackBar } from "./StackBar";
 import { prLabel, type Checkpoint, type OpenedRange, type OpenedStack, type Range } from "./types";
@@ -48,6 +48,7 @@ export default function App() {
   const [showFiles, setShowFiles] = useState(true);
   const [defaultMode, setDefaultMode] = useState<BaseMode>(() => loadPref("defaultMode", ["unified", "split"] as const, "unified"));
   const [wrap, setWrap] = useState(() => loadPref("wrap", ["on", "off"] as const, "off") === "on");
+  const [hiddenCommentPrs, setHiddenCommentPrs] = useState(() => new Set(loadList("hiddenCommentPrs")));
   const [ignorePatterns, setIgnore] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<ShownDraft[]>([]);
   const [threads, setThreads] = useState<PrThreads[]>([]);
@@ -195,6 +196,17 @@ export default function App() {
     setWrap(on);
     savePref("wrap", on ? "on" : "off");
   }, []);
+  const setCommentsHidden = useCallback((keys: string[], hide: boolean) => {
+    setHiddenCommentPrs((current) => {
+      const next = new Set(current);
+      for (const key of keys) {
+        next.delete(key);
+        if (hide) next.add(key);
+      }
+      saveList("hiddenCommentPrs", [...next].slice(-500));
+      return next;
+    });
+  }, []);
 
   const open = useCallback(
     async (input: string) => {
@@ -301,6 +313,11 @@ export default function App() {
       run: () => changeDefaultMode(defaultMode === "split" ? "unified" : "split"),
     });
     list.push({ id: "wrap", label: wrap ? "Don't wrap long lines" : "Wrap long lines", run: () => changeWrap(!wrap) });
+    if (shown && stack) {
+      const keys = stack.prs.slice(shown.range.lo, shown.range.hi + 1).map(prKey);
+      const hidden = keys.every((k) => hiddenCommentPrs.has(k));
+      list.push({ id: "comments", label: hidden ? "Show comments" : "Hide comments", run: () => setCommentsHidden(keys, !hidden) });
+    }
     if (repo) {
       list.push({
         id: "ignore",
@@ -313,7 +330,7 @@ export default function App() {
       }
     }
     return list.map((c) => ({ ...c, run: (arg: string) => (c.run(arg), setPaletteOpen(false)) }));
-  }, [shown, stack, repo, ignorePatterns, defaultMode, wrap, toggleWhitespace, changeDefaultMode, changeWrap, updateIgnore, markRangeReviewed, toggleSince]);
+  }, [shown, stack, repo, ignorePatterns, defaultMode, wrap, hiddenCommentPrs, toggleWhitespace, changeDefaultMode, changeWrap, setCommentsHidden, updateIgnore, markRangeReviewed, toggleSince]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -426,6 +443,8 @@ export default function App() {
             onDefaultModeChange={changeDefaultMode}
             wrap={wrap}
             onWrapChange={changeWrap}
+            hiddenCommentPrs={hiddenCommentPrs}
+            onCommentsHiddenChange={setCommentsHidden}
             isIgnored={isIgnored}
             isViewed={isViewed}
             onToggleViewed={toggleViewed}

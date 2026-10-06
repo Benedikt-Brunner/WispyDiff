@@ -2,6 +2,9 @@
 import type { FileSummary } from "./types";
 
 export type Side = "LEFT" | "RIGHT";
+
+/** A PR across repos, for per-PR preferences. */
+export const prKey = (pr: { base_repo: string; number: number }) => `${pr.base_repo}#${pr.number}`;
 export type Verdict = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 
 /** A PR-level position: `line` on `side` of `path` in stack PR `pr`'s own diff. */
@@ -65,6 +68,10 @@ export interface ThreadComment {
   database_id: number;
   author: string;
   body: string;
+  /** GitHub's rendering of `body` (empty in older caches). */
+  body_html: string;
+  /** Hidden on GitHub (minimized). */
+  minimized: boolean;
   created_at: string;
   url: string;
 }

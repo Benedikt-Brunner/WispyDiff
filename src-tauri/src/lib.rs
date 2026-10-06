@@ -60,7 +60,8 @@ pub fn run() {
             commands::list_assistant_threads,
             commands::delete_assistant_thread,
             commands::get_inbox,
-            commands::refresh_inbox])
+            commands::refresh_inbox,
+            commands::open_url])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
 }
