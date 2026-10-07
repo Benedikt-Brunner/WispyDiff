@@ -2,7 +2,8 @@ import type { DiffSummary, FileSummary } from "./types";
 
 export const ROW_HEIGHT = 20;
 
-export type Mode = "unified" | "split" | "collapsed";
+/** `hidden`: left out by the file filter (no rows). */
+export type Mode = "unified" | "split" | "collapsed" | "hidden";
 
 /** One file's rows in the chosen mode; `start` is its first global row. */
 export interface Segment {
@@ -20,6 +21,7 @@ export interface Insert {
 }
 
 export function segmentRows(file: FileSummary, mode: Mode) {
+  if (mode === "hidden") return 0;
   if (mode === "collapsed") return 2; // header + "collapsed" notice
   if (mode === "split") return file.split_rows;
   return file.row_count;
@@ -101,6 +103,7 @@ export class Layout {
     return out;
   }
 
+  /** The segment holding `row` (never a hidden one, unless every file is hidden). */
   segmentAt(row: number): Segment {
     let lo = 0;
     let hi = this.segments.length - 1;
@@ -116,6 +119,7 @@ export class Layout {
   changeRows(summary: DiffSummary): number[] {
     return this.segments.flatMap((s) => {
       const file = summary.files[s.file];
+      if (s.mode === "hidden") return [];
       if (s.mode === "collapsed") return [s.start];
       return (s.mode === "split" ? file.split_blocks : file.hunks).map((offset) => s.start + offset);
     });

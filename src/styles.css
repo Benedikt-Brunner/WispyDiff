@@ -427,6 +427,96 @@ body.resizing {
   padding: 5px 8px;
   border-top: 1px solid var(--border);
 }
+.file-filter {
+  position: relative;
+  margin-left: 6px;
+}
+.file-filter-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-filter-button.active {
+  background: var(--selection);
+  color: var(--fg);
+}
+.file-filter-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 220px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+  font-size: 12px;
+}
+.file-filter-title {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 12px 6px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.file-filter-reset {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: normal;
+  color: var(--accent);
+  cursor: pointer;
+}
+.file-filter-menu [role="menuitemcheckbox"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.file-filter-menu [role="menuitemcheckbox"]:hover {
+  background: var(--selection);
+}
+.file-filter-menu [aria-checked="false"] .file-filter-label {
+  color: var(--fg-muted);
+}
+.file-filter-check {
+  width: 12px;
+  color: var(--fg-muted);
+}
+.file-filter-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-filter-count {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.file-filter-menu hr {
+  margin: 6px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
 .file-list-modes {
   display: inline-flex;
   border: 1px solid var(--border);
@@ -499,8 +589,24 @@ body.resizing {
 }
 
 .diff-main {
+  position: relative;
   flex: 1;
   min-width: 0;
+}
+.diff-all-filtered {
+  position: absolute;
+  inset: 40px 16px auto;
+  text-align: center;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.diff-all-filtered button {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
 }
 .diff-scroll {
   height: 100%;

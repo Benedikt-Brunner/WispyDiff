@@ -42,7 +42,7 @@ import { RowStore } from "./rowStore";
 import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
 import { mod } from "./platform";
-import { loadList, saveList } from "./prefs";
+import { loadList, loadRecord, saveList, saveRecord } from "./prefs";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
 import { loadPref, savePref } from "./prefs";
 import { allDirs, ancestors, buildTree, treeRows } from "./fileTree";
@@ -129,16 +129,29 @@ export function DiffViewer(props: Props) {
 
   const store = useMemo(() => new RowStore(viewId, () => setVersion((v) => v + 1)), [viewId]);
 
+  // ---------- file filter (extensions, deleted, viewed; remembered per PR or range) ----------
+  const filterKey = lo === hi ? prKey(prs[lo]) : `${prKey(prs[lo])}..#${prs[hi].number}`;
+  const [filters, setFilters] = useState(() => loadRecord("fileFilters"));
+  const filter = useMemo(() => toFileFilter(filters[filterKey]), [filters, filterKey]);
+  const isFiltered = useCallback(
+    (file: FileSummary) =>
+      filter.exts.includes(extensionOf(file.path)) || (filter.deleted && file.status === "deleted") || (filter.viewed && isViewed(file.content_key)),
+    [filter, isViewed],
+  );
+  /** Per file index: left out by the filter. */
+  const filtered = useMemo(() => summary.files.map(isFiltered), [summary, isFiltered]);
+
   const modeOf = useCallback(
     (index: number): Mode => {
       const file = summary.files[index];
+      if (filtered[index]) return "hidden";
       const hidden =
         collapsed.has(file.path) || ((file.noise !== null || isIgnored(file.path) || isViewed(file.content_key)) && !expanded.has(file.path));
       if (hidden) return "collapsed";
       const wanted = overrides.get(file.path) ?? defaultMode;
       return wanted === "split" && file.split_rows > 0 ? "split" : "unified";
     },
-    [summary, overrides, expanded, collapsed, defaultMode, isIgnored, isViewed],
+    [summary, overrides, expanded, collapsed, defaultMode, isIgnored, isViewed, filtered],
   );
   const baseLayout = useMemo(() => new Layout(summary, modeOf), [summary, modeOf]);
 
@@ -327,6 +340,7 @@ export function DiffViewer(props: Props) {
         if (file < 0) continue;
       }
       const segment = baseLayout.segments[file];
+      if (segment.mode === "hidden") continue;
       const after = segment.start + (offset ?? (segment.mode === "collapsed" ? 1 : 0));
       if (item.tally) {
         const counts = tallies.get(file) ?? new Map<string, number>();
@@ -374,7 +388,7 @@ export function DiffViewer(props: Props) {
     let min = Infinity;
     summary.files.forEach((_, file) => {
       const mode = modeOf(file);
-      if (mode === "collapsed") return;
+      if (mode === "collapsed" || mode === "hidden") return;
       const key = `${file}:${mode}`;
       const cols = columns[mode];
       if ((widths.get(key)?.min ?? Infinity) <= cols || (requested.current.get(key) ?? Infinity) <= cols) return;
@@ -397,7 +411,7 @@ export function DiffViewer(props: Props) {
   }, [columns, widths, summary, modeOf, viewId]);
   const wrappedOf = useCallback(
     (file: number, mode: Mode): WrappedRows => {
-      const known = columns && mode !== "collapsed" ? widths?.get(`${file}:${mode}`) : undefined;
+      const known = columns && (mode === "unified" || mode === "split") ? widths?.get(`${file}:${mode}`) : undefined;
       if (!columns || !known) return NO_ROWS;
       const cols = columns[mode as BaseMode];
       const out: [number, number][] = [];
@@ -466,7 +480,8 @@ export function DiffViewer(props: Props) {
   const jump = useCallback(
     (target: { path: string; line: number; file?: number }) => {
       const file = target.file ?? summary.files.findIndex((f) => f.path === target.path);
-      if (file >= 0 && summary.files[file].new_blob) {
+      // Files left out by the filter open in the file view, like files outside the diff.
+      if (file >= 0 && summary.files[file].new_blob && layout.segments[file].mode !== "hidden") {
         void jumpToLine(file, target.line);
         return;
       }
@@ -475,7 +490,7 @@ export function DiffViewer(props: Props) {
         .then((lines) => setFileView((v) => (v?.path === target.path ? { ...v, lines } : v)))
         .catch((e) => setFileView((v) => (v?.path === target.path ? { ...v, error: String(e) } : v)));
     },
-    [summary, jumpToLine, stackId, hi],
+    [summary, layout, jumpToLine, stackId, hi],
   );
   const reportHeight = useRef(new Map<string, (h: number) => void>());
   const heightReporter = useCallback((key: string) => {
@@ -502,7 +517,7 @@ export function DiffViewer(props: Props) {
     let top = 0;
     const moveOn = pendingFile.current;
     let pin: number | null = null;
-    if (moveOn && previousView.current === viewId && layout.segments[moveOn.from]?.mode === "collapsed") {
+    if (moveOn && previousView.current === viewId && ["collapsed", "hidden"].includes(layout.segments[moveOn.from]?.mode)) {
       pendingFile.current = null;
       top = layout.rowY(layout.segments[moveOn.next].start);
       pin = moveOn.next;
@@ -764,7 +779,7 @@ export function DiffViewer(props: Props) {
   for (let row = loadFirst; row < loadLast; ) {
     const segment = layout.segmentAt(row);
     const end = Math.min(loadLast, segment.start + segment.rows);
-    if (segment.mode !== "collapsed") store.ensure(segment.file, segment.mode, row - segment.start, end - segment.start);
+    if (segment.mode === "unified" || segment.mode === "split") store.ensure(segment.file, segment.mode, row - segment.start, end - segment.start);
     row = end;
   }
 
@@ -995,6 +1010,22 @@ export function DiffViewer(props: Props) {
     [summary, changeLayout],
   );
 
+  const changeFilter = useCallback(
+    (next: FileFilter) =>
+      changeLayout(() =>
+        setFilters((current) => {
+          const all = { ...current };
+          delete all[filterKey];
+          if (next.exts.length || next.deleted || next.viewed) all[filterKey] = next;
+          const kept = Object.fromEntries(Object.entries(all).slice(-300));
+          saveRecord("fileFilters", kept);
+          return kept;
+        }),
+      ),
+    [changeLayout, filterKey],
+  );
+  const filteredCount = useMemo(() => filtered.filter(Boolean).length, [filtered]);
+
   useEffect(() => {
     if (!keyboardEnabled) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1002,13 +1033,15 @@ export function DiffViewer(props: Props) {
       if (e.metaKey || e.ctrlKey || e.altKey || (isTyping(e.target) && e.key !== "Escape")) return;
       const el = scrollRef.current;
       if (!el) return;
+      // Every file filtered out: nothing for the file keys to act on.
+      if (!layout.totalRows && ["s", "e", " ", "c", "v", "u"].includes(e.key)) return;
       // While gliding, j/k continue from where the glide is heading.
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
       // Files: the header of the file being read sits at the top after n/p.
       const here = fileAt(el.scrollTop);
       const topRow = here === layout.segments[pinned?.file ?? -1] ? here.start : layout.rowAt(heading);
-      const starts = layout.segments.map((s) => s.start);
+      const starts = layout.segments.filter((s) => s.mode !== "hidden").map((s) => s.start);
       const changes = layout.changeRows(summary);
       let target: number | undefined;
       let fileTarget: number | undefined;
@@ -1063,7 +1096,8 @@ export function DiffViewer(props: Props) {
         case " ": {
           // Collapse/expand without touching the viewed mark. Collapsing moves on to the next
           // file that's still open, like `v`.
-          const next = here.mode === "collapsed" ? -1 : layout.segments.findIndex((s) => s.file > here.file && s.mode !== "collapsed");
+          const next =
+            here.mode === "collapsed" ? -1 : layout.segments.findIndex((s) => s.file > here.file && s.mode !== "collapsed" && s.mode !== "hidden");
           if (next >= 0) pendingFile.current = { from: here.file, next };
           else keepFile.current = here.file;
           toggleCollapsed(here);
@@ -1103,7 +1137,7 @@ export function DiffViewer(props: Props) {
             setExpanded((s) => withOut(s, file.path));
             if (!viewed) setCollapsed((s) => withOut(s, file.path));
             // Marking viewed moves on to the next file still to review, so v, v, v… works.
-            const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key)) : -1;
+            const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key) && !filtered[i]) : -1;
             if (next >= 0) pendingFile.current = { from: here.file, next };
             else keepFile.current = here.file;
           });
@@ -1118,7 +1152,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered]);
 
   return (
     <div className="diff-layout">
@@ -1133,9 +1167,19 @@ export function DiffViewer(props: Props) {
           mode={listMode}
           onToggleMode={toggleListMode}
           onSelect={(index) => scrollToRow(layout.segments[index].start, 0, index)}
+          filtered={filtered}
+          filteredCount={filteredCount}
+          filter={filter}
+          onFilterChange={changeFilter}
         />
       )}
       <div className="diff-main">
+        {filteredCount > 0 && filteredCount === summary.files.length && (
+          <div className="diff-all-filtered" data-testid="all-filtered">
+            {filteredCount === 1 ? "The only file is" : `All ${filteredCount} files are`} hidden by the file filter.{" "}
+            <button onClick={() => changeFilter(NO_FILTER)}>Show all files</button>
+          </div>
+        )}
         <div
           className="diff-scroll"
           ref={scrollRef}
@@ -1511,12 +1555,18 @@ interface FileListProps {
   mode: ListMode;
   onToggleMode: () => void;
   onSelect: (index: number) => void;
+  /** Per file index: left out by the filter (not listed). */
+  filtered: boolean[];
+  filteredCount: number;
+  filter: FileFilter;
+  onFilterChange: (filter: FileFilter) => void;
 }
 
-function FileList({ files, isViewed, segments, current, showPrs, openThreads, mode, onToggleMode, onSelect }: FileListProps) {
+function FileList(props: FileListProps) {
+  const { files, isViewed, segments, current, showPrs, openThreads, mode, onToggleMode, onSelect, filtered, filteredCount, filter, onFilterChange } = props;
   const activeRef = useRef<HTMLLIElement>(null);
   const width = useSidebarWidth("files", 280);
-  const tree = useMemo(() => buildTree(files.map((f) => f.path)), [files]);
+  const tree = useMemo(() => buildTree(files.map((f, i) => (filtered[i] ? null : f.path))), [files, filtered]);
   const [closed, setClosed] = useState<Set<string>>(new Set());
   // A directory folds once every file in it is viewed.
   const done = useMemo(() => allDirs(tree).filter((d) => d.files.every((i) => isViewed(files[i].content_key))).map((d) => d.path), [tree, files, isViewed]);
@@ -1581,7 +1631,7 @@ function FileList({ files, isViewed, segments, current, showPrs, openThreads, mo
       <ResizeHandle edge="right" {...width} />
       <ul>
         {mode === "list"
-          ? files.map((_, i) => fileRow(i))
+          ? files.map((_, i) => !filtered[i] && fileRow(i))
           : treeRows(tree, closed).map((row) => {
               if ("file" in row) return fileRow(row.file, row.depth);
               const { dir } = row;
@@ -1616,10 +1666,133 @@ function FileList({ files, isViewed, segments, current, showPrs, openThreads, mo
             </button>
           ))}
         </span>
+        <FileFilterMenu files={files} isViewed={isViewed} filter={filter} filteredCount={filteredCount} onChange={onFilterChange} />
       </div>
     </nav>
   );
 }
+
+/** Files left out of the diff (like GitHub's file filter): extensions, deleted files, viewed files. */
+interface FileFilter {
+  /** Hidden extensions ("" = files without one). */
+  exts: string[];
+  deleted: boolean;
+  viewed: boolean;
+}
+
+const NO_FILTER: FileFilter = { exts: [], deleted: false, viewed: false };
+
+/** A remembered filter, checked (storage may hold anything). */
+function toFileFilter(value: unknown): FileFilter {
+  if (!value || typeof value !== "object") return NO_FILTER;
+  const v = value as Partial<FileFilter>;
+  return {
+    exts: Array.isArray(v.exts) ? v.exts.filter((e): e is string => typeof e === "string") : [],
+    deleted: v.deleted === true,
+    viewed: v.viewed === true,
+  };
+}
+
+/** ".php" for "src/a.test.php"; "" without one (dotfiles like ".gitignore" included). */
+const extensionOf = (path: string) => {
+  const name = basename(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot) : "";
+};
+
+interface FileFilterMenuProps {
+  files: FileSummary[];
+  isViewed: (key: string) => boolean;
+  filter: FileFilter;
+  filteredCount: number;
+  onChange: (filter: FileFilter) => void;
+}
+
+function FileFilterMenu({ files, isViewed, filter, filteredCount, onChange }: FileFilterMenuProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const exts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of files) counts.set(extensionOf(f.path), (counts.get(extensionOf(f.path)) ?? 0) + 1);
+    // Files without an extension last.
+    return [...counts].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
+  }, [files]);
+  const deleted = useMemo(() => files.filter((f) => f.status === "deleted").length, [files]);
+  const viewed = files.filter((f) => isViewed(f.content_key)).length;
+  const active = filter.exts.length > 0 || filter.deleted || filter.viewed;
+
+  // Closes on a click elsewhere, or Esc (before the diff's own Esc handling).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
+
+  const item = (label: string, count: number, shown: boolean, toggle: () => void, testId: string) => (
+    <button key={testId} role="menuitemcheckbox" aria-checked={shown} onClick={toggle} data-testid={testId}>
+      <span className="file-filter-check">{shown ? "✓" : ""}</span>
+      <span className="file-filter-label">{label}</span>
+      <span className="file-filter-count">{count}</span>
+    </button>
+  );
+
+  return (
+    <span className="file-filter" ref={ref}>
+      <button
+        className={`file-filter-button${active ? " active" : ""}`}
+        onClick={() => setOpen((o) => !o)}
+        title="Filter files"
+        aria-expanded={open}
+        data-testid="file-filter"
+      >
+        <FilterIcon />
+        {filteredCount > 0 && <span>{filteredCount} hidden</span>}
+      </button>
+      {open && (
+        <div className="file-filter-menu" role="menu" data-testid="file-filter-menu">
+          <div className="file-filter-title">
+            File extensions
+            {active && (
+              <button className="file-filter-reset" onClick={() => onChange(NO_FILTER)} data-testid="file-filter-reset">
+                Show all
+              </button>
+            )}
+          </div>
+          {exts.map(([ext, count]) =>
+            item(
+              ext || "No extension",
+              count,
+              !filter.exts.includes(ext),
+              () => onChange({ ...filter, exts: filter.exts.includes(ext) ? filter.exts.filter((e) => e !== ext) : [...filter.exts, ext] }),
+              `file-filter-ext${ext}`,
+            ),
+          )}
+          <hr />
+          {item("Deleted files", deleted, !filter.deleted, () => onChange({ ...filter, deleted: !filter.deleted }), "file-filter-deleted")}
+          {item("Viewed files", viewed, !filter.viewed, () => onChange({ ...filter, viewed: !filter.viewed }), "file-filter-viewed")}
+        </div>
+      )}
+    </span>
+  );
+}
+
+const FilterIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+    <path d="M2 3.5h10M4 7h6M6 10.5h2" />
+  </svg>
+);
 
 const indent = (depth: number) => 12 + depth * 8;
 

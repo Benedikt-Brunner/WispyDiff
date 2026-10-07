@@ -14,10 +14,12 @@ export type TreeNode = { dir: TreeDir } | { file: number };
 
 export type TreeRow = { depth: number } & ({ dir: TreeDir } | { file: number });
 
-export function buildTree(paths: string[]): TreeNode[] {
+/** `null` paths are left out (filtered), keeping the other files' indices. */
+export function buildTree(paths: (string | null)[]): TreeNode[] {
   const root: TreeDir = { path: "", name: "", children: [], files: [] };
   const dirs = new Map<string, TreeDir>([["", root]]);
   paths.forEach((path, index) => {
+    if (path === null) return;
     const parts = path.split("/");
     let parent = root;
     for (let i = 0; i < parts.length - 1; i++) {
