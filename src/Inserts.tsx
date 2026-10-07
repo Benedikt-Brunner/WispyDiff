@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { openUrl } from "./api";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Html } from "./Markdown";
 import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
 import { mod, keyLabel } from "./platform";
 
@@ -155,34 +155,8 @@ export function DraftCard({ shown, label, onEdit, onDelete }: DraftCardProps) {
 
 /** A GitHub comment as GitHub renders it (Markdown, HTML), or its text when there's no rendering cached. */
 function CommentBody({ comment }: { comment: ThreadComment }) {
-  const html = useMemo(() => (comment.body_html ? sanitize(comment.body_html) : null), [comment.body_html]);
-  if (html === null) return <div className="card-body">{comment.body.replace(/<!-- wispydiff:[^>]* -->/g, "").trim()}</div>;
-  return (
-    <div
-      className="card-body markdown"
-      dangerouslySetInnerHTML={{ __html: html }}
-      onClick={(e) => {
-        // Links open in the browser; the app's window never navigates away.
-        const link = (e.target as HTMLElement).closest("a");
-        if (!link) return;
-        e.preventDefault();
-        if (/^https?:/.test(link.href)) void openUrl(link.href);
-      }}
-    />
-  );
-}
-
-/** GitHub already sanitizes its rendering; this only makes sure nothing in it can run here. */
-function sanitize(html: string) {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("script, style, iframe, object, embed, form, input, link, meta, base").forEach((el) => el.remove());
-  for (const el of doc.body.querySelectorAll("*")) {
-    for (const attr of [...el.attributes]) {
-      const value = attr.value.trim().toLowerCase();
-      if (attr.name.startsWith("on") || ((attr.name === "href" || attr.name === "src") && /^(javascript|data|vbscript):/.test(value))) el.removeAttribute(attr.name);
-    }
-  }
-  return doc.body.innerHTML;
+  if (!comment.body_html) return <div className="card-body">{comment.body.replace(/<!-- wispydiff:[^>]* -->/g, "").trim()}</div>;
+  return <Html html={comment.body_html} />;
 }
 
 /**
