@@ -41,7 +41,14 @@ pub struct Ask {
 
 /// The CLI invocation for `ask`, restricted to reading. The prompt goes on stdin.
 pub fn command(ask: &Ask, cwd: &Path) -> Command {
-    let mut cmd = Command::new(ask.provider.binary());
+    let binary = ask.provider.binary();
+    let mut cmd = Command::new(&binary);
+    // Not on the app's PATH: try the interactive shell's (Command looks the binary up there too).
+    if !on_path(&binary) {
+        if let Some(path) = crate::shell_env::interactive_shell_path() {
+            cmd.env("PATH", path);
+        }
+    }
     cmd.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     match ask.provider {
         Provider::Claude => {
@@ -74,6 +81,14 @@ pub fn command(ask: &Ask, cwd: &Path) -> Command {
         }
     }
     cmd
+}
+
+fn on_path(binary: &str) -> bool {
+    if binary.contains('/') {
+        return true;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|dir| dir.join(binary).is_file())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -140,7 +155,12 @@ fn api_message(raw: &str) -> String {
 /// Runs the CLI, streaming events to `on_event`, and returns the final answer text.
 pub fn run(ask: &Ask, cwd: &Path, mut on_event: impl FnMut(&AssistantEvent)) -> Result<String> {
     use std::io::Write;
-    let mut child = command(ask, cwd).spawn()?;
+    let mut child = command(ask, cwd).spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            crate::Error::Assistant(format!("`{}` not found — is it installed and on your shell's PATH?", ask.provider.binary()))
+        }
+        _ => e.into(),
+    })?;
     {
         let mut stdin = child.stdin.take().expect("stdin is piped");
         stdin.write_all(ask.prompt.as_bytes())?;

@@ -20,6 +20,7 @@ pub mod range;
 pub mod repo_store;
 pub mod review;
 pub mod service;
+pub mod shell_env;
 pub mod split;
 pub mod stack;
 pub mod symbols;

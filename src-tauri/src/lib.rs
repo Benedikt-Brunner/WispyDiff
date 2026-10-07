@@ -1,13 +1,14 @@
 mod commands;
 mod prefetch;
-mod shell_env;
 mod state;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    shell_env::adopt_login_shell_path();
+    if let Some(path) = wispy_core::shell_env::login_shell_path() {
+        std::env::set_var("PATH", path);
+    }
     #[cfg(target_os = "linux")]
     disable_webkit_dmabuf_renderer();
 
