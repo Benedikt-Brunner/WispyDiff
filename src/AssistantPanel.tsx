@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { signInAssistant, type AssistantSelection, type AssistantThread, type Provider, type ThreadAnchor } from "./api";
+import { Markdown } from "./Markdown";
 import { loadPref, savePref } from "./prefs";
 import { mod, keyLabel } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
@@ -106,7 +107,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
       <div className="panel-body assistant-body">
         {(active?.messages ?? []).map((m, i) => (
           <div key={i} className={`assistant-message ${m.role}${m.error ? " error" : ""}`}>
-            <div className="card-body">{m.text}</div>
+            {m.role === "assistant" && !m.error ? <Markdown text={m.text} /> : <div className="card-body">{m.text}</div>}
             {m.role === "assistant" && !m.error && active && (
               <button className="link" onClick={() => onDraft(active, m.text)}>
                 turn into draft comment
@@ -151,7 +152,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
               <div className="card-body">{pending.question}</div>
             </div>
             <div className="assistant-message assistant streaming" data-testid="assistant-streaming">
-              <div className="card-body">{pending.text || "Thinking…"}</div>
+              {pending.text ? <Markdown text={pending.text} /> : <div className="card-body">Thinking…</div>}
             </div>
           </>
         )}

@@ -56,6 +56,7 @@ describe("assistant", () => {
     await ask("Why does this threshold change?");
     await waitFor(async () => (await lastAnswer())?.includes("About “Why does this threshold change?”") ?? false, 60_000);
     expect(await lastAnswer()).toContain("in the checkout");
+    expect(await text(".assistant-message.assistant:not(.streaming) .markdown strong")).toBe("checkout");
 
     const call = fakeCalls().at(-1)!;
     expect(call.provider).toBe("claude");

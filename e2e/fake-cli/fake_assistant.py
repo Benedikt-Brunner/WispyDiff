@@ -18,7 +18,7 @@ def main(provider):
     question = questions[-1] if questions else prompt.strip()
     resumed = "--resume" in args if provider == "claude" else "resume" in args
     entries = sorted(e for e in os.listdir(cwd) if not e.startswith("."))
-    answer = f"{'(follow-up) ' if resumed else ''}About “{question}”: I can see {', '.join(entries[:3])} in the checkout."
+    answer = f"{'(follow-up) ' if resumed else ''}About “{question}”: I can see {', '.join(entries[:3])} in the **checkout**."
 
     def emit(event):
         print(json.dumps(event), flush=True)
