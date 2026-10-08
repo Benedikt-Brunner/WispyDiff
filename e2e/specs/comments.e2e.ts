@@ -1,4 +1,4 @@
-import { click, clickButton, clickChip, count, exists, gutterDrag, openViaPalette, selectedChips, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, clickChip, count, exists, gutterDrag, openViaPalette, pressShifted, selectedChips, setTextarea, text, waitFor } from "./helpers";
 
 const draftCount = async () => {
   const label = (await text('[data-testid="review-button"]')) ?? "";
@@ -71,12 +71,14 @@ describe("comments", () => {
     await waitFor(async () => !(await exists(".composer-input")));
   });
 
-  it("drafts a range comment by dragging across lines", async () => {
+  it("drafts a range comment by dragging across lines, saving it with Enter", async () => {
     await gutterDrag(".row-ctx", 0, 2);
     await waitFor(() => exists(".composer-input"));
     expect(await text(".composer .card-title")).toMatch(/L\d+–\d+$/);
     await setTextarea(".composer-input", "These three lines");
-    await clickButton(".composer", "Save draft");
+    await pressShifted("Enter");
+    expect(await exists(".composer-input")).toBe(true);
+    await browser.keys("Enter");
     await waitFor(async () => (await draftCount()) === 2);
   });
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { signInAssistant, type AssistantSelection, type AssistantThread, type Provider, type ThreadAnchor } from "./api";
 import { Markdown } from "./Markdown";
 import { loadPref, savePref } from "./prefs";
-import { mod, keyLabel } from "./platform";
+import { isSubmitKey, mod } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
 
 const MODELS: Record<Provider, string[]> = {
@@ -183,10 +183,10 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
           className="composer-input"
           rows={3}
           value={question}
-          placeholder={`${active ? "Follow up…" : "Ask…"} (${keyLabel("↵")})`}
+          placeholder={`${active ? "Follow up…" : "Ask…"} (↵ to send, ⇧↵ for a new line)`}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && mod(e)) {
+            if (isSubmitKey(e)) {
               e.preventDefault();
               send();
             } else if (e.key === "Escape") onClose();
@@ -216,6 +216,9 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
               value={model}
               placeholder="default model"
               onChange={(e) => remember("model", e.target.value)}
+              onKeyDown={(e) => {
+                if (isSubmitKey(e)) send();
+              }}
               disabled={!!active}
             />
           )}

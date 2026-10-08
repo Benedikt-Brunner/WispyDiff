@@ -9,3 +9,7 @@ export const keyLabel = (key: string) => (isMac ? `⌘${key}` : `Ctrl+${key}`);
 
 /** "⌘-click" / "Ctrl-click". */
 export const clickLabel = isMac ? "⌘-click" : "Ctrl-click";
+
+/** Enter submits a text box; Shift+Enter (and Enter while an IME is composing) inserts a new line. */
+export const isSubmitKey = (e: { key: string; shiftKey: boolean; nativeEvent: KeyboardEvent }) =>
+  e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing;

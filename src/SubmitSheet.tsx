@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { deleteDraft, prepareSubmit, submitReview, updateDraft, type SubmitPlan } from "./api";
 import { lineLabel, type Outcome, type Planned, type Verdict } from "./comments";
 import type { OpenedStack } from "./types";
-import { mod, keyLabel } from "./platform";
+import { isSubmitKey } from "./platform";
 
 interface Props {
   stackId: string;
@@ -120,7 +120,7 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                         className="button"
                         onClick={() => void submit([index])}
                         disabled={submitting || !hasWork(index) || blocked(index)}
-                        title={`Submit only #${pr.number} (${keyLabel("↵")} in its summary)`}
+                        title={`Submit only #${pr.number} (↵ in its summary)`}
                         data-testid={`submit-pr-${pr.number}`}
                       >
                         Submit #{pr.number}
@@ -133,7 +133,7 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                       value={summaries[index] ?? ""}
                       onChange={(e) => setSummaries((s) => ({ ...s, [index]: e.target.value }))}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && mod(e)) {
+                        if (isSubmitKey(e)) {
                           e.preventDefault();
                           void submit([index]);
                         }

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Html } from "./Markdown";
 import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
-import { mod, keyLabel } from "./platform";
+import { isSubmitKey, mod, keyLabel } from "./platform";
 
 /** Measures its content and reports the height, so the layout can make room for it. */
 export function InsertBox({ y, onHeight, children }: { y: number; onHeight: (h: number) => void; children: React.ReactNode }) {
@@ -69,11 +69,11 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
         ref={ref}
         className="composer-input"
         value={text}
-        placeholder={`Leave a comment · ${keyLabel("↵")} to save${canSuggest ? ` · ${keyLabel("G")} to suggest a change` : ""} · Esc to cancel`}
+        placeholder={`Leave a comment · ↵ to save · ⇧↵ for a new line${canSuggest ? ` · ${keyLabel("G")} to suggest a change` : ""} · Esc to cancel`}
         rows={Math.min(20, Math.max(3, text.split("\n").length))}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && mod(e)) {
+          if (isSubmitKey(e)) {
             e.preventDefault();
             save();
           } else if (e.key.toLowerCase() === "g" && mod(e) && canSuggest) {
