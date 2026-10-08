@@ -458,7 +458,11 @@ export default function App() {
         <SubmitSheet
           stackId={stack.stackId}
           onClose={() => setSheetOpen(false)}
-          onSubmitted={(fresh) => {
+          onSubmitted={(fresh, done) => {
+            if (done) {
+              setSheetOpen(false);
+              say("Review submitted");
+            }
             refreshDrafts();
             listThreads(stack.stackId, false)
               .then(setThreads)

@@ -7,8 +7,11 @@ import { isSubmitKey } from "./platform";
 interface Props {
   stackId: string;
   onClose: () => void;
-  /** Called after submitting, with the stack as it was on GitHub when planning. */
-  onSubmitted: (fresh: OpenedStack) => void;
+  /**
+   * Called after submitting, with the stack as it was on GitHub when planning. `done`: everything went out
+   * and nothing is left to send, so the sheet should close.
+   */
+  onSubmitted: (fresh: OpenedStack, done: boolean) => void;
 }
 
 type Result = { state: "sending" } | { state: "done"; outcome: Outcome } | { state: "error"; message: string };
@@ -46,21 +49,26 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
     if (!plan) return;
     setSubmitting(true);
     const fresh = plan.stack;
+    // Work this submit leaves behind: other PRs' drafts, verdicts or summaries, or PRs held back by outdated comments.
+    let done = !plan.stack.prs.some((_, index) => hasWork(index) && (!indices.includes(index) || blocked(index)));
     for (const index of indices) {
       if (!hasWork(index) || blocked(index)) continue;
       setResults((r) => ({ ...r, [index]: { state: "sending" } }));
       try {
         const outcome = await submitReview(fresh.stackId, index, verdicts[index] ?? "COMMENT", summaries[index]?.trim() || null);
         setResults((r) => ({ ...r, [index]: { state: "done", outcome } }));
+        if (outcome.failed.length || outcome.unknown) done = false;
         // Sent: the verdict and summary don't go out again with a later submit.
         setVerdicts(({ [index]: _, ...rest }) => rest);
         setSummaries(({ [index]: _, ...rest }) => rest);
       } catch (e) {
         setResults((r) => ({ ...r, [index]: { state: "error", message: String(e) } }));
+        done = false;
       }
     }
     setSubmitting(false);
-    onSubmitted(fresh);
+    onSubmitted(fresh, done);
+    if (done) return;
     // What's left to send for the other PRs (posted drafts drop out).
     prepareSubmit(stackId)
       .then(setPlan)
