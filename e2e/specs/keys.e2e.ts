@@ -281,6 +281,39 @@ describe("keyboard", () => {
     await browser.keys("Escape");
   });
 
+  it("filters with the keyboard: x hides the current file's extension, F switches the filter off, f opens it", async () => {
+    const ext = (path: string) => path.slice(path.lastIndexOf("."));
+    const buttonText = async () => (await text('[data-testid="file-filter"]'))?.trim();
+    await toTop();
+    await waitFor(async () => (await activeFile()) === files[0]);
+
+    // x: the current file's extension goes, and the next file still shown becomes current.
+    const kept = files.filter((f) => ext(f) !== ext(files[0]));
+    await browser.keys("x");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept) && (await activeFile()) === kept[0]);
+
+    // F switches it off and on again, keeping the extensions.
+    await browser.keys("F");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(files));
+    expect(await buttonText()).toBe("filter off");
+    await browser.keys("F");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept));
+
+    // f opens the menu; ↓ and Enter toggle the second extension.
+    const exts = [...new Set(files.map(ext))].sort();
+    const checked = (e: string) => browser.execute((id: string) => document.querySelector(`[data-testid="${id}"]`)?.getAttribute("aria-checked"), `file-filter-ext${e}`);
+    const before = await checked(exts[1]);
+    await browser.keys("f");
+    await waitFor(() => exists('[data-testid="file-filter-menu"]'));
+    await browser.keys("ArrowDown");
+    await browser.keys("Enter");
+    await waitFor(async () => (await checked(exts[1])) !== before);
+    await click('[data-testid="file-filter-reset"]');
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(files));
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="file-filter-menu"]')));
+  });
+
   it("lists the keyboard shortcuts with ?", async () => {
     await browser.keys("?");
     await waitFor(() => exists('[data-testid="shortcuts"]'));

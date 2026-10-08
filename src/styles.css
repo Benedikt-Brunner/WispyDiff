@@ -492,7 +492,7 @@ body.resizing {
   text-align: left;
   cursor: pointer;
 }
-.file-filter-menu [role="menuitemcheckbox"]:hover {
+.file-filter-menu [role="menuitemcheckbox"].highlighted {
   background: var(--selection);
 }
 .file-filter-menu [aria-checked="false"] .file-filter-label {

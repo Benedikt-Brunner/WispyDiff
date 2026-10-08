@@ -438,6 +438,7 @@ export default function App() {
             showAttribution={isStack}
             multiPr={shown.range.hi > shown.range.lo}
             showFiles={showFiles}
+            onShowFiles={() => setShowFiles(true)}
             keyboardEnabled={!paletteOpen && !sheetOpen && !overlay && !home}
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}

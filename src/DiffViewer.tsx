@@ -76,6 +76,8 @@ interface Props {
   /** More than one PR selected: tag runs of lines with their PR number. */
   multiPr: boolean;
   showFiles: boolean;
+  /** Shows the file list (`f` opens its filter menu). */
+  onShowFiles: () => void;
   keyboardEnabled: boolean;
   /** Global default for files without a per-file choice. */
   defaultMode: BaseMode;
@@ -95,7 +97,7 @@ interface Props {
 
 export function DiffViewer(props: Props) {
   const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, wrap, onWrapChange, isIgnored } = props;
-  const { hiddenCommentPrs, onCommentsHiddenChange } = props;
+  const { hiddenCommentPrs, onCommentsHiddenChange, onShowFiles } = props;
   const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -134,7 +136,8 @@ export function DiffViewer(props: Props) {
   const [filters, setFilters] = useState(() => loadRecord("fileFilters"));
   const filter = useMemo(() => toFileFilter(filters[filterKey]), [filters, filterKey]);
   /** Per file index: left out by the filter. */
-  const filtered = useMemo(() => summary.files.map((f) => filter.exts.includes(extensionOf(f.path))), [summary, filter]);
+  const filtered = useMemo(() => summary.files.map((f) => !filter.off && filter.exts.includes(extensionOf(f.path))), [summary, filter]);
+  const [filterOpen, setFilterOpen] = useState(false);
 
   const modeOf = useCallback(
     (index: number): Mode => {
@@ -1031,7 +1034,7 @@ export function DiffViewer(props: Props) {
       const el = scrollRef.current;
       if (!el) return;
       // Every file filtered out: nothing for the file keys to act on.
-      if (!layout.totalRows && ["s", "e", " ", "c", "v", "u"].includes(e.key)) return;
+      if (!layout.totalRows && ["s", "e", " ", "c", "v", "u", "x"].includes(e.key)) return;
       // While gliding, j/k continue from where the glide is heading.
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
@@ -1083,6 +1086,22 @@ export function DiffViewer(props: Props) {
         case "t":
           toggleListMode();
           break;
+        case "f":
+          onShowFiles();
+          setFilterOpen((o) => !o);
+          break;
+        case "F":
+          if (filter.exts.length) changeFilter({ ...filter, off: !filter.off });
+          break;
+        case "x": {
+          // Hides the current file's extension and moves on to the next file still shown.
+          const ext = extensionOf(summary.files[here.file].path);
+          const exts = [...new Set([...filter.exts, ext])];
+          const next = summary.files.findIndex((f, i) => i > here.file && !exts.includes(extensionOf(f.path)));
+          if (next >= 0) pendingFile.current = { from: here.file, next };
+          changeFilter({ exts });
+          break;
+        }
         case "S":
           changeLayout(() => {
             setOverrides(new Map());
@@ -1149,7 +1168,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles]);
 
   return (
     <div className="diff-layout">
@@ -1168,6 +1187,8 @@ export function DiffViewer(props: Props) {
           filteredCount={filteredCount}
           filter={filter}
           onFilterChange={changeFilter}
+          filterOpen={filterOpen}
+          onFilterOpenChange={setFilterOpen}
         />
       )}
       <div className="diff-main">
@@ -1557,10 +1578,13 @@ interface FileListProps {
   filteredCount: number;
   filter: FileFilter;
   onFilterChange: (filter: FileFilter) => void;
+  filterOpen: boolean;
+  onFilterOpenChange: (open: boolean) => void;
 }
 
 function FileList(props: FileListProps) {
   const { files, isViewed, segments, current, showPrs, openThreads, mode, onToggleMode, onSelect, filtered, filteredCount, filter, onFilterChange } = props;
+  const { filterOpen, onFilterOpenChange } = props;
   const activeRef = useRef<HTMLLIElement>(null);
   const width = useSidebarWidth("files", 280);
   const tree = useMemo(() => buildTree(files.map((f, i) => (filtered[i] ? null : f.path))), [files, filtered]);
@@ -1663,7 +1687,14 @@ function FileList(props: FileListProps) {
             </button>
           ))}
         </span>
-        <FileFilterMenu files={files} filter={filter} filteredCount={filteredCount} onChange={onFilterChange} />
+        <FileFilterMenu
+          files={files}
+          filter={filter}
+          filteredCount={filteredCount}
+          onChange={onFilterChange}
+          open={filterOpen}
+          onOpenChange={onFilterOpenChange}
+        />
       </div>
     </nav>
   );
@@ -1673,6 +1704,8 @@ function FileList(props: FileListProps) {
 interface FileFilter {
   /** Hidden extensions ("" = files without one). */
   exts: string[];
+  /** Switched off with `F`: everything shown, the extensions kept for switching back on. */
+  off?: boolean;
 }
 
 const NO_FILTER: FileFilter = { exts: [] };
@@ -1681,7 +1714,7 @@ const NO_FILTER: FileFilter = { exts: [] };
 function toFileFilter(value: unknown): FileFilter {
   if (!value || typeof value !== "object") return NO_FILTER;
   const v = value as Partial<FileFilter>;
-  return { exts: Array.isArray(v.exts) ? v.exts.filter((e): e is string => typeof e === "string") : [] };
+  return { exts: Array.isArray(v.exts) ? v.exts.filter((e): e is string => typeof e === "string") : [], off: v.off === true };
 }
 
 /** ".php" for "src/a.test.php"; "" without one (dotfiles like ".gitignore" included). */
@@ -1696,29 +1729,47 @@ interface FileFilterMenuProps {
   filter: FileFilter;
   filteredCount: number;
   onChange: (filter: FileFilter) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
-function FileFilterMenu({ files, filter, filteredCount, onChange }: FileFilterMenuProps) {
-  const [open, setOpen] = useState(false);
+function FileFilterMenu({ files, filter, filteredCount, onChange, open, onOpenChange }: FileFilterMenuProps) {
   const ref = useRef<HTMLSpanElement>(null);
+  /** The highlighted extension (↑/↓ move it, Space/Enter toggle it). */
+  const [highlight, setHighlight] = useState(0);
   const exts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const f of files) counts.set(extensionOf(f.path), (counts.get(extensionOf(f.path)) ?? 0) + 1);
     // Files without an extension last.
     return [...counts].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
   }, [files]);
-  const active = filter.exts.length > 0;
+  const active = filter.exts.length > 0 && !filter.off;
+  // Ticking an extension (or "Show all") switches a filter that was off back on.
+  const toggle = useCallback(
+    (ext: string) => onChange({ exts: filter.exts.includes(ext) ? filter.exts.filter((e) => e !== ext) : [...filter.exts, ext] }),
+    [filter, onChange],
+  );
 
-  // Closes on a click elsewhere, or Esc (before the diff's own Esc handling).
+  useEffect(() => {
+    if (open) setHighlight(0);
+  }, [open]);
+
+  // Closes on a click elsewhere, or Esc; ↑/↓ and Space/Enter work the list (all before the
+  // diff's own key handling).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      if (!ref.current?.contains(e.target as Node)) onOpenChange(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Escape") onOpenChange(false);
+      else if (e.key === "ArrowDown") setHighlight((h) => Math.min(h + 1, exts.length - 1));
+      else if (e.key === "ArrowUp") setHighlight((h) => Math.max(h - 1, 0));
+      else if ((e.key === " " || e.key === "Enter") && exts[highlight]) toggle(exts[highlight][0]);
+      else return;
+      e.preventDefault();
       e.stopPropagation();
-      setOpen(false);
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey, true);
@@ -1726,10 +1777,18 @@ function FileFilterMenu({ files, filter, filteredCount, onChange }: FileFilterMe
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [open]);
+  }, [open, onOpenChange, exts, highlight, toggle]);
 
-  const item = (label: string, count: number, shown: boolean, toggle: () => void, testId: string) => (
-    <button key={testId} role="menuitemcheckbox" aria-checked={shown} onClick={toggle} data-testid={testId}>
+  const item = (index: number, label: string, count: number, shown: boolean, onClick: () => void, testId: string) => (
+    <button
+      key={testId}
+      role="menuitemcheckbox"
+      aria-checked={shown}
+      className={index === highlight ? "highlighted" : undefined}
+      onMouseEnter={() => setHighlight(index)}
+      onClick={onClick}
+      data-testid={testId}
+    >
       <span className="file-filter-check">{shown ? "✓" : ""}</span>
       <span className="file-filter-label">{label}</span>
       <span className="file-filter-count">{count}</span>
@@ -1740,33 +1799,26 @@ function FileFilterMenu({ files, filter, filteredCount, onChange }: FileFilterMe
     <span className="file-filter" ref={ref}>
       <button
         className={`file-filter-button${active ? " active" : ""}`}
-        onClick={() => setOpen((o) => !o)}
-        title="Filter files"
+        onClick={() => onOpenChange(!open)}
+        title={filter.off ? "Filter files (f) — switched off, F switches it back on" : "Filter files (f)"}
         aria-expanded={open}
         data-testid="file-filter"
       >
         <FilterIcon />
         {filteredCount > 0 && <span>{filteredCount} hidden</span>}
+        {filter.off && filter.exts.length > 0 && <span>filter off</span>}
       </button>
       {open && (
         <div className="file-filter-menu" role="menu" data-testid="file-filter-menu">
           <div className="file-filter-title">
             File extensions
-            {active && (
+            {filter.exts.length > 0 && (
               <button className="file-filter-reset" onClick={() => onChange(NO_FILTER)} data-testid="file-filter-reset">
                 Show all
               </button>
             )}
           </div>
-          {exts.map(([ext, count]) =>
-            item(
-              ext || "No extension",
-              count,
-              !filter.exts.includes(ext),
-              () => onChange({ exts: filter.exts.includes(ext) ? filter.exts.filter((e) => e !== ext) : [...filter.exts, ext] }),
-              `file-filter-ext${ext}`,
-            ),
-          )}
+          {exts.map(([ext, count], i) => item(i, ext || "No extension", count, !filter.exts.includes(ext), () => toggle(ext), `file-filter-ext${ext}`))}
         </div>
       )}
     </span>
