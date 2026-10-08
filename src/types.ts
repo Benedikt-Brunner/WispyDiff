@@ -104,7 +104,13 @@ export interface OpenedRange {
   ignoreWhitespace: boolean;
   summary: DiffSummary;
   /** Set for "changes since checkpoint" views. */
-  since: { checkpointId: string; createdAt: number; conflicts: boolean } | null;
+  since: {
+    checkpointId: string;
+    createdAt: number;
+    conflicts: boolean;
+    /** Each file's content key in the range's full diff, by path. */
+    fullKeys: Record<string, string>;
+  } | null;
 }
 
 /** "Reviewed these PRs at these heads" (local only). */

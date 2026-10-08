@@ -56,6 +56,9 @@ pub struct Since {
     pub created_at: i64,
     /// Replaying the old version onto the new base conflicted: a raw diff is shown.
     pub conflicts: bool,
+    /// Each file's content key in the range's full diff, by path: marking a file viewed
+    /// here marks it viewed there too.
+    pub full_keys: std::collections::HashMap<String, String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -151,7 +154,7 @@ pub async fn select_since(
 ) -> Result<OpenedRange, String> {
     let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
     let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
-    let (view, checkpoint, conflicts) = blocking({
+    let (view, checkpoint, conflicts, full_keys) = blocking({
         let (service, snapshot) = (service.clone(), snapshot.clone());
         move || {
             let checkpoint = service
@@ -160,7 +163,9 @@ pub async fn select_since(
                 .find(|c| c.id == checkpoint_id)
                 .ok_or_else(|| wispy_core::Error::GitHub("checkpoint not found for this range".into()))?;
             let (view, conflicts) = service.interdiff(&snapshot, lo, hi, &checkpoint)?;
-            Ok((view, checkpoint, conflicts))
+            let full = service.range(&snapshot, lo, hi)?;
+            let full_keys = full.summary.files.iter().map(|f| (f.path.clone(), f.content_key.clone())).collect();
+            Ok((view, checkpoint, conflicts, full_keys))
         }
     })
     .await?;
@@ -172,7 +177,7 @@ pub async fn select_since(
         range: Range { lo, hi },
         ignore_whitespace: false,
         summary: view.summary.clone(),
-        since: Some(Since { checkpoint_id: checkpoint.id, created_at: checkpoint.created_at, conflicts }),
+        since: Some(Since { checkpoint_id: checkpoint.id, created_at: checkpoint.created_at, conflicts, full_keys }),
     })
 }
 
