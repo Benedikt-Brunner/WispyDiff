@@ -101,6 +101,8 @@ export function grep(stackId: string, prIndex: number, query: string, wholeWord:
 export const readFile = (stackId: string, prIndex: number, path: string) =>
   invoke<import("./types").Seg[][]>("read_file", { stackId, prIndex, path });
 
+export const existingFiles = (stackId: string, prIndex: number, paths: string[]) => invoke<string[]>("existing_files", { stackId, prIndex, paths });
+
 export const locateLine = (viewId: string, file: number, line: number) =>
   invoke<import("./comments").Location | null>("locate_line", { viewId, file, line });
 
@@ -112,6 +114,9 @@ export interface AssistantSelection {
   startLine: number;
   endLine: number;
   text: string;
+  /** The selected lines' numbers at the range head (the assistant's checkout). */
+  headStart: number | null;
+  headEnd: number | null;
 }
 
 export interface ThreadAnchor {

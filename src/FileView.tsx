@@ -5,13 +5,15 @@ import type { Seg } from "./types";
 interface Props {
   path: string;
   line: number;
+  /** Last line to highlight (`line` if just one). */
+  end?: number;
   lines: Seg[][] | null;
   error: string | null;
   onClose: () => void;
 }
 
 /** A whole file from the head, read-only (for search hits outside the diff). */
-export function FileView({ path, line, lines, error, onClose }: Props) {
+export function FileView({ path, line, end = line, lines, error, onClose }: Props) {
   const scroll = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
   const [height, setHeight] = useState(600);
@@ -41,7 +43,7 @@ export function FileView({ path, line, lines, error, onClose }: Props) {
   const rows = [];
   for (let i = first; i < last; i++) {
     rows.push(
-      <div key={i} className={`row row-ctx${i + 1 === line ? " flash-static" : ""}`} style={{ transform: `translateY(${i * ROW_HEIGHT}px)` }}>
+      <div key={i} className={`row row-ctx${i + 1 >= line && i + 1 <= end ? " flash-static" : ""}`} style={{ transform: `translateY(${i * ROW_HEIGHT}px)` }}>
         <span className="gutter">
           <span className="ln">{i + 1}</span>
         </span>

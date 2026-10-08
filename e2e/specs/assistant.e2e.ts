@@ -140,4 +140,99 @@ describe("assistant", () => {
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
   });
+
+  it("links file references in answers to the diff, or the file view outside it", async () => {
+    const files = await browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")!));
+    const ext = files.find((f) => !f.endsWith(".php"))!.replace(/^.*(?=\.)/, "");
+    await click('[data-testid="file-filter"]');
+    await click(`[data-testid="file-filter-ext${ext}"]`);
+    await browser.keys("Escape");
+    await browser.keys("a");
+    await waitFor(() => exists('[data-testid="assistant-panel"]'));
+    // Codex also names files by their absolute path in the checkout.
+    await chooseProvider("codex");
+    await ask("refs");
+    const refs = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-testid="assistant-panel"] .assistant-message:not(.streaming) a.code-ref')].map((a) => ({ ...a.dataset })),
+      );
+    // Files outside the diff become links once the app has checked that they exist.
+    await waitFor(async () => (await refs()).length >= 8, 60_000);
+    const [range, bare, absolute, outside, hidden, ...listed] = await refs();
+    const unchanged = listed.pop()!;
+    expect(unchanged.refPath).toBe(range.refPath);
+    // A list of lines (`name:12, 13-14`) links each of them.
+    const line = Number(range.refLine);
+    expect(listed).toEqual([
+      { refPath: range.refPath, refLine: String(line) },
+      { refPath: range.refPath, refLine: String(line + 1), refEnd: String(line + 2) },
+    ]);
+    expect(range.refPath).toMatch(/^src\//);
+    expect(Number(range.refEnd)).toBe(Number(range.refLine) + 1);
+    expect(bare).toEqual({ refPath: range.refPath });
+    expect(absolute).toEqual({ refPath: range.refPath, refLine: range.refLine });
+    expect(files).not.toContain(outside.refPath);
+    expect(hidden.refPath!.endsWith(ext)).toBe(true);
+    const plain = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="assistant-panel"] .markdown code')].filter((c) => !c.closest("a") && !c.querySelector("a")).map((c) => c.textContent),
+    );
+    expect(plain).toEqual(["this.state", `${range.refPath!.replace(/\/[^/]+$/, "")}/*.php`, "order/germany-gross-order-import/order-create"]);
+
+    const open = (i: number) => browser.execute((n: number) => document.querySelectorAll<HTMLElement>('[data-testid="assistant-panel"] a.code-ref')[n].click(), i);
+    // A line range flashes in the diff (a row's head line number is its last).
+    await open(0);
+    await waitFor(() =>
+      browser.execute(
+        (line: string) => {
+          const rows = [...document.querySelectorAll(".row.selected")];
+          return rows.length >= 2 && rows.some((r) => [...r.querySelectorAll(".ln")].at(-1)?.textContent === line);
+        },
+        range.refLine!,
+      ),
+    );
+    expect(await exists('[data-testid="assistant-panel"]')).toBe(true);
+    // A line outside the changes: its file switches to side by side and the view goes there, also
+    // with wrapped lines, whose heights in that mode arrive right after the jump.
+    const wrap = async () => {
+      await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+      await browser.keys("z");
+    };
+    await wrap();
+    await waitFor(() => browser.execute(() => localStorage.getItem("wispy.wrap") === "on"));
+    await browser.execute(() => {
+      const view = document.querySelector(".diff-scroll")!;
+      view.scrollTop = view.scrollHeight;
+    });
+    await open(7);
+    await waitFor(() =>
+      browser.execute((line: string) => {
+        const view = document.querySelector(".diff-scroll")!.getBoundingClientRect();
+        return [...document.querySelectorAll(".row.selected")].some((r) => {
+          const box = r.getBoundingClientRect();
+          return box.top >= view.top && box.bottom <= view.bottom && [...r.querySelectorAll(".ln")].some((ln) => ln.textContent === line);
+        });
+      }, unchanged.refLine!),
+    );
+    // Back to unified (spec files share the app), and no wrapping.
+    const header = `.row-file[data-file="${range.refPath}"]`;
+    expect(await browser.execute((h: string) => document.querySelector(h)?.getAttribute("data-mode"), header)).toBe("split");
+    await browser.keys("s");
+    await waitFor(() => browser.execute((h: string) => document.querySelector(h)?.getAttribute("data-mode") === "unified", header));
+    await wrap();
+    await waitFor(() => browser.execute(() => localStorage.getItem("wispy.wrap") === "off"));
+    // Files outside the diff, and files the filter hides, open in the file view.
+    for (const [i, ref] of [[3, outside], [4, hidden]] as const) {
+      await open(i);
+      await waitFor(async () => (await text('[data-testid="file-view"] .sheet-title')) === ref.refPath);
+      await waitFor(() => exists('[data-testid="file-view"] .flash-static'));
+      await browser.keys("Escape");
+      await waitFor(async () => !(await exists('[data-testid="file-view"]')));
+    }
+
+    await click('[data-testid="file-filter"]');
+    await click('[data-testid="file-filter-reset"]');
+    await browser.keys("Escape");
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
+  });
 });

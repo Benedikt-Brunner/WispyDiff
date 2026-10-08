@@ -58,6 +58,7 @@ pub fn run() {
             commands::usages,
             commands::grep,
             commands::read_file,
+            commands::existing_files,
             commands::locate_line,
             commands::ask_assistant,
             commands::list_assistant_threads,

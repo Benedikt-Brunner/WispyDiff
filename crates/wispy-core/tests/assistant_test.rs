@@ -3,7 +3,7 @@ mod support;
 use std::path::PathBuf;
 
 use support::{pull_request, OriginRepo};
-use wispy_core::assistant::{command, needs_sign_in, parse_line, sign_in, sign_in_command, sign_in_url, Ask, AssistantEvent, Provider, Selection};
+use wispy_core::assistant::{command, first_prompt, needs_sign_in, parse_line, sign_in, sign_in_command, sign_in_url, Ask, AssistantEvent, Context, Provider, Selection};
 use wispy_core::cache::Cache;
 use wispy_core::github::GitHubClient;
 use wispy_core::highlight::Highlighter;
@@ -115,7 +115,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     );
     let snapshot = service.fetch(Stack { prs: vec![pull_request(3, "main", "feature", &origin.url())], focus: 0 }).unwrap();
 
-    let selection = Selection { path: "src/Order.php".into(), pr_label: "#3".into(), start_line: 2, end_line: 2, text: "+$state = 'picked';".into() };
+    let selection = Selection { path: "src/Order.php".into(), pr_label: "#3".into(), start_line: 2, end_line: 2, text: "+$state = 'picked';".into(), head_start: Some(2), head_end: Some(2) };
     let mut streamed = String::new();
     let new = NewThread { provider: Provider::Claude, model: Some("opus".into()), effort: Some("high".into()), selection: Some(selection), anchor: None, hidden: vec![] };
     let thread = service
@@ -138,7 +138,8 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     let prompt = calls[0]["prompt"].as_str().unwrap();
     assert!(prompt.contains("Under review: acme/shop #3"));
     assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
-    assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"));
+    assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"), "the checkout's numbers are only added when they differ");
+    assert!(prompt.contains("like `src/app.ts:42`"), "asks for clickable references");
     assert!(prompt.contains("lock-two") && prompt.contains("new-lock-line") && !prompt.contains("hid these"), "nothing hidden: {prompt}");
     let args: Vec<&str> = calls[0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert!(args.windows(2).any(|w| w == ["--model", "opus"]));
@@ -193,6 +194,13 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 2);
     service.delete_assistant_thread(&thread.id).unwrap();
     assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 1);
+}
+
+#[test]
+fn names_the_checkouts_line_numbers_when_a_higher_pr_moved_the_selection() {
+    let selection = Selection { path: "src/Order.php".into(), pr_label: "#2".into(), start_line: 10, end_line: 12, text: "x".into(), head_start: Some(14), head_end: Some(16) };
+    let context = Context { range_label: "acme/shop #2–#3".into(), titles: vec![], diff: String::new(), selection: Some(selection), hidden: vec![] };
+    assert!(first_prompt(&context, "Why?").contains("lines of src/Order.php (in #2, lines 10–12; lines 14–16 in the checkout)"));
 }
 
 #[test]

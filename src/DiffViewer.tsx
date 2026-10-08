@@ -9,6 +9,7 @@ import {
   locateAnchors,
   locateLine,
   readFile,
+  existingFiles,
   updateDraft,
   usages as fetchUsages,
   askAssistant,
@@ -20,6 +21,7 @@ import {
   type Usages,
 } from "./api";
 import { AssistantPanel, type AskContext } from "./AssistantPanel";
+import type { CodeRef } from "./Markdown";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileView } from "./FileView";
 import {
@@ -169,9 +171,9 @@ export function DiffViewer(props: Props) {
   const [grepStatus, setGrepStatus] = useState<string>("idle");
   /** Files the last search skipped because they couldn't be downloaded (offline). */
   const [grepUnsearched, setGrepUnsearched] = useState(0);
-  const [fileView, setFileView] = useState<{ path: string; line: number; lines: Seg[][] | null; error: string | null } | null>(null);
-  const [flash, setFlash] = useState<{ file: number; offset: number } | null>(null);
-  const pendingJump = useRef<{ file: number; line: number } | null>(null);
+  const [fileView, setFileView] = useState<{ path: string; line: number; end: number; lines: Seg[][] | null; error: string | null } | null>(null);
+  const [flash, setFlash] = useState<{ file: number; from: number; to: number } | null>(null);
+  const pendingJump = useRef<{ file: number; line: number; end: number } | null>(null);
 
   // ---------- assistant ----------
   const [assistant, setAssistant] = useState<{ context: AskContext; activeId: string | null; note: string | null } | null>(null);
@@ -421,9 +423,24 @@ export function DiffViewer(props: Props) {
 
   const layout = useMemo(() => new Layout(summary, modeOf, placed, wrappedOf), [summary, modeOf, placed, wrappedOf]);
   const placedItems = useMemo(() => new Map(placed.map((p) => [p.key, p.item])), [placed]);
+  /** The layout now, for code that continues after an await. */
+  const latest = useRef({ layout, summary });
+  latest.current = { layout, summary };
 
-  /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
-   * full file has that line; flashes the row. */
+  /**
+   * Remembers the reader's place (the row at the top), which layout changes keep. A scroll made
+   * here records it right away: a layout change can land before the scroll event (wrapped row
+   * widths arriving for a file just switched to side by side) and must keep the new place.
+   */
+  const recordAnchor = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const { layout, summary } = latest.current;
+    const row = layout.rowAt(el.scrollTop);
+    const segment = layout.segmentAt(row);
+    anchor.current = { path: summary.files[segment.file].path, offset: row - segment.start, mode: segment.mode, delta: el.scrollTop - layout.rowY(row) };
+  }, []);
+
   /**
    * The file picked by navigation (n/p, the file list, v) and the scroll position it was shown at.
    * While the view stays there it is the current file, even if it couldn't scroll to the top
@@ -439,34 +456,39 @@ export function DiffViewer(props: Props) {
   }, []);
   useEffect(() => stopGlide, [stopGlide]);
 
+  /** Scrolls to head line `line` of view file `file`, switching it to side by side if only the
+   * full file has that line; flashes the rows up to head line `end`. */
   const jumpToLine = useCallback(
-    async (file: number, line: number) => {
-      const location = await locateLine(viewId, file, line);
+    async (file: number, line: number, end = line) => {
+      const [location, last] = await Promise.all([locateLine(viewId, file, line), end > line ? locateLine(viewId, file, end) : null]);
       if (!location) return;
+      const { layout } = latest.current;
       const path = summary.files[file].path;
       const segment = layout.segments[file];
       const needsSplit = segment.mode === "collapsed" || (segment.mode === "unified" && location.unified === null);
       if (needsSplit) {
-        pendingJump.current = { file, line };
+        pendingJump.current = { file, line, end };
         setExpanded((s) => new Set(s).add(path));
         setCollapsed((s) => withOut(s, path));
         if (location.unified === null) setOverrides((m) => new Map(m).set(path, "split"));
         return;
       }
       const offset = (segment.mode === "split" ? location.split : location.unified) ?? 0;
+      const to = (last && (segment.mode === "split" ? last.split : last.unified)) ?? offset;
       const el = scrollRef.current;
       stopGlide();
       if (el) el.scrollTop = Math.max(0, layout.rowY(segment.start + offset) - el.clientHeight / 3);
-      setFlash({ file, offset });
+      recordAnchor();
+      setFlash({ file, from: offset, to: Math.max(offset, to) });
     },
-    [viewId, summary, layout, stopGlide],
+    [viewId, summary, stopGlide, recordAnchor],
   );
 
   useEffect(() => {
     const jump = pendingJump.current;
     if (!jump) return;
     pendingJump.current = null;
-    void jumpToLine(jump.file, jump.line);
+    void jumpToLine(jump.file, jump.line, jump.end);
   }, [layout, jumpToLine]);
 
   useEffect(() => {
@@ -476,14 +498,14 @@ export function DiffViewer(props: Props) {
   }, [flash]);
 
   const jump = useCallback(
-    (target: { path: string; line: number; file?: number }) => {
+    (target: { path: string; line: number; end?: number; file?: number }) => {
       const file = target.file ?? summary.files.findIndex((f) => f.path === target.path);
       // Files left out by the filter open in the file view, like files outside the diff.
       if (file >= 0 && summary.files[file].new_blob && layout.segments[file].mode !== "hidden") {
-        void jumpToLine(file, target.line);
+        void jumpToLine(file, target.line, target.end);
         return;
       }
-      setFileView({ path: target.path, line: target.line, lines: null, error: null });
+      setFileView({ path: target.path, line: target.line, end: target.end ?? target.line, lines: null, error: null });
       readFile(stackId, hi, target.path)
         .then((lines) => setFileView((v) => (v?.path === target.path ? { ...v, lines } : v)))
         .catch((e) => setFileView((v) => (v?.path === target.path ? { ...v, error: String(e) } : v)));
@@ -700,7 +722,15 @@ export function DiffViewer(props: Props) {
     const prLabel = `#${prs[last.anchor.pr].number}`;
     return {
       rangeLabel,
-      selection: { path: summary.files[file].path, prLabel, startLine: start, endLine: end, text: lines.join("\n") },
+      selection: {
+        path: summary.files[file].path,
+        prLabel,
+        startLine: start,
+        endLine: end,
+        text: lines.join("\n"),
+        headStart: heads.length ? Math.min(...heads) : null,
+        headEnd: heads.length ? Math.max(...heads) : null,
+      },
       anchor: {
         path: last.anchor.path,
         prIndex: last.anchor.pr,
@@ -794,7 +824,7 @@ export function DiffViewer(props: Props) {
     const key = `${segment.file}:${segment.mode}:${offset}`;
     const selected =
       (selection !== null && selection.file === segment.file && selection.mode === segment.mode && offset >= selection.from && offset <= selection.to) ||
-      (flash !== null && flash.file === segment.file && flash.offset === offset);
+      (flash !== null && flash.file === segment.file && offset >= flash.from && offset <= flash.to);
     if (offset === 0) {
       rendered.push(
         <FileHeader
@@ -886,19 +916,13 @@ export function DiffViewer(props: Props) {
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // First, as drawing the new rows can change the layout (threads measured), which keeps this place.
+    recordAnchor();
     // Draw the rows for the new position right away; a deferred render shows up as blank frames.
     flushSync(() => setScrollTop(el.scrollTop));
     // Horizontal scrolling moves side-by-side code within its halves (no re-render needed).
     canvasRef.current?.style.setProperty("--split-x", `${el.scrollLeft}px`);
-    const row = layout.rowAt(el.scrollTop);
-    const segment = layout.segmentAt(row);
-    anchor.current = {
-      path: summary.files[segment.file].path,
-      offset: row - segment.start,
-      mode: segment.mode,
-      delta: el.scrollTop - layout.rowY(row),
-    };
-  }, [layout, summary]);
+  }, [recordAnchor]);
 
   /** The file keys act on: the pinned one while the view hasn't moved, else the one at the top. */
   const fileAt = useCallback(
@@ -918,10 +942,67 @@ export function DiffViewer(props: Props) {
       const el = scrollRef.current;
       if (!el) return;
       el.scrollTop = Math.max(0, layout.rowY(Math.max(0, row - margin)));
+      recordAnchor();
       if (pin !== undefined) setPinned({ file: pin, top: el.scrollTop });
     },
-    [layout, stopGlide],
+    [layout, stopGlide, recordAnchor],
   );
+
+  /** Repo files outside the diff that answers name, and whether they exist at the range head.
+   * Paths are checked in batches; until a path's answer is back it isn't a link. */
+  const [repoFiles, setRepoFiles] = useState({ summary, exists: new Map<string, boolean>() });
+  const asked = useRef({ summary, paths: new Set<string>(), queue: [] as string[] });
+  const checkRepoFile = useCallback(
+    (path: string) => {
+      if (asked.current.summary !== summary) asked.current = { summary, paths: new Set(), queue: [] };
+      const batch = asked.current;
+      if (batch.paths.has(path)) return;
+      batch.paths.add(path);
+      batch.queue.push(path);
+      if (batch.queue.length > 1) return;
+      window.setTimeout(() => {
+        const paths = batch.queue.splice(0);
+        existingFiles(stackId, hi, paths)
+          .then((found) =>
+            setRepoFiles((r) => {
+              const exists = new Map(r.summary === summary ? r.exists : []);
+              for (const p of paths) exists.set(p, found.includes(p));
+              return { summary, exists };
+            }),
+          )
+          .catch(() => {});
+      });
+    },
+    [summary, stackId, hi],
+  );
+  const repoFileExists = repoFiles.summary === summary ? repoFiles.exists : null;
+
+  /** File references in assistant answers: files of the diff (a bare name if only one file has
+   * it), or other files of the head, which open in the file view. */
+  const openRef = useRef((_: CodeRef) => {});
+  openRef.current = (ref) => {
+    const file = summary.files.findIndex((f) => f.path === ref.path);
+    if (ref.line === null && file >= 0 && layout.segments[file].mode !== "hidden") scrollToRow(layout.segments[file].start, 0, file);
+    else jump({ path: ref.path, line: ref.line ?? 0, end: ref.end ?? undefined });
+  };
+  const codeRefs = useMemo(() => {
+    const paths = new Set(summary.files.map((f) => f.path));
+    const known = (path: string) => {
+      if (paths.has(path)) return path;
+      const matches = [...paths].filter((p) => p.endsWith(`/${path}`));
+      return matches.length === 1 ? matches[0] : null;
+    };
+    return {
+      resolve: (ref: CodeRef): CodeRef | null => {
+        const path = known(ref.path) ?? known(ref.path.replace(/^[ab]\//, ""));
+        if (path) return { ...ref, path };
+        const exists = repoFileExists?.get(ref.path);
+        if (exists === undefined) checkRepoFile(ref.path);
+        return exists ? ref : null;
+      },
+      open: (ref: CodeRef) => openRef.current(ref),
+    };
+  }, [summary, repoFileExists, checkRepoFile]);
 
   /**
    * j/k: ease to a change instead of teleporting, so a held key reads as one continuous scroll
@@ -1263,6 +1344,7 @@ export function DiffViewer(props: Props) {
             setAssistant((a) => a && { ...a, activeId: null });
           }}
           onClose={() => setAssistant(null)}
+          codeRefs={codeRefs}
         />
       )}
       {fileView && <FileView {...fileView} onClose={() => setFileView(null)} />}

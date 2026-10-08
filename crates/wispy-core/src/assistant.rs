@@ -295,6 +295,11 @@ pub struct Selection {
     pub end_line: u32,
     /// The selected code as shown (diff markers included when selected in the unified view).
     pub text: String,
+    /// The selected lines' numbers at the range head (the checkout), when they have any there.
+    #[serde(default)]
+    pub head_start: Option<u32>,
+    #[serde(default)]
+    pub head_end: Option<u32>,
 }
 
 /// The first prompt of a thread: the review context, then the question. Follow-ups resume the
@@ -302,15 +307,24 @@ pub struct Selection {
 pub fn first_prompt(context: &Context, question: &str) -> String {
     let mut prompt = String::from(
         "You are helping review a GitHub pull request stack. The current directory is a read-only \
-         checkout of the head of the PRs under review; read any file you need, but don't try to change anything.\n\n",
+         checkout of the head of the PRs under review; read any file you need, but don't try to change anything. \
+         When you mention code, write its repo-relative path and line numbers in that checkout in inline code, \
+         like `src/app.ts:42` or `src/app.ts:42-50`: the reviewer clicks them to jump there in the diff.\n\n",
     );
     prompt.push_str(&format!("Under review: {}\n", context.range_label));
     for title in &context.titles {
         prompt.push_str(&format!("- {title}\n"));
     }
     if let Some(selection) = &context.selection {
+        // In a range, a higher PR may have moved the lines; the checkout's numbers are what to cite.
+        let head = match (selection.head_start, selection.head_end) {
+            (Some(start), Some(end)) if (start, end) != (selection.start_line, selection.end_line) => {
+                format!("; lines {start}–{end} in the checkout")
+            }
+            _ => String::new(),
+        };
         prompt.push_str(&format!(
-            "\nThe question is about these lines of {} (in {}, lines {}–{}):\n```\n{}\n```\n",
+            "\nThe question is about these lines of {} (in {}, lines {}–{}{head}):\n```\n{}\n```\n",
             selection.path, selection.pr_label, selection.start_line, selection.end_line, selection.text
         ));
     }

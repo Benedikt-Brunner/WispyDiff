@@ -553,6 +553,26 @@ impl PrService {
         blob_lines(&git, &blob, Language::from_path(path), &self.highlighter, &self.highlights)
     }
 
+    /// Which of `paths` are files on the head of stack PR `index`. Reads only trees, so nothing
+    /// is downloaded; globs and directories aren't files.
+    pub fn existing_files(&self, snapshot: &StackSnapshot, index: usize, paths: &[String]) -> Result<Vec<String>> {
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+        let git = self.git(snapshot)?;
+        let mut args = vec!["ls-tree", "-z", &snapshot.heads[index], "--"];
+        args.extend(paths.iter().map(String::as_str));
+        let out = git.run(&args)?;
+        let listed: Vec<String> = out
+            .split(|&b| b == 0)
+            .filter_map(|entry| {
+                let (meta, path) = std::str::from_utf8(entry).ok()?.split_once('\t')?;
+                meta.split(' ').nth(1).filter(|kind| *kind == "blob").map(|_| path.to_string())
+            })
+            .collect();
+        Ok(paths.iter().filter(|p| listed.contains(p)).cloned().collect())
+    }
+
     // ---------- assistant ----------
 
     /// Assistant threads started on PRs of this stack.

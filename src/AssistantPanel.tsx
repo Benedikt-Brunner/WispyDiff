@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { signInAssistant, type AssistantSelection, type AssistantThread, type Provider, type ThreadAnchor } from "./api";
-import { Markdown } from "./Markdown";
+import { Markdown, type CodeRefs } from "./Markdown";
 import { loadPref, savePref } from "./prefs";
 import { isSubmitKey, mod } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
@@ -36,10 +36,12 @@ interface Props {
   onDraft: (thread: AssistantThread, text: string) => void;
   onDelete: (id: string) => void;
   onClose: () => void;
+  /** Makes file references in answers (`src/app.ts:42`) jump there. */
+  codeRefs: CodeRefs;
 }
 
 /** Side-panel conversations with Claude Code or Codex about the range or a selection. */
-export function AssistantPanel({ threads, activeId, context, pending, note, onSelect, onAsk, onDraft, onDelete, onClose }: Props) {
+export function AssistantPanel({ threads, activeId, context, pending, note, onSelect, onAsk, onDraft, onDelete, onClose, codeRefs }: Props) {
   const width = useSidebarWidth("assistant", 420);
   const [provider, setProvider] = useState<Provider>(() => loadPref("assistant.provider", ["claude", "codex"] as const, "claude"));
   const [model, setModel] = useState(() => localValue(`assistant.model.${provider}`));
@@ -107,7 +109,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
       <div className="panel-body assistant-body">
         {(active?.messages ?? []).map((m, i) => (
           <div key={i} className={`assistant-message ${m.role}${m.error ? " error" : ""}`}>
-            {m.role === "assistant" && !m.error ? <Markdown text={m.text} /> : <div className="card-body">{m.text}</div>}
+            {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} /> : <div className="card-body">{m.text}</div>}
             {m.role === "assistant" && !m.error && active && (
               <button className="link" onClick={() => onDraft(active, m.text)}>
                 turn into draft comment
@@ -152,7 +154,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
               <div className="card-body">{pending.question}</div>
             </div>
             <div className="assistant-message assistant streaming" data-testid="assistant-streaming">
-              {pending.text ? <Markdown text={pending.text} /> : <div className="card-body">Thinking…</div>}
+              {pending.text ? <Markdown text={pending.text} refs={codeRefs} /> : <div className="card-body">Thinking…</div>}
             </div>
           </>
         )}
