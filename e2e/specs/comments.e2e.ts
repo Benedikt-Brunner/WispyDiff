@@ -144,8 +144,9 @@ describe("comments", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await click('[data-testid="submit-all"]');
-    await waitFor(async () => (await text('.sheet-pr[data-pr="2"] .sheet-done')) === "Posted ✓", 60_000);
-    await browser.keys("Escape");
+    // Everything went out: the sheet closes by itself.
+    await waitFor(async () => !(await exists(".sheet")), 60_000);
+    expect(await text(".toast")).toBe("Review submitted");
     await waitFor(async () => (await draftCount()) === 0);
   });
 
