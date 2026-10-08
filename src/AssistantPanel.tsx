@@ -49,12 +49,16 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
   const [question, setQuestion] = useState("");
   const [signIn, setSignIn] = useState<{ state: "waiting" | "done" | "failed"; url?: string; message?: string } | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   const active = threads.find((t) => t.id === activeId) ?? null;
 
   useEffect(() => input.current?.focus(), [activeId, context]);
   useEffect(() => setSignIn(null), [activeId]);
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [active?.messages.length, pending?.text]);
+  // Scrolled by assignment, which clamps: WebKitGTK can keep a long thread's scroll position when a
+  // short one replaces it, leaving the messages above the visible area.
+  useEffect(() => {
+    if (body.current) body.current.scrollTop = body.current.scrollHeight;
+  }, [activeId, active?.messages.length, pending?.text]);
 
   const changeProvider = (next: Provider) => {
     setProvider(next);
@@ -106,10 +110,10 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
           close
         </button>
       </div>
-      <div className="panel-body assistant-body">
+      <div className="panel-body assistant-body" ref={body}>
         {(active?.messages ?? []).map((m, i) => (
           <div key={i} className={`assistant-message ${m.role}${m.error ? " error" : ""}`}>
-            {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} /> : <div className="card-body">{m.text}</div>}
+            {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} comments={m.comments} /> : <div className="card-body">{m.text}</div>}
             {m.role === "assistant" && !m.error && active && (
               <button className="link" onClick={() => onDraft(active, m.text)}>
                 turn into draft comment
@@ -165,7 +169,6 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
               : `Ask about ${context.rangeLabel}. Select code first to ask about specific lines.`}
           </div>
         )}
-        <div ref={bottom} />
       </div>
       {note && (
         <div className="assistant-note" data-testid="assistant-note">

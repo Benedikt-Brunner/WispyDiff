@@ -12,7 +12,7 @@ A distraction-free, keyboard-first desktop app (macOS and Linux) for reviewing *
 - Unified and full-file side-by-side views, syntax highlighting, usages lookup and repo-wide
   search, all computed locally in Rust and cached per commit, so switching ranges is instant.
 - Draft comments offline and submit a review per PR; ask Claude Code or Codex about the code
-  you're looking at.
+  you're looking at, or have it write review comments, which land as drafts on the right PR.
 
 It's a personal tool: unsigned, no telemetry. [SPEC.md](SPEC.md) describes the behaviour and
 performance budgets in detail. Shortcuts are written with ⌘; on Linux use Ctrl instead.

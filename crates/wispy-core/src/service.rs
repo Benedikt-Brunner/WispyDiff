@@ -127,6 +127,9 @@ pub struct NewDraft {
     pub body: String,
     pub thread_id: Option<String>,
     pub reply_to: Option<u64>,
+    /// Written by the assistant.
+    #[serde(default)]
+    pub assistant: bool,
 }
 
 impl PrService {
@@ -239,6 +242,7 @@ impl PrService {
             thread_id: new.thread_id,
             reply_to: new.reply_to,
             as_file: false,
+            assistant: new.assistant,
             status: DraftStatus::Draft,
             error: None,
             token: None,
@@ -603,7 +607,7 @@ impl PrService {
         question: &str,
         on_event: impl FnMut(&crate::assistant::AssistantEvent),
     ) -> Result<crate::assistant::Thread> {
-        use crate::assistant::{diff_text, first_prompt, run, worktree, Ask, Context, Message, Thread};
+        use crate::assistant::{diff_text, draft_listing, first_prompt, follow_up_prompt, run, worktree, Ask, Context, Message, Thread};
         let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
         let existing = match thread {
             Some(id) => Some(self.cache.assistant_thread(id)?.ok_or_else(|| crate::Error::Assistant("thread not found".into()))?),
@@ -638,17 +642,22 @@ impl PrService {
                     messages: Vec::new(),
                     created_at: now(),
                     unsent_context: None,
+                    draft_refs: Vec::new(),
                 };
                 (thread, Some(context))
             }
         };
         // Follow-ups resume the CLI session, which already has the context.
         let context = context.or_else(|| thread.unsent_context.take());
+        // The drafts go along whenever they changed since the assistant last saw them (not when the
+        // turn fails: then it saw nothing).
+        let refs_before = thread.draft_refs.clone();
+        let drafts = draft_listing(&mut thread.draft_refs, &self.listed_drafts(snapshot, lo, hi)?);
         let prompt = match (&thread.session, &context) {
-            (None, Some(context)) => first_prompt(context, question),
-            _ => question.to_string(),
+            (None, Some(context)) => first_prompt(context, drafts.as_deref(), question),
+            _ => follow_up_prompt(drafts.as_deref(), question),
         };
-        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false, sign_in: false });
+        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false, sign_in: false, comments: Vec::new() });
 
         let ask = Ask { provider: thread.provider, model: thread.model.clone(), effort: thread.effort.clone(), prompt, resume: thread.session.clone() };
         let mut session = None;
@@ -666,14 +675,123 @@ impl PrService {
                 Err(_) => thread.unsent_context = context,
             }
         }
+        if result.is_err() {
+            thread.draft_refs = refs_before;
+        }
         let (text, error) = match result {
             Ok(text) => (text, false),
             Err(err) => (err.to_string(), true),
         };
         let sign_in = error && crate::assistant::needs_sign_in(thread.provider, &text);
-        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error, sign_in });
+        let comments = if error { Vec::new() } else { self.apply_review_blocks(snapshot, (lo, hi), &cwd, &mut thread.draft_refs, &text)? };
+        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error, sign_in, comments });
         self.cache.put_assistant_thread(&thread)?;
         Ok(thread)
+    }
+
+    /// The pending drafts of stack PRs `lo..=hi` the assistant can see and change.
+    fn listed_drafts(&self, snapshot: &StackSnapshot, lo: usize, hi: usize) -> Result<Vec<crate::assistant::ListedDraft>> {
+        Ok(self
+            .shown_drafts(snapshot)?
+            .into_iter()
+            .filter(|s| (lo..=hi).contains(&(s.pr_index as usize)) && s.draft.kind != DraftKind::Resolve && s.draft.status != DraftStatus::Posting)
+            .map(|s| crate::assistant::ListedDraft {
+                label: crate::assistant::draft_label(s.draft.kind, s.path.as_deref(), s.line.map(|end| (s.start_line.unwrap_or(end), end)), s.draft.pr),
+                id: s.draft.id,
+                body: s.draft.body,
+                by_assistant: s.draft.assistant,
+            })
+            .collect())
+    }
+
+    /// Carries out the review blocks of an answer: new comments become drafts, each on the PR its
+    /// lines belong to; edits and deletes apply to drafts the assistant was shown, unless the
+    /// reviewer changed them since.
+    fn apply_review_blocks(
+        &self,
+        snapshot: &StackSnapshot,
+        (lo, hi): (usize, usize),
+        cwd: &std::path::Path,
+        refs: &mut [crate::assistant::DraftRef],
+        answer: &str,
+    ) -> Result<Vec<crate::assistant::CommentOutcome>> {
+        use crate::assistant::{CommentAction, CommentOutcome, ReviewBlock};
+        let blocks = crate::assistant::review_blocks(answer);
+        let mut view = None;
+        let checkout = format!("{}/", cwd.to_string_lossy());
+        let mut outcomes = Vec::new();
+        for block in blocks {
+            let outcome = match block {
+                ReviewBlock::Comment(comment) => {
+                    let view = match &view {
+                        Some(view) => view,
+                        None => view.insert(self.range(snapshot, lo, hi)?),
+                    };
+                    // Codex sometimes names files by their absolute path in the checkout.
+                    let path = comment.path.strip_prefix(&checkout).unwrap_or(&comment.path).to_string();
+                    let (draft, error) = match crate::anchors::head_target(view, &path, comment.lines) {
+                        Ok(target) => {
+                            let new = NewDraft {
+                                pr_index: target.pr as usize,
+                                kind: if target.line.is_some() { DraftKind::Line } else { DraftKind::File },
+                                path: Some(target.path),
+                                side: target.line.map(|_| Side::Right),
+                                line: target.line,
+                                start_line: target.start_line,
+                                body: comment.body,
+                                thread_id: None,
+                                reply_to: None,
+                                assistant: true,
+                            };
+                            (Some(self.create_draft(snapshot, new)?.id), None)
+                        }
+                        Err(why) => (None, Some(why)),
+                    };
+                    CommentOutcome { action: CommentAction::Add, path: Some(path), lines: comment.lines, target: None, label: None, draft, error }
+                }
+                ReviewBlock::Edit { draft: name, body } => self.change_listed_draft(refs, CommentAction::Edit, name, Some(body))?,
+                ReviewBlock::Delete { draft: name } => self.change_listed_draft(refs, CommentAction::Delete, name, None)?,
+            };
+            outcomes.push(outcome);
+        }
+        Ok(outcomes)
+    }
+
+    /// Edits (`body`) or deletes the draft the assistant knows as `name`.
+    fn change_listed_draft(
+        &self,
+        refs: &mut [crate::assistant::DraftRef],
+        action: crate::assistant::CommentAction,
+        name: String,
+        body: Option<String>,
+    ) -> Result<crate::assistant::CommentOutcome> {
+        let mut outcome = crate::assistant::CommentOutcome { action, path: None, lines: None, target: Some(name.clone()), label: None, draft: None, error: None };
+        let Some(known) = refs.iter_mut().find(|r| r.name == name) else {
+            outcome.error = Some(format!("there's no draft {name}"));
+            return Ok(outcome);
+        };
+        let draft = self.cache.draft(&known.draft)?.filter(|d| matches!(d.status, DraftStatus::Draft | DraftStatus::Failed));
+        let Some(draft) = draft.filter(|_| known.seen.is_some()) else {
+            outcome.error = Some(format!("{name} is no longer a draft"));
+            return Ok(outcome);
+        };
+        outcome.label = Some(crate::assistant::draft_label(draft.kind, draft.path.as_deref(), draft.line.map(|end| (draft.start_line.unwrap_or(end), end)), draft.pr));
+        if known.seen.as_deref() != Some(draft.body.as_str()) {
+            outcome.error = Some(format!("the reviewer changed {name} meanwhile"));
+            return Ok(outcome);
+        }
+        match body {
+            Some(body) => {
+                self.update_draft(&draft.id, Some(body.clone()), None)?;
+                known.seen = Some(body);
+            }
+            None => {
+                self.delete_draft(&draft.id)?;
+                known.seen = None;
+            }
+        }
+        outcome.draft = Some(draft.id);
+        Ok(outcome)
     }
 
     // ---------- progress ----------

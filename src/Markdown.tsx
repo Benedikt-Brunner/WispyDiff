@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { marked } from "marked";
-import { openUrl } from "./api";
+import { Marked } from "marked";
+import { openUrl, type CommentOutcome } from "./api";
 
 /** A reference to code in an assistant answer, e.g. `src/app.ts:42-50`. */
 export interface CodeRef {
@@ -17,12 +17,13 @@ export interface CodeRefs {
 
 /** Rendered HTML (GitHub's `bodyHTML`, or Markdown rendered here); links open in the browser,
  * file references (with `refs`) in the app. */
-export function Html({ html, className = "card-body", refs }: { html: string; className?: string; refs?: CodeRefs }) {
+export function Html({ html, className = "card-body", refs, comments }: { html: string; className?: string; refs?: CodeRefs; comments?: CommentOutcome[] }) {
   const safe = useMemo(() => {
     const doc = sanitize(html);
     if (refs) linkRefs(doc, refs.resolve);
+    if (comments) markComments(doc, comments);
     return doc.body.innerHTML;
-  }, [html, refs]);
+  }, [html, refs, comments]);
   return (
     <div
       className={`${className} markdown`}
@@ -40,10 +41,53 @@ export function Html({ html, className = "card-body", refs }: { html: string; cl
   );
 }
 
-/** Markdown (GitHub-flavored, as the assistant CLIs write it). */
-export function Markdown({ text, className, refs }: { text: string; className?: string; refs?: CodeRefs }) {
-  const html = useMemo(() => marked.parse(text, { gfm: true, breaks: false, async: false }), [text]);
-  return <Html html={html} className={className} refs={refs} />;
+/** Markdown (GitHub-flavored, as the assistant CLIs write it). Review comments the assistant
+ * wrote (```` ```review-comment path:lines ```` blocks) show as comment cards; `comments` says
+ * what became of each. `breaks`: line breaks are kept, as GitHub does in comments. */
+export function Markdown({ text, className, refs, comments, breaks = false }: { text: string; className?: string; refs?: CodeRefs; comments?: CommentOutcome[]; breaks?: boolean }) {
+  const html = useMemo(() => markdown.parse(text, { async: false, breaks }), [text, breaks]);
+  return <Html html={html} className={className} refs={refs} comments={comments} />;
+}
+
+const markdown: Marked = new Marked({
+  gfm: true,
+  breaks: false,
+  renderer: {
+    code({ text, lang }) {
+      if (/^suggestion\b/.test(lang ?? "")) {
+        return `<div class="suggestion"><div class="suggestion-head">Suggested change</div><pre><code>${escapeHtml(text)}\n</code></pre></div>`;
+      }
+      const block = /^review-comment(?:-(edit|delete))?\s+(\S+)/.exec(lang ?? "");
+      if (!block) return false;
+      const [, change, target] = block;
+      // A new comment's place links to the diff; an edit or delete names the draft by ref.
+      const what = change
+        ? `<span class="assistant-comment-action">${change === "edit" ? "Edit" : "Delete"}</span><span class="assistant-comment-ref">${escapeHtml(target)}</span>`
+        : `<code>${escapeHtml(target)}</code>`;
+      const head = `<div class="assistant-comment-head">${what}<span class="assistant-comment-status"></span></div>`;
+      return `<div class="assistant-comment">${head}${markdown.parse(text, { async: false })}</div>`;
+    },
+  },
+});
+
+function escapeHtml(text: string) {
+  return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+}
+
+const DONE = { add: ["✓ draft added", "not added"], edit: ["✓ updated", "not updated"], delete: ["✓ deleted", "not deleted"] };
+
+/** Says on each comment card what became of it. */
+function markComments(doc: Document, comments: CommentOutcome[]) {
+  doc.querySelectorAll(".assistant-comment").forEach((card, i) => {
+    const comment = comments[i];
+    const status = card.querySelector(".assistant-comment-status");
+    if (!comment || !status) return;
+    const [done, failed] = DONE[comment.action ?? "add"];
+    card.classList.add(comment.error ? "failed" : "done");
+    status.textContent = comment.error ? `${failed}: ${comment.error}` : done;
+    const ref = card.querySelector(".assistant-comment-ref");
+    if (ref && comment.label) ref.textContent = `${comment.target} · ${comment.label}`;
+  });
 }
 
 /** Makes sure nothing in the HTML can run here. */

@@ -136,6 +136,20 @@ export interface AssistantMessage {
   error: boolean;
   /** The failure was the CLI's sign-in (expired or missing). */
   signIn: boolean;
+  /** The review comments in an answer, in order: the draft each became, or why it didn't. */
+  comments?: CommentOutcome[];
+}
+
+/** What became of a review block in an answer (a new comment, or an edit/delete of a draft by ref). */
+export interface CommentOutcome {
+  action?: "add" | "edit" | "delete";
+  path: string | null;
+  lines: [number, number] | null;
+  /** The ref of an edited/deleted draft ("d3"), and where that draft is. */
+  target?: string | null;
+  label?: string | null;
+  draft: string | null;
+  error: string | null;
 }
 
 export interface AssistantThread {

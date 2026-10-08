@@ -151,3 +151,37 @@ pub fn locate_new_line(view: &DiffView, file: usize, line: u32) -> Option<Locati
         .flatten();
     Some(Location { file: file as u32, unified: unified.map(|u| u as u32), split })
 }
+/// Where a comment on head lines of a file in a view goes (a range whose top PR is `top`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadTarget {
+    /// Stack index of the PR, and the file's path there.
+    pub pr: u8,
+    pub path: String,
+    /// The lines in that PR's diff (RIGHT side); `None` for a comment on the whole file.
+    pub line: Option<u32>,
+    pub start_line: Option<u32>,
+}
+
+/// Where a comment on head lines `start..=end` of `path` goes (`None`: the whole file), as the
+/// diff's gutter routes it: an added line to the PR that last touched it, at its line there;
+/// any other line to the highest PR that touched the file (its numbers there are the head's).
+/// A range whose ends belong to different PRs is cut to its end line. `Err` says why it can't go.
+pub fn head_target(view: &DiffView, path: &str, lines: Option<(u32, u32)>) -> std::result::Result<HeadTarget, String> {
+    let index = view.summary.files.iter().position(|f| f.path == path).ok_or_else(|| format!("{path} isn't changed in this range"))?;
+    let file = &view.summary.files[index];
+    let owner = *file.prs.iter().max().ok_or_else(|| format!("{path} isn't changed in this range"))?;
+    let path_in = |pr: u8| file.pr_paths.iter().find(|(p, _)| *p == pr).map_or_else(|| file.path.clone(), |(_, p)| p.clone());
+    let Some((start, end)) = lines else {
+        return Ok(HeadTarget { pr: owner, path: path_in(owner), line: None, start_line: None });
+    };
+    let rows = file_slice(view, index);
+    let at = |line: u32| -> Option<(u8, u32)> {
+        match rows.iter().find(|r| r.n == Some(line) && matches!(r.k, row_kind::ADDED | row_kind::CONTEXT)) {
+            Some(r) if r.k == row_kind::ADDED => Some((r.a?, r.l?)),
+            _ => (line >= 1 && line <= file.new_lines).then_some((owner, line)),
+        }
+    };
+    let (pr, line) = at(end).ok_or_else(|| format!("{path} has no line {end} at the head"))?;
+    let start_line = (start < end).then(|| at(start)).flatten().filter(|(p, l)| *p == pr && *l < line).map(|(_, l)| l);
+    Ok(HeadTarget { pr, path: path_in(pr), line: Some(line), start_line })
+}

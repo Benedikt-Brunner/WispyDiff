@@ -302,14 +302,26 @@ pub struct Selection {
     pub head_end: Option<u32>,
 }
 
-/// The first prompt of a thread: the review context, then the question. Follow-ups resume the
-/// CLI session and send just the question.
-pub fn first_prompt(context: &Context, question: &str) -> String {
+/// The first prompt of a thread: the review context, the review's drafts (see [`draft_listing`]),
+/// then the question. Follow-ups resume the CLI session and send just the question (and the
+/// drafts when they changed).
+pub fn first_prompt(context: &Context, drafts: Option<&str>, question: &str) -> String {
     let mut prompt = String::from(
         "You are helping review a GitHub pull request stack. The current directory is a read-only \
          checkout of the head of the PRs under review; read any file you need, but don't try to change anything. \
          When you mention code, write its repo-relative path and line numbers in that checkout in inline code, \
-         like `src/app.ts:42` or `src/app.ts:42-50`: the reviewer clicks them to jump there in the diff.\n\n",
+         like `src/app.ts:42` or `src/app.ts:42-50`: the reviewer clicks them to jump there in the diff.\n\n\
+         When the reviewer asks you to write review comments, write each one as a fenced block whose info \
+         string is `review-comment` and the commented lines in that checkout, holding the comment (GitHub Markdown); \
+         each block is added to the review as a draft comment:\n\
+         ````review-comment src/app.ts:42-45\n\
+         This retries without any backoff.\n\
+         ````\n\
+         Use `review-comment src/app.ts` for a comment on the whole file. Only comment on files changed in the diff, \
+         on lines of the checkout (not removed ones). Four backticks let a comment hold a ```suggestion block, which \
+         replaces exactly the commented lines. To change a draft comment listed below, write a \
+         ````review-comment-edit d1```` block holding its complete new text; to delete one, an empty \
+         ```review-comment-delete d1``` block. Don't write these blocks otherwise.\n\n",
     );
     prompt.push_str(&format!("Under review: {}\n", context.range_label));
     for title in &context.titles {
@@ -337,8 +349,90 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
             prompt.push_str(&format!("- {path}\n"));
         }
     }
-    prompt.push_str(&format!("\nThe diff under review:\n```diff\n{}\n```\n\nQuestion: {question}\n", context.diff));
+    prompt.push_str(&format!("\nThe diff under review:\n```diff\n{}\n```\n\n", context.diff));
+    if let Some(drafts) = drafts {
+        prompt.push_str(drafts);
+        prompt.push('\n');
+    }
+    prompt.push_str(&format!("Question: {question}\n"));
     prompt
+}
+
+/// A follow-up's prompt: the question, after the review's drafts when they changed.
+pub fn follow_up_prompt(drafts: Option<&str>, question: &str) -> String {
+    match drafts {
+        Some(drafts) => format!("{drafts}\nQuestion: {question}\n"),
+        None => question.to_string(),
+    }
+}
+
+/// A pending draft as the assistant is shown it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedDraft {
+    pub id: String,
+    /// Where it is, e.g. "src/app.ts L42–45 in #12".
+    pub label: String,
+    pub body: String,
+    pub by_assistant: bool,
+}
+
+/// The review's drafts by the refs a thread's assistant knows them by ("d1", ...).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftRef {
+    pub name: String,
+    pub draft: String,
+    /// Its text in the last listing the assistant got; `None` when that listing didn't have it.
+    pub seen: Option<String>,
+}
+
+/// The drafts section of a prompt, when `drafts` differ from what the thread's assistant last
+/// saw; records what it's shown (each draft gets a ref the first time it's listed).
+pub fn draft_listing(refs: &mut Vec<DraftRef>, drafts: &[ListedDraft]) -> Option<String> {
+    let seen = refs.iter().filter(|r| r.seen.is_some()).count();
+    let unchanged = seen == drafts.len()
+        && drafts.iter().all(|d| refs.iter().any(|r| r.draft == d.id && r.seen.as_deref() == Some(d.body.as_str())));
+    if unchanged {
+        return None;
+    }
+    refs.iter_mut().for_each(|r| r.seen = None);
+    if drafts.is_empty() {
+        return Some("The review has no draft comments now.\n".into());
+    }
+    let mut text = String::from("The review's draft comments (not posted yet), by ref:\n");
+    for draft in drafts {
+        let name = match refs.iter_mut().find(|r| r.draft == draft.id) {
+            Some(known) => {
+                known.seen = Some(draft.body.clone());
+                known.name.clone()
+            }
+            None => {
+                let name = format!("d{}", refs.len() + 1);
+                refs.push(DraftRef { name: name.clone(), draft: draft.id.clone(), seen: Some(draft.body.clone()) });
+                name
+            }
+        };
+        let author = if draft.by_assistant { "you" } else { "the reviewer" };
+        text.push_str(&format!("\n[{name}] {} — by {author}:\n", draft.label));
+        for line in draft.body.lines() {
+            text.push_str(&format!("> {line}\n"));
+        }
+    }
+    Some(text)
+}
+
+/// Where a draft is, for the assistant and the reviewer: "src/app.ts L42–45 in #12".
+pub fn draft_label(kind: crate::drafts::DraftKind, path: Option<&str>, lines: Option<(u32, u32)>, pr: u64) -> String {
+    use crate::drafts::DraftKind;
+    let path = path.unwrap_or("?");
+    match (kind, lines) {
+        (DraftKind::Summary, _) => format!("the review summary of #{pr}"),
+        (DraftKind::Reply, _) => format!("a reply in a thread on {path} in #{pr}"),
+        (DraftKind::File, _) => format!("{path} (whole file) in #{pr}"),
+        (_, Some((start, end))) if start < end => format!("{path} L{start}–{end} in #{pr}"),
+        (_, Some((_, end))) => format!("{path} L{end} in #{pr}"),
+        (_, None) => format!("{path} (outdated lines) in #{pr}"),
+    }
 }
 
 /// The combined diff of a range for the prompt without the `hidden` paths, cut at `limit` bytes.
@@ -371,6 +465,118 @@ pub fn diff_text(git: &crate::git::Git, from: &str, to: &str, hidden: &[String],
     Ok(text)
 }
 
+/// A review comment the assistant wrote into an answer: a fenced block with the info string
+/// `review-comment path:lines` (see [`first_prompt`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedComment {
+    pub path: String,
+    /// Head lines (the checkout's); `None` for a comment on the whole file.
+    pub lines: Option<(u32, u32)>,
+    pub body: String,
+}
+
+/// What the assistant asks to do to the review, in its answer's fenced blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewBlock {
+    /// `review-comment path:lines`: a new comment.
+    Comment(ProposedComment),
+    /// `review-comment-edit d3`: a draft's complete new text.
+    Edit { draft: String, body: String },
+    /// `review-comment-delete d3`.
+    Delete { draft: String },
+}
+
+/// The `review-comment…` blocks of an answer, in order. Other fenced blocks are skipped whole, so
+/// one quoted inside them doesn't count.
+pub fn review_blocks(answer: &str) -> Vec<ReviewBlock> {
+    let mut blocks = Vec::new();
+    let mut lines = answer.lines();
+    while let Some(line) = lines.next() {
+        let Some((fence, info)) = fence_open(line) else { continue };
+        let mut body = Vec::new();
+        for line in lines.by_ref() {
+            if closes(line, fence) {
+                break;
+            }
+            body.push(line);
+        }
+        let body = body.join("\n").trim().to_string();
+        let Some(rest) = info.strip_prefix("review-comment") else { continue };
+        let reference = |rest: &str| rest.starts_with(char::is_whitespace).then(|| rest.split_whitespace().next()).flatten().map(str::to_string);
+        if let Some(draft) = rest.strip_prefix("-edit").and_then(reference) {
+            blocks.push(ReviewBlock::Edit { draft, body });
+        } else if let Some(draft) = rest.strip_prefix("-delete").and_then(reference) {
+            blocks.push(ReviewBlock::Delete { draft });
+        } else if let Some((path, lines)) = rest.starts_with(char::is_whitespace).then(|| comment_target(rest.trim())).flatten() {
+            blocks.push(ReviewBlock::Comment(ProposedComment { path, lines, body }));
+        }
+    }
+    blocks
+}
+
+/// An opening code fence (three or more backticks or tildes, up to three spaces in): the fence
+/// and the info string.
+fn fence_open(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start_matches(' ');
+    let mark = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = trimmed.len() - trimmed.trim_start_matches(mark).len();
+    let info = trimmed[len..].trim();
+    (line.len() - trimmed.len() <= 3 && len >= 3 && !(mark == '`' && info.contains('`'))).then(|| (&trimmed[..len], info))
+}
+
+fn closes(line: &str, fence: &str) -> bool {
+    let trimmed = line.trim();
+    let mark = &fence[..1];
+    trimmed.len() >= fence.len() && trimmed.trim_start_matches(mark).is_empty()
+}
+
+/// `path`, `path:42`, `path:42-50` (`L42`, `#L42-L50`, an en dash too).
+fn comment_target(target: &str) -> Option<(String, Option<(u32, u32)>)> {
+    let target = target.trim_matches('`');
+    let lines = |spec: &str| -> Option<(u32, u32)> {
+        let spec = spec.replace('L', "");
+        let (start, end) = spec.split_once(['-', '–']).unwrap_or((&spec, &spec));
+        let (start, end) = (start.trim().parse().ok()?, end.trim().parse().ok()?);
+        (start >= 1 && start <= end).then_some((start, end))
+    };
+    let split = target.rsplit_once(':').or_else(|| target.rsplit_once("#L").map(|(p, l)| (p, l)));
+    let (path, lines) = match split.and_then(|(path, spec)| Some((path, lines(spec)?))) {
+        Some((path, lines)) => (path, Some(lines)),
+        None => (target, None),
+    };
+    let path = path.trim().trim_start_matches("./");
+    (!path.is_empty() && !path.contains(char::is_whitespace)).then(|| (path.to_string(), lines))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommentAction {
+    #[default]
+    Add,
+    Edit,
+    Delete,
+}
+
+/// What became of a [`ReviewBlock`]: the draft it added or changed, or why it couldn't.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentOutcome {
+    #[serde(default)]
+    pub action: CommentAction,
+    /// A new comment's place, as written.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub lines: Option<(u32, u32)>,
+    /// An edited or deleted draft's ref, and where that draft is.
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub draft: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -384,6 +590,9 @@ pub struct Message {
     /// Set on a failed turn caused by the CLI's sign-in (offers to sign in again).
     #[serde(default)]
     pub sign_in: bool,
+    /// The review comment blocks in an answer, in order, and what became of each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<CommentOutcome>,
 }
 
 /// A conversation, stored locally per repo.
@@ -405,6 +614,9 @@ pub struct Thread {
     /// The review context while no turn has succeeded yet, so asking again still sends it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsent_context: Option<Context>,
+    /// The drafts the assistant was shown, by ref (it edits and deletes them by ref).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub draft_refs: Vec<DraftRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

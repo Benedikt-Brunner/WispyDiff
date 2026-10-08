@@ -16,6 +16,7 @@ import {
   deleteAssistantThread,
   listAssistantThreads,
   type AssistantThread,
+  type CommentOutcome,
   type GrepHit,
   type Provider,
   type Usages,
@@ -770,12 +771,15 @@ export function DiffViewer(props: Props) {
       })
         .then((thread) => {
           setAssistantThreads((list) => [...list.filter((t) => t.id !== thread.id), thread]);
-          setAssistant((a) => a && { ...a, activeId: thread.id });
+          const comments = thread.messages[thread.messages.length - 1]?.comments ?? [];
+          if (comments.some((c) => !c.error)) onDraftsChanged();
+          const note = comments.length ? commentsNote(comments) : null;
+          setAssistant((a) => a && { ...a, activeId: thread.id, note });
         })
         .catch((e) => setAssistant((a) => a && { ...a, note: String(e) }))
         .finally(() => setPendingAnswer(null));
     },
-    [assistant, stackId, lo, hi, summary, filtered],
+    [assistant, stackId, lo, hi, summary, filtered, onDraftsChanged],
   );
 
   const answerToDraft = useCallback(
@@ -784,8 +788,8 @@ export function DiffViewer(props: Props) {
       await createDraft(
         stackId,
         anchor
-          ? { prIndex: anchor.prIndex, kind: "line", path: anchor.path, side: anchor.side, line: anchor.endLine, startLine: anchor.startLine, body: text, threadId: null, replyTo: null }
-          : { prIndex: hi, kind: "summary", path: null, side: null, line: null, startLine: null, body: text, threadId: null, replyTo: null },
+          ? { prIndex: anchor.prIndex, kind: "line", path: anchor.path, side: anchor.side, line: anchor.endLine, startLine: anchor.startLine, body: text, threadId: null, replyTo: null, assistant: true }
+          : { prIndex: hi, kind: "summary", path: null, side: null, line: null, startLine: null, body: text, threadId: null, replyTo: null, assistant: true },
       );
       onDraftsChanged();
       setAssistant((a) => a && { ...a, note: anchor ? "Saved as a draft comment on those lines" : `Saved as the review summary draft for #${prs[hi].number}` });
@@ -1990,6 +1994,18 @@ interface Selection {
   mode: Mode;
   from: number;
   to: number;
+}
+
+/** "Added 2 draft comments · updated 1 · 1 failed" */
+function commentsNote(comments: CommentOutcome[]) {
+  const count = (action: string) => comments.filter((c) => !c.error && (c.action ?? "add") === action).length;
+  const parts = ([["Added", "add"], ["Updated", "edit"], ["Deleted", "delete"]] as const)
+    .map(([verb, action]) => [verb, count(action)] as const)
+    .filter(([, n]) => n > 0)
+    .map(([verb, n], i) => (i === 0 ? `${verb} ${n} draft comment${n === 1 ? "" : "s"}` : `${verb.toLowerCase()} ${n}`));
+  const failed = comments.filter((c) => c.error).length;
+  if (failed) parts.push(`${failed} failed`);
+  return parts.join(" · ");
 }
 
 interface ComposerState {

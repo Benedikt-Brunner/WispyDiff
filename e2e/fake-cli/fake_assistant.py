@@ -16,11 +16,24 @@ def main(provider):
 
     questions = [l[len("Question: "):] for l in prompt.splitlines() if l.startswith("Question: ")]
     question = questions[-1] if questions else prompt.strip()
+    if question.startswith("wait:"):
+        # Holds the answer until the test creates `<log>.go`, so it can change things meanwhile.
+        go = os.environ["WISPY_FAKE_LOG"] + ".go"
+        while not os.path.exists(go):
+            time.sleep(0.05)
+        os.remove(go)
+        question = question[len("wait:"):]
     resumed = "--resume" in args if provider == "claude" else "resume" in args
     entries = sorted(e for e in os.listdir(cwd) if not e.startswith("."))
     answer = f"{'(follow-up) ' if resumed else ''}About “{question}”: I can see {', '.join(entries[:3])} in the **checkout**."
     if question == "refs":
         answer = references(prompt, cwd)
+    if question == "comments":
+        answer = comments(prompt)
+    if question == "revise":
+        answer = revise(prompt)
+    if question.startswith("say:"):
+        answer = question[len("say:"):].replace("\\n", "\n")
 
     def emit(event):
         print(json.dumps(event), flush=True)
@@ -45,6 +58,63 @@ def main(provider):
             sys.exit(1)
         emit({"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": answer}})
         emit({"type": "turn.completed", "usage": {}})
+
+
+def comments(prompt):
+    """Review comments the way the prompt asks for them: on two changed lines of the first file
+    in the diff (with a suggestion), on that whole file, and on a file outside the diff."""
+    path, start = first_change(prompt)
+    return "\n".join([
+        "Two things:",
+        "",
+        f"````review-comment {path}:{start}-{start + 1}",
+        "This could be **simpler**:",
+        "```suggestion",
+        "simpler();",
+        "```",
+        "````",
+        "",
+        f"```review-comment {path}",
+        "Needs a test.",
+        "```",
+        "",
+        "```review-comment nowhere/Missing.php:3",
+        "Lost.",
+        "```",
+    ])
+
+
+def revise(prompt):
+    """Rewrites the first draft it wrote (from the prompt's list of drafts), deletes the second,
+    and edits one that doesn't exist."""
+    mine = []
+    for i, line in enumerate(lines := prompt.splitlines()):
+        if line.startswith("[d") and line.endswith("— by you:"):
+            body = [l[2:] for l in lines[i + 1:] if l.startswith("> ")][:1]
+            mine.append((line[1:line.index("]")], body[0] if body else ""))
+    (first, body), (second, _) = mine[:2]
+    return "\n".join([
+        f"```review-comment-edit {first}",
+        f"Revised: {body}",
+        "```",
+        f"```review-comment-delete {second}",
+        "```",
+        "```review-comment-edit d99",
+        "Nothing.",
+        "```",
+    ])
+
+
+def first_change(prompt):
+    """The first file in the diff and the first head line of its first hunk with several lines."""
+    path = None
+    for line in prompt.splitlines():
+        if line.startswith("diff --git a/"):
+            path = line.split(" b/", 1)[1]
+        elif line.startswith("@@") and path:
+            new = line.split("+", 1)[1].split(" ", 1)[0].split(",")
+            if len(new) > 1 and int(new[1]) > 1:
+                return path, int(new[0])
 
 
 def references(prompt, cwd):

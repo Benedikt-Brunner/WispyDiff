@@ -57,6 +57,7 @@ fn line_draft(fx: &Fixture, line: u32, start: Option<u32>, body: &str) -> Draft 
         thread_id: None,
         reply_to: None,
         as_file: false,
+        assistant: false,
         status: DraftStatus::Draft,
         error: None,
         token: None,

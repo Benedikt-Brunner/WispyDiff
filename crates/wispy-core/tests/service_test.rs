@@ -172,6 +172,7 @@ async fn drafts_follow_their_lines_to_the_current_head() {
                 body: "why 50?".into(),
                 thread_id: None,
                 reply_to: None,
+                assistant: false,
             },
         )
         .unwrap();

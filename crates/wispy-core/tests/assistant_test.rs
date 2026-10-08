@@ -140,6 +140,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
     assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"), "the checkout's numbers are only added when they differ");
     assert!(prompt.contains("like `src/app.ts:42`"), "asks for clickable references");
+    assert!(prompt.contains("````review-comment src/app.ts:42-45\n"), "says how to write review comments");
     assert!(prompt.contains("lock-two") && prompt.contains("new-lock-line") && !prompt.contains("hid these"), "nothing hidden: {prompt}");
     let args: Vec<&str> = calls[0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert!(args.windows(2).any(|w| w == ["--model", "opus"]));
@@ -200,7 +201,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
 fn names_the_checkouts_line_numbers_when_a_higher_pr_moved_the_selection() {
     let selection = Selection { path: "src/Order.php".into(), pr_label: "#2".into(), start_line: 10, end_line: 12, text: "x".into(), head_start: Some(14), head_end: Some(16) };
     let context = Context { range_label: "acme/shop #2–#3".into(), titles: vec![], diff: String::new(), selection: Some(selection), hidden: vec![] };
-    assert!(first_prompt(&context, "Why?").contains("lines of src/Order.php (in #2, lines 10–12; lines 14–16 in the checkout)"));
+    assert!(first_prompt(&context, None, "Why?").contains("lines of src/Order.php (in #2, lines 10–12; lines 14–16 in the checkout)"));
 }
 
 #[test]
