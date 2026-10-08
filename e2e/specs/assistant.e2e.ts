@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { clickButton, count, exists, openViaPalette, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, count, exists, openViaPalette, setTextarea, text, waitFor } from "./helpers";
 
 /** Selects the code of the `from`-th to `to`-th unified change rows, like dragging the mouse. */
 const selectRows = (from: number, to: number) =>
@@ -107,6 +107,14 @@ describe("assistant", () => {
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
     await browser.execute(() => window.getSelection()?.removeAllRanges());
+    // Files hidden by the file filter are named in the prompt, without their changes.
+    const files = await browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")!));
+    const ext = files.find((f) => !f.endsWith(".php"))!.replace(/^.*(?=\.)/, "");
+    const hidden = files.filter((f) => f.endsWith(ext));
+    await click('[data-testid="file-filter"]');
+    await click(`[data-testid="file-filter-ext${ext}"]`);
+    await browser.keys("Escape");
+    await waitFor(async () => (await text('[data-testid="file-filter"]'))?.trim() === `${hidden.length} hidden`);
     await browser.keys("a");
     await waitFor(() => exists('[data-testid="assistant-panel"]'));
     expect(await text('[data-testid="assistant-context"]')).toBe("#2");
@@ -117,6 +125,14 @@ describe("assistant", () => {
     expect(call.provider).toBe("codex");
     expect(call.args).toContain('sandbox_mode="read-only"');
     expect(call.prompt).toContain("Under review: wispy/fixture #2");
+    for (const path of hidden) {
+      expect(call.prompt).toContain(`\n- ${path}\n`);
+      expect(call.prompt).not.toContain(`diff --git a/${path}`);
+    }
+    expect(call.prompt).toContain("diff --git a/src/Module0/Service0.php");
+    await click('[data-testid="file-filter"]');
+    await click('[data-testid="file-filter-reset"]');
+    await browser.keys("Escape");
 
     await ask("fail");
     await waitFor(async () => (await text(".assistant-message.error"))?.includes("model not available (fake)") ?? false, 60_000);

@@ -242,6 +242,78 @@ describe("keyboard", () => {
     expect(await fileNames()).toEqual(files);
   });
 
+  it("filters files by extension, remembered per PR", async () => {
+    const ext = (path: string) => path.slice(path.lastIndexOf("."));
+    const exts = [...new Set(files.map(ext))];
+    const hidden = exts[0];
+    const menuItems = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll('[data-testid="file-filter-menu"] [role="menuitemcheckbox"]')].map((b) => b.getAttribute("data-testid")!),
+      );
+    await click('[data-testid="file-filter"]');
+    await waitFor(() => exists('[data-testid="file-filter-menu"]'));
+    expect(await menuItems()).toEqual([...exts.sort().map((e) => `file-filter-ext${e}`)]);
+
+    // Unticking an extension leaves its files out of the list and the diff.
+    await click(`[data-testid="file-filter-ext${hidden}"]`);
+    const kept = files.filter((f) => ext(f) !== hidden);
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept));
+    expect((await text('[data-testid="file-filter"]'))?.trim()).toBe(`${files.length - kept.length} hidden`);
+    expect(await browser.execute((e: string) => [...document.querySelectorAll(".row-file")].some((r) => r.getAttribute("data-file")!.endsWith(e)), hidden)).toBe(false);
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="file-filter-menu"]')));
+
+    // Another PR has its own filter; coming back brings this one back.
+    await browser.keys("Tab");
+    await waitFor(async () => JSON.stringify(await selectedChips()) === "[3]");
+    await waitFor(async () => (await text('[data-testid="file-filter"]'))?.trim() === "");
+    await pressShifted("Tab");
+    await waitFor(async () => JSON.stringify(await selectedChips()) === "[2]");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept));
+
+    // Everything filtered out says so; "Show all files" clears the filter.
+    await click('[data-testid="file-filter"]');
+    for (const e of exts.filter((e) => e !== hidden)) await click(`[data-testid="file-filter-ext${e}"]`);
+    await waitFor(() => exists('[data-testid="all-filtered"]'));
+    expect(await fileNames()).toEqual([]);
+    await click('[data-testid="all-filtered"] button');
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(files));
+    await browser.keys("Escape");
+  });
+
+  it("filters with the keyboard: x hides the current file's extension, F switches the filter off, f opens it", async () => {
+    const ext = (path: string) => path.slice(path.lastIndexOf("."));
+    const buttonText = async () => (await text('[data-testid="file-filter"]'))?.trim();
+    await toTop();
+    await waitFor(async () => (await activeFile()) === files[0]);
+
+    // x: the current file's extension goes, and the next file still shown becomes current.
+    const kept = files.filter((f) => ext(f) !== ext(files[0]));
+    await browser.keys("x");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept) && (await activeFile()) === kept[0]);
+
+    // F switches it off and on again, keeping the extensions.
+    await browser.keys("F");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(files));
+    expect(await buttonText()).toBe("filter off");
+    await browser.keys("F");
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept));
+
+    // f opens the menu; ↓ and Enter toggle the second extension.
+    const exts = [...new Set(files.map(ext))].sort();
+    const checked = (e: string) => browser.execute((id: string) => document.querySelector(`[data-testid="${id}"]`)?.getAttribute("aria-checked"), `file-filter-ext${e}`);
+    const before = await checked(exts[1]);
+    await browser.keys("f");
+    await waitFor(() => exists('[data-testid="file-filter-menu"]'));
+    await browser.keys("ArrowDown");
+    await browser.keys("Enter");
+    await waitFor(async () => (await checked(exts[1])) !== before);
+    await click('[data-testid="file-filter-reset"]');
+    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(files));
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="file-filter-menu"]')));
+  });
+
   it("lists the keyboard shortcuts with ?", async () => {
     await browser.keys("?");
     await waitFor(() => exists('[data-testid="shortcuts"]'));

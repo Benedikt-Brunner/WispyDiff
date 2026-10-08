@@ -272,7 +272,8 @@
 :root[data-theme="eink"] .sheet,
 :root[data-theme="eink"] .toast,
 :root[data-theme="eink"] .file-view,
-:root[data-theme="eink"] .card {
+:root[data-theme="eink"] .card,
+:root[data-theme="eink"] .file-filter-menu {
   box-shadow: none;
   border: 1px solid #000000;
 }

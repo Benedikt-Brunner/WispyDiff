@@ -152,6 +152,8 @@ export interface NewThread {
   effort: string | null;
   selection: AssistantSelection | null;
   anchor: ThreadAnchor | null;
+  /** Paths hidden by the file filter: named in the prompt, left out of its diff. */
+  hidden: string[];
 }
 
 export type AssistantEvent =
