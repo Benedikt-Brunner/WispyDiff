@@ -368,11 +368,15 @@ export function DiffViewer(props: Props) {
   const columns = useMemo(() => {
     if (!wrap || !charWidth || !viewportWidth) return null;
     const fit = (px: number) => Math.max(20, Math.floor(px / charWidth));
+    // Room on the right for unified PR tags (see .pr-tag: 10px text, 6px padding, 8px from the edge), 8px clear of the code.
+    const longest = Math.max(...prs.map((pr) => String(pr.number).length));
+    const tagRoom = multiPr ? Math.ceil(((longest + 1) * charWidth * 10) / 12) + 12 + 8 : 0;
     return {
-      unified: fit(viewportWidth - (gutterChars * 2 * charWidth + 44) - WRAP_PAD_UNIFIED),
-      split: fit(viewportWidth / 2 - 1 - (gutterChars * charWidth + 30) - WRAP_PAD_SPLIT),
+      unified: fit(viewportWidth - (gutterChars * 2 * charWidth + 44) - WRAP_PAD - tagRoom),
+      split: fit(viewportWidth / 2 - 1 - (gutterChars * charWidth + 30) - WRAP_PAD),
+      tagRoom,
     };
-  }, [wrap, charWidth, viewportWidth, gutterChars]);
+  }, [wrap, charWidth, viewportWidth, gutterChars, multiPr, prs]);
   /** Widths of the rows wider than `min` columns, per `file:mode`, fetched as files need them. */
   const [rowWidths, setRowWidths] = useState<{ viewId: string; files: Map<string, { min: number; rows: [number, number][] }> }>({ viewId, files: new Map() });
   const widths = rowWidths.viewId === viewId ? rowWidths.files : null;
@@ -1305,6 +1309,7 @@ export function DiffViewer(props: Props) {
                 // Wrapped: no sideways scrolling, and each line's code is exactly this many columns.
                 "--wrap-unified": columns?.unified,
                 "--wrap-split": columns?.split,
+                "--wrap-tag-room": columns && `${columns.tagRoom}px`,
                 minWidth: columns ? undefined : `calc(${summary.max_line_chars + 4}ch + ${gutterChars * 2}ch + 48px)`,
               } as React.CSSProperties
             }
@@ -1370,9 +1375,8 @@ function wordAt(x: number, y: number): string | null {
 const at = (y: number, height = ROW_HEIGHT): React.CSSProperties =>
   height === ROW_HEIGHT ? { transform: `translateY(${y}px)` } : { transform: `translateY(${y}px)`, height };
 const NO_ROWS: WrappedRows = [];
-/** Horizontal padding of a wrapped line's code (unified leaves room for the PR tag). */
-const WRAP_PAD_UNIFIED = 8 + 48;
-const WRAP_PAD_SPLIT = 8 + 24;
+/** Horizontal padding of a wrapped line's code. */
+const WRAP_PAD = 8 + 8;
 
 interface FileHeaderProps {
   y: number;
