@@ -155,17 +155,11 @@ describe("reading modes and noise", () => {
         };
       });
       expect(drawn).toEqual({ sideways: 0, clipped: 0 });
-      // Unified: one PR, so no PR tags to make room for; wrapped code runs up to the pane's edge.
+      // Unified: one PR, so no PR tags to make room for; wrapped code (every line's code is the
+      // same width, wrapping or not) runs up to the pane's edge.
       await browser.keys("S");
       await waitFor(async () => (await count('.row-file[data-mode="split"]')) === 0);
-      await waitFor(() =>
-        browser.execute(() => {
-          if ([...document.querySelectorAll<HTMLElement>(".row-add, .row-del, .row-ctx")].some((r) => r.offsetHeight > 20)) return true;
-          const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
-          el.scrollTop += el.clientHeight;
-          return false;
-        }),
-      );
+      await waitFor(async () => (await count(".row-add .code, .row-del .code, .row-ctx .code")) > 0);
       const unified = await browser.execute(() => {
         const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
         const probe = document.querySelector<HTMLElement>(".char-probe")!;
