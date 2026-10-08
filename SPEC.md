@@ -49,7 +49,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - **New commits on the open PR**: opening a cached stack shows it at once and checks GitHub; each background refresh (launch, every 5 minutes, window focus) checks the open stack again. If any PR in it moved, a "New commits pushed · load latest" button appears in the title bar; nothing changes under the reader until it is clicked (drafts are re-mapped, `d` shows what's new).
 
 ## Progress tracking
-- **Viewed marks** per file (`v`), keyed by the file's diff content (paths + changed/context text, not line numbers or SHAs), so they survive rebases that don't change the file. Viewed files collapse and get a ✓ in the file list.
+- **Viewed marks** per file (`v`), keyed by the file's diff content (paths + changed/context text, not line numbers or SHAs), so they survive rebases that don't change the file. Viewed files collapse and get a ✓ in the file list. Marking (or unmarking) a file in the changes since a checkpoint (`d`) does the same for that file in the full diff.
 - **Local checkpoints**: "Mark as reviewed" (`M`) records every PR head (and diff base) in the range, local only, never touches GitHub. Submitting a review also creates one for that PR. The header's picker lists the checkpoints covering the range.
 - **"Only changes since checkpoint"** (`d`): the checkpoint's version of the range is replayed onto the current base (`git merge-tree --merge-base`), and that tree is diffed against the current head — so changes a rebase brought in cancel out and only the author's edits remain. If replaying conflicts, a raw head-to-head diff is shown with a warning.
 

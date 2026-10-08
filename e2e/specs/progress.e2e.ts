@@ -67,6 +67,19 @@ describe("review progress", () => {
     expect(await count(".file-list li")).toBe(1);
   });
 
+  it("marking a file viewed in the changes since the checkpoint marks it in the full diff too", async () => {
+    await browser.keys("d");
+    await waitFor(async () => (await text(".pr-meta"))?.includes("changes since") ?? false, 60_000);
+    await browser.keys("v");
+    await waitFor(() => isViewedInList(path));
+    await browser.keys("d");
+    await waitFor(async () => !((await text(".pr-meta"))?.includes("changes since") ?? true));
+    expect(await isViewedInList(path)).toBe(true);
+    // Unmark again for the specs below.
+    await browser.keys("v");
+    await waitFor(async () => !(await isViewedInList(path)));
+  });
+
   it("offers new commits for the PR on screen as soon as the background refresh sees them", async () => {
     expect(await exists(".update-banner")).toBe(false);
     originGit("checkout", "--quiet", "solo");

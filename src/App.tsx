@@ -168,15 +168,21 @@ export default function App() {
   const toggleViewed = useCallback(
     (key: string, value: boolean) => {
       if (!repo) return;
+      // In "changes since checkpoint" the mark also applies to the file in the full diff.
+      const path = shown?.since && shown.summary.files.find((f) => f.content_key === key)?.path;
+      const fullKey = path ? shown?.since?.fullKeys[path] : undefined;
+      const keys = fullKey && fullKey !== key ? [key, fullKey] : [key];
       setViewedKeys((current) => {
         const next = new Set(current);
-        if (value) next.add(key);
-        else next.delete(key);
+        for (const k of keys) {
+          if (value) next.add(k);
+          else next.delete(k);
+        }
         return next;
       });
-      void setViewed(repo, key, value);
+      for (const k of keys) void setViewed(repo, k, value);
     },
-    [repo],
+    [repo, shown],
   );
 
   const updateIgnore = useCallback(
