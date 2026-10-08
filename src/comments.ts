@@ -38,6 +38,8 @@ export interface Draft {
   threadId: string | null;
   replyTo: number | null;
   asFile: boolean;
+  /** Written by the assistant. */
+  assistant: boolean;
   status: "draft" | "posting" | "posted" | "failed";
   error: string | null;
 }
@@ -61,6 +63,7 @@ export interface NewDraft {
   body: string;
   threadId: string | null;
   replyTo: number | null;
+  assistant?: boolean;
 }
 
 export interface ThreadComment {

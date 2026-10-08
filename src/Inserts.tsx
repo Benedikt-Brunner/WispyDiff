@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Html } from "./Markdown";
+import { Html, Markdown } from "./Markdown";
 import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
 import { isSubmitKey, mod, keyLabel } from "./platform";
 
@@ -135,11 +135,12 @@ export function DraftCard({ shown, label, onEdit, onDelete }: DraftCardProps) {
     <div className={`card draft${draft.status === "failed" ? " failed" : ""}`} data-draft={draft.id}>
       <div className="card-head">
         <span className="badge">Draft</span>
+        {draft.assistant && <span className="badge">by the assistant</span>}
         <span className="card-title">{label}</span>
         {outdated && <span className="badge warn">outdated — lines changed since</span>}
         {draft.status === "posting" && <span className="badge">sending…</span>}
       </div>
-      <div className="card-body">{draft.body}</div>
+      <Markdown text={draft.body} breaks />
       {draft.status === "failed" && <div className="card-error">GitHub rejected this: {draft.error}</div>}
       <div className="card-actions">
         <button className="button" onClick={() => setEditing(true)}>
@@ -245,7 +246,7 @@ export function ThreadCard({ thread, label, replies, resolving, onReply, onResol
               discard
             </button>
           </div>
-          <div className="card-body">{r.draft.body}</div>
+          <Markdown text={r.draft.body} breaks />
         </div>
       ))}
       {replying ? (

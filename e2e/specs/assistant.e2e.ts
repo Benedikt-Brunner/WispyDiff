@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { click, clickButton, count, exists, openViaPalette, setTextarea, text, waitFor } from "./helpers";
 
 /** Selects the code of the `from`-th to `to`-th unified change rows, like dragging the mouse. */
@@ -39,11 +39,17 @@ const lastAnswer = () =>
     return answers[answers.length - 1]?.textContent ?? null;
   });
 
-const fakeCalls = () =>
+const fakeLog = () =>
   readFileSync(process.env.WISPY_FAKE_LOG!, "utf8")
     .trim()
     .split("\n")
-    .map((l) => JSON.parse(l) as { provider: string; args: string[]; cwd: string; prompt: string });
+    .map((l) => JSON.parse(l));
+
+/** How the fake CLIs were run. */
+const fakeCalls = () => fakeLog().filter((l) => !("tool" in l)) as { provider: string; args: string[]; cwd: string; prompt: string }[];
+
+/** The review tools the fake CLIs called. */
+const toolCalls = () => fakeLog().filter((l) => "tool" in l) as { tool: string; arguments: Record<string, unknown>; result: string; isError: boolean }[];
 
 describe("assistant", () => {
   it("asks about selected lines with the selection as context", async () => {
@@ -60,7 +66,7 @@ describe("assistant", () => {
 
     const call = fakeCalls().at(-1)!;
     expect(call.provider).toBe("claude");
-    expect(call.args.join(" ")).toContain("--allowed-tools Read,Grep,Glob --permission-mode dontAsk");
+    expect(call.args.join(" ")).toContain("--tools Read,Grep,Glob --permission-mode bypassPermissions");
     expect(call.prompt).toContain("The question is about these lines of src/Module0/Service0.php (in #2");
     expect(call.cwd).toContain("/worktrees/wispy/fixture/");
   });
@@ -236,6 +242,83 @@ describe("assistant", () => {
     await click('[data-testid="file-filter"]');
     await click('[data-testid="file-filter-reset"]');
     await browser.keys("Escape");
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
+  });
+
+  it("adds the review comments it writes as drafts on their lines, then edits and deletes them", async () => {
+    const drafts = async () => Number((await text('[data-testid="review-button"]'))?.match(/· (\d+)/)?.[1] ?? 0);
+    const before = await drafts();
+    await browser.keys("a");
+    await waitFor(() => exists('[data-testid="assistant-panel"]'));
+    await chooseProvider("claude");
+    await ask("comments:wait");
+    // A comment becomes a draft (and a card) while the assistant is still answering.
+    await waitFor(async () => (await count('[data-testid="assistant-streaming"] .assistant-comment.done')) === 1, 60_000);
+    await waitFor(async () => (await drafts()) === before + 1);
+    expect(fakeCalls().at(-1)!.prompt).toContain("add each one with `add_draft_comment`");
+    writeFileSync(`${process.env.WISPY_FAKE_LOG}.go`, "");
+    await waitFor(async () => (await count(".assistant-message.assistant:not(.streaming) .assistant-comment.done")) === 2, 60_000);
+    expect(await text(".assistant-comment.failed .assistant-comment-status")).toBe("not added: nowhere/Missing.php isn't changed in this range");
+    expect(toolCalls().at(-1)).toMatchObject({ tool: "add_draft_comment", result: "nowhere/Missing.php isn't changed in this range", isError: true });
+    expect(await text('[data-testid="assistant-note"]')).toBe("Added 2 draft comments · 1 failed");
+    // The comment's Markdown renders in the card (its suggestion as a code block).
+    expect(await text(".assistant-comment.done strong")).toBe("simpler");
+    await waitFor(async () => (await drafts()) === before + 2);
+
+    // The cards' references jump to the drafts, which say who wrote them.
+    const openCard = (i: number) => browser.execute((n: number) => document.querySelectorAll<HTMLElement>(".assistant-comment-head a.code-ref")[n].click(), i);
+    const deleteDraft = (body: string) =>
+      browser.execute((b: string) => {
+        const card = [...document.querySelectorAll(".card.draft")].find((c) => c.querySelector(".card-body")?.textContent?.includes(b));
+        if (!card?.querySelector(".badge + .badge")?.textContent?.includes("by the assistant")) return false;
+        [...card.querySelectorAll("button")].find((button) => button.textContent === "Delete")?.click();
+        return true;
+      }, body);
+    await openCard(0);
+    // Draft bodies render as Markdown, a suggestion as the suggested lines.
+    await waitFor(async () => (await text(".card.draft .markdown strong")) === "simpler");
+    expect((await text(".card.draft .suggestion"))?.trim()).toBe("Suggested change\nsimpler();");
+
+    // A follow-up lists the drafts by ref, and edits and deletes them by ref.
+    await ask("revise");
+    await waitFor(async () => (await count(".assistant-message.assistant:last-of-type:not(.streaming) .assistant-comment:is(.done, .failed)")) === 3, 60_000);
+    expect(toolCalls().slice(-4).map((c) => c.tool)).toEqual(["list_drafts", "edit_draft", "delete_draft", "edit_draft"]);
+    const cards = await browser.execute(() =>
+      [...document.querySelectorAll(".assistant-message.assistant:last-of-type .assistant-comment-head")].map((h) => (h as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+    );
+    expect(cards[0]).toMatch(/^Edit d\d+ · src\/Module0\/Service0\.php L\d+–\d+ in #2 ✓ updated$/);
+    expect(cards[1]).toMatch(/^Delete d\d+ · src\/Module0\/Service0\.php \(whole file\) in #2 ✓ deleted$/);
+    expect(cards[2]).toBe("Edit d99 not updated: there's no draft d99");
+    expect(await text('[data-testid="assistant-note"]')).toBe("Updated 1 draft comment · deleted 1 · 1 failed");
+    await waitFor(async () => (await drafts()) === before + 1);
+    await waitFor(() => deleteDraft("Revised: This could be simpler:"));
+    await waitFor(async () => (await drafts()) === before);
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
+  });
+
+  it("shows a new conversation from its start after scrolling down a long one", async () => {
+    await browser.keys("a");
+    await waitFor(() => exists('[data-testid="assistant-panel"]'));
+    await chooseProvider("claude");
+    await ask(`say:${"A long answer.\\n\\n".repeat(150)}`);
+    await waitFor(async () => (await lastAnswer())?.includes("A long answer.") ?? false, 60_000);
+    await waitFor(() => browser.execute(() => document.querySelector(".assistant-body")!.scrollTop > 1000));
+    await browser.execute(() => {
+      const select = document.querySelector<HTMLSelectElement>('[data-testid="assistant-threads"]')!;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await ask("Short question");
+    await waitFor(async () => (await lastAnswer())?.includes("About “Short question”") ?? false, 60_000);
+    const shown = await browser.execute(() => {
+      const body = document.querySelector(".assistant-body")!.getBoundingClientRect();
+      const question = document.querySelector(".assistant-message.user")!.getBoundingClientRect();
+      return question.top >= body.top && question.bottom <= body.bottom;
+    });
+    expect(shown).toBe(true);
+    for (let i = 0; i < 2; i++) await clickButton('[data-testid="assistant-panel"]', "delete");
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
   });

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { signInAssistant, type AssistantSelection, type AssistantThread, type Provider, type ThreadAnchor } from "./api";
-import { Markdown, type CodeRefs } from "./Markdown";
+import { signInAssistant, type AssistantSelection, type AssistantThread, type CommentOutcome, type Provider, type ThreadAnchor } from "./api";
+import { CommentCards, Markdown, type CodeRefs } from "./Markdown";
 import { loadPref, savePref } from "./prefs";
 import { isSubmitKey, mod } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
@@ -15,6 +15,14 @@ const EFFORTS: Record<Provider, string[]> = {
   codex: ["", "minimal", "low", "medium", "high"],
 };
 
+/** The question being answered, the answer so far and what the assistant did to the drafts. */
+export interface PendingAnswer {
+  threadId: string | null;
+  question: string;
+  text: string;
+  comments: CommentOutcome[];
+}
+
 export interface AskContext {
   /** Set when asking about selected lines. */
   selection: AssistantSelection | null;
@@ -28,7 +36,7 @@ interface Props {
   activeId: string | null;
   context: AskContext;
   /** The answer being streamed, if any. */
-  pending: { threadId: string | null; question: string; text: string } | null;
+  pending: PendingAnswer | null;
   /** A short status line (e.g. "Saved as a draft", or an error). */
   note: string | null;
   onSelect: (id: string | null) => void;
@@ -49,12 +57,16 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
   const [question, setQuestion] = useState("");
   const [signIn, setSignIn] = useState<{ state: "waiting" | "done" | "failed"; url?: string; message?: string } | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   const active = threads.find((t) => t.id === activeId) ?? null;
 
   useEffect(() => input.current?.focus(), [activeId, context]);
   useEffect(() => setSignIn(null), [activeId]);
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [active?.messages.length, pending?.text]);
+  // Scrolled by assignment, which clamps: WebKitGTK can keep a long thread's scroll position when a
+  // short one replaces it, leaving the messages above the visible area.
+  useEffect(() => {
+    if (body.current) body.current.scrollTop = body.current.scrollHeight;
+  }, [activeId, active?.messages.length, pending?.text, pending?.comments.length]);
 
   const changeProvider = (next: Provider) => {
     setProvider(next);
@@ -106,10 +118,11 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
           close
         </button>
       </div>
-      <div className="panel-body assistant-body">
+      <div className="panel-body assistant-body" ref={body}>
         {(active?.messages ?? []).map((m, i) => (
           <div key={i} className={`assistant-message ${m.role}${m.error ? " error" : ""}`}>
             {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} /> : <div className="card-body">{m.text}</div>}
+            {m.comments?.length ? <CommentCards comments={m.comments} refs={codeRefs} /> : null}
             {m.role === "assistant" && !m.error && active && (
               <button className="link" onClick={() => onDraft(active, m.text)}>
                 turn into draft comment
@@ -155,6 +168,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
             </div>
             <div className="assistant-message assistant streaming" data-testid="assistant-streaming">
               {pending.text ? <Markdown text={pending.text} refs={codeRefs} /> : <div className="card-body">Thinking…</div>}
+              {pending.comments.length > 0 && <CommentCards comments={pending.comments} refs={codeRefs} />}
             </div>
           </>
         )}
@@ -165,7 +179,6 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
               : `Ask about ${context.rangeLabel}. Select code first to ask about specific lines.`}
           </div>
         )}
-        <div ref={bottom} />
       </div>
       {note && (
         <div className="assistant-note" data-testid="assistant-note">

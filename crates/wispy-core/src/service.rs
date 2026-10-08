@@ -127,6 +127,9 @@ pub struct NewDraft {
     pub body: String,
     pub thread_id: Option<String>,
     pub reply_to: Option<u64>,
+    /// Written by the assistant.
+    #[serde(default)]
+    pub assistant: bool,
 }
 
 impl PrService {
@@ -239,6 +242,7 @@ impl PrService {
             thread_id: new.thread_id,
             reply_to: new.reply_to,
             as_file: false,
+            assistant: new.assistant,
             status: DraftStatus::Draft,
             error: None,
             token: None,
@@ -601,9 +605,9 @@ impl PrService {
         thread: Option<&str>,
         new: Option<NewThread>,
         question: &str,
-        on_event: impl FnMut(&crate::assistant::AssistantEvent),
+        on_event: impl FnMut(&crate::assistant::AssistantEvent) + Send,
     ) -> Result<crate::assistant::Thread> {
-        use crate::assistant::{diff_text, first_prompt, run, worktree, Ask, Context, Message, Thread};
+        use crate::assistant::{diff_text, first_prompt, run, worktree, AssistantEvent, Ask, Context, Message, Thread};
         let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
         let existing = match thread {
             Some(id) => Some(self.cache.assistant_thread(id)?.ok_or_else(|| crate::Error::Assistant("thread not found".into()))?),
@@ -638,6 +642,7 @@ impl PrService {
                     messages: Vec::new(),
                     created_at: now(),
                     unsent_context: None,
+                    draft_refs: Vec::new(),
                 };
                 (thread, Some(context))
             }
@@ -648,17 +653,34 @@ impl PrService {
             (None, Some(context)) => first_prompt(context, question),
             _ => question.to_string(),
         };
-        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false, sign_in: false });
+        thread.messages.push(Message { role: "user".into(), text: question.to_string(), at: now(), error: false, sign_in: false, comments: Vec::new() });
 
-        let ask = Ask { provider: thread.provider, model: thread.model.clone(), effort: thread.effort.clone(), prompt, resume: thread.session.clone() };
+        // The review tools are served while the CLI answers; what they change is streamed too.
+        let forward = std::sync::Mutex::new(on_event);
+        let emit = |event: &AssistantEvent| (forward.lock().unwrap_or_else(|p| p.into_inner()))(event);
+        let on_outcome = |outcome: &crate::assistant::CommentOutcome| emit(&AssistantEvent::Comment { outcome: outcome.clone() });
+        let tools = crate::review_tools::ReviewTools::new(self, snapshot, (lo, hi), &cwd, std::mem::take(&mut thread.draft_refs), &on_outcome);
         let mut session = None;
-        let mut forward = on_event;
-        let result = run(&ask, &cwd, |event| {
-            if let crate::assistant::AssistantEvent::Session { id } = event {
-                session = Some(id.clone());
-            }
-            forward(event);
+        let result = std::thread::scope(|scope| {
+            let server = crate::mcp::serve(scope, &tools)?;
+            let ask = Ask {
+                provider: thread.provider,
+                model: thread.model.clone(),
+                effort: thread.effort.clone(),
+                prompt,
+                resume: thread.session.clone(),
+                tools: Some(server.endpoint().clone()),
+            };
+            run(&ask, &cwd, |event| {
+                if let AssistantEvent::Session { id } = event {
+                    session = Some(id.clone());
+                }
+                emit(event);
+            })
         });
+        // Changes stand even when the turn fails afterwards.
+        let (refs, comments) = tools.finish();
+        thread.draft_refs = refs;
         // A session is only kept once a turn succeeded; until then asking again starts afresh.
         if thread.session.is_none() {
             match &result {
@@ -671,9 +693,28 @@ impl PrService {
             Err(err) => (err.to_string(), true),
         };
         let sign_in = error && crate::assistant::needs_sign_in(thread.provider, &text);
-        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error, sign_in });
+        thread.messages.push(Message { role: "assistant".into(), text, at: now(), error, sign_in, comments });
         self.cache.put_assistant_thread(&thread)?;
         Ok(thread)
+    }
+
+    /// The pending drafts of stack PRs `lo..=hi` the assistant can see and change.
+    pub(crate) fn listed_drafts(&self, snapshot: &StackSnapshot, lo: usize, hi: usize) -> Result<Vec<crate::assistant::ListedDraft>> {
+        Ok(self
+            .shown_drafts(snapshot)?
+            .into_iter()
+            .filter(|s| (lo..=hi).contains(&(s.pr_index as usize)) && s.draft.kind != DraftKind::Resolve && s.draft.status != DraftStatus::Posting)
+            .map(|s| crate::assistant::ListedDraft {
+                label: crate::assistant::draft_label(s.draft.kind, s.path.as_deref(), s.line.map(|end| (s.start_line.unwrap_or(end), end)), s.draft.pr),
+                id: s.draft.id,
+                body: s.draft.body,
+                by_assistant: s.draft.assistant,
+            })
+            .collect())
+    }
+
+    pub(crate) fn draft(&self, id: &str) -> Result<Option<Draft>> {
+        self.cache.draft(id)
     }
 
     // ---------- progress ----------

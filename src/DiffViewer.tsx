@@ -16,11 +16,12 @@ import {
   deleteAssistantThread,
   listAssistantThreads,
   type AssistantThread,
+  type CommentOutcome,
   type GrepHit,
   type Provider,
   type Usages,
 } from "./api";
-import { AssistantPanel, type AskContext } from "./AssistantPanel";
+import { AssistantPanel, type AskContext, type PendingAnswer } from "./AssistantPanel";
 import type { CodeRef } from "./Markdown";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileView } from "./FileView";
@@ -178,7 +179,7 @@ export function DiffViewer(props: Props) {
   // ---------- assistant ----------
   const [assistant, setAssistant] = useState<{ context: AskContext; activeId: string | null; note: string | null } | null>(null);
   const [assistantThreads, setAssistantThreads] = useState<AssistantThread[]>([]);
-  const [pendingAnswer, setPendingAnswer] = useState<{ threadId: string | null; question: string; text: string } | null>(null);
+  const [pendingAnswer, setPendingAnswer] = useState<PendingAnswer | null>(null);
   useEffect(() => {
     listAssistantThreads(stackId)
       .then(setAssistantThreads)
@@ -760,22 +761,29 @@ export function DiffViewer(props: Props) {
     (question: string, choice: { provider: Provider; model: string | null; effort: string | null }) => {
       if (!assistant) return;
       const threadId = assistant.activeId;
-      setPendingAnswer({ threadId, question, text: "" });
+      setPendingAnswer({ threadId, question, text: "", comments: [] });
       // Files hidden by the filter are named to the assistant but their diff is left out.
       const hidden = summary.files.filter((_, i) => filtered[i]).map((f) => f.path);
       const newThread = threadId ? null : { ...choice, selection: assistant.context.selection, anchor: assistant.context.anchor, hidden };
       askAssistant(stackId, lo, hi, threadId, newThread, question, (event) => {
         if (event.kind === "delta") setPendingAnswer((p) => p && { ...p, text: p.text + event.text });
         else if (event.kind === "text") setPendingAnswer((p) => p && { ...p, text: event.text });
+        else if (event.kind === "comment") {
+          // The assistant changed the drafts mid-answer: show them right away.
+          setPendingAnswer((p) => p && { ...p, comments: [...p.comments, event.outcome] });
+          if (!event.outcome.error) onDraftsChanged();
+        }
       })
         .then((thread) => {
           setAssistantThreads((list) => [...list.filter((t) => t.id !== thread.id), thread]);
-          setAssistant((a) => a && { ...a, activeId: thread.id });
+          const comments = thread.messages[thread.messages.length - 1]?.comments ?? [];
+          const note = comments.length ? commentsNote(comments) : null;
+          setAssistant((a) => a && { ...a, activeId: thread.id, note });
         })
         .catch((e) => setAssistant((a) => a && { ...a, note: String(e) }))
         .finally(() => setPendingAnswer(null));
     },
-    [assistant, stackId, lo, hi, summary, filtered],
+    [assistant, stackId, lo, hi, summary, filtered, onDraftsChanged],
   );
 
   const answerToDraft = useCallback(
@@ -784,8 +792,8 @@ export function DiffViewer(props: Props) {
       await createDraft(
         stackId,
         anchor
-          ? { prIndex: anchor.prIndex, kind: "line", path: anchor.path, side: anchor.side, line: anchor.endLine, startLine: anchor.startLine, body: text, threadId: null, replyTo: null }
-          : { prIndex: hi, kind: "summary", path: null, side: null, line: null, startLine: null, body: text, threadId: null, replyTo: null },
+          ? { prIndex: anchor.prIndex, kind: "line", path: anchor.path, side: anchor.side, line: anchor.endLine, startLine: anchor.startLine, body: text, threadId: null, replyTo: null, assistant: true }
+          : { prIndex: hi, kind: "summary", path: null, side: null, line: null, startLine: null, body: text, threadId: null, replyTo: null, assistant: true },
       );
       onDraftsChanged();
       setAssistant((a) => a && { ...a, note: anchor ? "Saved as a draft comment on those lines" : `Saved as the review summary draft for #${prs[hi].number}` });
@@ -1990,6 +1998,18 @@ interface Selection {
   mode: Mode;
   from: number;
   to: number;
+}
+
+/** "Added 2 draft comments · updated 1 · 1 failed" */
+function commentsNote(comments: CommentOutcome[]) {
+  const count = (action: string) => comments.filter((c) => !c.error && (c.action ?? "add") === action).length;
+  const parts = ([["Added", "add"], ["Updated", "edit"], ["Deleted", "delete"]] as const)
+    .map(([verb, action]) => [verb, count(action)] as const)
+    .filter(([, n]) => n > 0)
+    .map(([verb, n], i) => (i === 0 ? `${verb} ${n} draft comment${n === 1 ? "" : "s"}` : `${verb.toLowerCase()} ${n}`));
+  const failed = comments.filter((c) => c.error).length;
+  if (failed) parts.push(`${failed} failed`);
+  return parts.join(" · ");
 }
 
 interface ComposerState {

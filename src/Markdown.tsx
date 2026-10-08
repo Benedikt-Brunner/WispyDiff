@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { marked } from "marked";
-import { openUrl } from "./api";
+import { Marked } from "marked";
+import { openUrl, type CommentOutcome } from "./api";
 
 /** A reference to code in an assistant answer, e.g. `src/app.ts:42-50`. */
 export interface CodeRef {
@@ -40,10 +40,53 @@ export function Html({ html, className = "card-body", refs }: { html: string; cl
   );
 }
 
-/** Markdown (GitHub-flavored, as the assistant CLIs write it). */
-export function Markdown({ text, className, refs }: { text: string; className?: string; refs?: CodeRefs }) {
-  const html = useMemo(() => marked.parse(text, { gfm: true, breaks: false, async: false }), [text]);
+/** Markdown (GitHub-flavored, as the assistant CLIs write it). `breaks`: line breaks are kept,
+ * as GitHub does in comments. */
+export function Markdown({ text, className, refs, breaks = false }: { text: string; className?: string; refs?: CodeRefs; breaks?: boolean }) {
+  const html = useMemo(() => markdown.parse(text, { async: false, breaks }), [text, breaks]);
   return <Html html={html} className={className} refs={refs} />;
+}
+
+const markdown: Marked = new Marked({
+  gfm: true,
+  breaks: false,
+  renderer: {
+    code({ text, lang }) {
+      if (!/^suggestion\b/.test(lang ?? "")) return false;
+      return `<div class="suggestion"><div class="suggestion-head">Suggested change</div><pre><code>${escapeHtml(text)}\n</code></pre></div>`;
+    },
+  },
+});
+
+function escapeHtml(text: string) {
+  return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+}
+
+const ACTIONS = { add: ["Comment", "✓ draft added", "not added"], edit: ["Edit", "✓ updated", "not updated"], delete: ["Delete", "✓ deleted", "not deleted"] };
+
+/** What the assistant did to the review's drafts, one card each: a new comment's place (linked
+ * to the diff), or the draft it changed, what became of it, and the text it wrote. */
+export function CommentCards({ comments, refs }: { comments: CommentOutcome[]; refs?: CodeRefs }) {
+  const html = useMemo(
+    () =>
+      comments
+        .map((c) => {
+          const [action, done, failed] = ACTIONS[c.action ?? "add"];
+          const lines = c.lines ? `:${c.lines[0]}${c.lines[1] !== c.lines[0] ? `-${c.lines[1]}` : ""}` : "";
+          const where = [c.target, c.action === "add" ? null : c.label].filter(Boolean).join(" · ");
+          const head = [
+            `<span class="assistant-comment-action">${action}</span>`,
+            c.path ? `<code>${escapeHtml(c.path + lines)}</code>` : "",
+            where ? `<span class="assistant-comment-ref">${escapeHtml(where)}</span>` : "",
+            `<span class="assistant-comment-status">${escapeHtml(c.error ? `${failed}: ${c.error}` : done)}</span>`,
+          ].join("");
+          const body = c.body ? markdown.parse(c.body, { async: false, breaks: true }) : "";
+          return `<div class="assistant-comment ${c.error ? "failed" : "done"}"><div class="assistant-comment-head">${head}</div>${body}</div>`;
+        })
+        .join(""),
+    [comments],
+  );
+  return <Html html={html} className="card-body assistant-comments" refs={refs} />;
 }
 
 /** Makes sure nothing in the HTML can run here. */

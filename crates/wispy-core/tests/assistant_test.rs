@@ -28,7 +28,7 @@ fn args(ask: &Ask) -> Vec<String> {
 }
 
 fn ask(provider: Provider, resume: Option<&str>) -> Ask {
-    Ask { provider, model: Some("m1".into()), effort: Some("high".into()), prompt: "q".into(), resume: resume.map(str::to_string) }
+    Ask { provider, model: Some("m1".into()), effort: Some("high".into()), prompt: "q".into(), resume: resume.map(str::to_string), tools: None }
 }
 
 #[test]
@@ -36,12 +36,26 @@ fn builds_read_only_claude_invocations() {
     let first = args(&ask(Provider::Claude, None));
     let joined = first.join(" ");
     assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages"));
-    assert!(joined.contains("--allowed-tools Read,Grep,Glob --permission-mode dontAsk"), "{joined}");
+    assert!(joined.contains("--tools Read,Grep,Glob --permission-mode bypassPermissions"), "{joined}");
+    assert!(!joined.contains("--strict-mcp-config"), "the user's own MCP servers stay available");
     assert!(joined.contains("--model m1") && joined.contains("--effort high"));
     assert!(!joined.contains("--resume"));
     assert!(args(&ask(Provider::Claude, Some("s-1"))).join(" ").ends_with("--resume s-1"));
     let defaults = Ask { model: None, effort: None, ..ask(Provider::Claude, None) };
     assert!(!args(&defaults).iter().any(|a| a == "--model" || a == "--effort"));
+
+    // The review tools: the app's MCP server, next to the user's own.
+    let tools = Ask { tools: Some(endpoint()), ..ask(Provider::Claude, None) };
+    let with_tools = args(&tools);
+    let config = with_tools.windows(2).find(|w| w[0] == "--mcp-config").map(|w| w[1].clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&config).unwrap(),
+        serde_json::json!({ "mcpServers": { "wispy": { "type": "http", "url": "http://127.0.0.1:4711/mcp", "headers": { "Authorization": "Bearer s3cret" } } } })
+    );
+}
+
+fn endpoint() -> wispy_core::mcp::Endpoint {
+    wispy_core::mcp::Endpoint { url: "http://127.0.0.1:4711/mcp".into(), token: "s3cret".into() }
 }
 
 #[test]
@@ -51,6 +65,14 @@ fn builds_read_only_codex_invocations() {
         ["exec", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"read-only\"", "-m", "m1", "-c", "model_reasoning_effort=\"high\"", "-"]
     );
     assert_eq!(&args(&ask(Provider::Codex, Some("t-1")))[..3], ["exec", "resume", "t-1"]);
+
+    // The review tools: approved up front (exec can't ask), the token passed in the environment.
+    let tools = Ask { tools: Some(endpoint()), ..ask(Provider::Codex, None) };
+    let cmd = command(&tools, std::path::Path::new("/tmp"));
+    let with_tools: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert!(with_tools.contains(&"mcp_servers.wispy={url=\"http://127.0.0.1:4711/mcp\", bearer_token_env_var=\"WISPY_MCP_TOKEN\", default_tools_approval_mode=\"approve\", required=true}".to_string()), "{with_tools:?}");
+    assert!(!with_tools.iter().any(|a| a.contains("s3cret")));
+    assert!(cmd.get_envs().any(|(k, v)| k == "WISPY_MCP_TOKEN" && v == Some(std::ffi::OsStr::new("s3cret"))));
 }
 
 #[test]
@@ -140,6 +162,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
     assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"), "the checkout's numbers are only added when they differ");
     assert!(prompt.contains("like `src/app.ts:42`"), "asks for clickable references");
+    assert!(prompt.contains("add each one with `add_draft_comment`"), "says how to write review comments");
     assert!(prompt.contains("lock-two") && prompt.contains("new-lock-line") && !prompt.contains("hid these"), "nothing hidden: {prompt}");
     let args: Vec<&str> = calls[0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert!(args.windows(2).any(|w| w == ["--model", "opus"]));

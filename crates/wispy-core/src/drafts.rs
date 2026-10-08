@@ -55,6 +55,9 @@ pub struct Draft {
     /// The user chose to post this (outdated) line comment as a file comment.
     #[serde(default)]
     pub as_file: bool,
+    /// Written by the assistant (shown as such until posted).
+    #[serde(default)]
+    pub assistant: bool,
     pub status: DraftStatus,
     pub error: Option<String>,
     /// Marker embedded in what was sent, to recognise it if the outcome was unknown.
