@@ -786,21 +786,6 @@ export function DiffViewer(props: Props) {
     [assistant, stackId, lo, hi, summary, filtered, onDraftsChanged],
   );
 
-  const answerToDraft = useCallback(
-    async (thread: AssistantThread, text: string) => {
-      const anchor = thread.selection;
-      await createDraft(
-        stackId,
-        anchor
-          ? { prIndex: anchor.prIndex, kind: "line", path: anchor.path, side: anchor.side, line: anchor.endLine, startLine: anchor.startLine, body: text, threadId: null, replyTo: null, assistant: true }
-          : { prIndex: hi, kind: "summary", path: null, side: null, line: null, startLine: null, body: text, threadId: null, replyTo: null, assistant: true },
-      );
-      onDraftsChanged();
-      setAssistant((a) => a && { ...a, note: anchor ? "Saved as a draft comment on those lines" : `Saved as the review summary draft for #${prs[hi].number}` });
-    },
-    [stackId, hi, prs, onDraftsChanged],
-  );
-
   /** Head lines of the files in view that assistant threads were asked about (gutter markers). */
   const markers = useMemo(() => {
     const byPath = new Map<string, { from: number; to: number; id: string }[]>();
@@ -1350,7 +1335,6 @@ export function DiffViewer(props: Props) {
           note={assistant.note}
           onSelect={(id) => setAssistant((a) => a && { ...a, activeId: id, note: null })}
           onAsk={ask}
-          onDraft={(thread, text) => void answerToDraft(thread, text)}
           onDelete={(id) => {
             void deleteAssistantThread(id);
             setAssistantThreads((list) => list.filter((t) => t.id !== id));

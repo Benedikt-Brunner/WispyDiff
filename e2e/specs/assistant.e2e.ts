@@ -83,14 +83,6 @@ describe("assistant", () => {
     await waitFor(async () => (await count(".assistant-mark")) > 0);
   });
 
-  it("turns an answer into a draft comment on those lines", async () => {
-    await clickButton('[data-testid="assistant-panel"]', "turn into draft comment");
-    await waitFor(async () => (await text('[data-testid="assistant-note"]'))?.includes("Saved as a draft comment") ?? false);
-    await waitFor(async () => (await text(".card.draft"))?.includes("About “") ?? false);
-    await clickButton(".card.draft", "Delete");
-    await waitFor(async () => (await count(".card.draft")) === 0);
-  });
-
   it("offers to sign in again when the CLI's sign-in expired, then asks again", async () => {
     await clickButton('[data-testid="assistant-panel"]', "delete");
     await ask("expired");
