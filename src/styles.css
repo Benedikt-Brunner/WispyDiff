@@ -967,6 +967,14 @@ body.resizing {
 .markdown a {
   color: var(--accent);
 }
+.markdown a.code-ref {
+  cursor: pointer;
+  text-decoration: none;
+}
+.markdown a.code-ref:hover code,
+.markdown code a.code-ref:hover {
+  text-decoration: underline;
+}
 .markdown code {
   font-family: var(--mono);
   font-size: 12px;

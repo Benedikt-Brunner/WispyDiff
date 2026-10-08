@@ -468,6 +468,13 @@ pub async fn read_file(stack_id: String, pr_index: usize, path: String, state: S
     blocking(move || service.read_file(&snapshot, pr_index, &path).map(|lines| lines.as_ref().clone())).await
 }
 
+/// Which of `paths` are files on a stack PR's head (for file references in assistant answers).
+#[tauri::command]
+pub async fn existing_files(stack_id: String, pr_index: usize, paths: Vec<String>, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.existing_files(&snapshot, pr_index, &paths)).await
+}
+
 #[tauri::command]
 pub fn locate_line(view_id: String, file: usize, line: u32, state: State<'_, AppState>) -> Result<Option<Location>, String> {
     let view = state.view(&view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;

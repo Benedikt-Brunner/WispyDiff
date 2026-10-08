@@ -129,6 +129,18 @@ fn greps_the_downloaded_files_when_offline_and_counts_the_rest() {
 }
 
 #[test]
+fn tells_which_paths_are_files_of_the_head_without_downloading_them() {
+    let (origin, service, snapshot, _data) = setup();
+    // Offline, and Unrelated.php's blob was never downloaded: only trees are read.
+    let gone = origin.path().with_extension("offline");
+    std::fs::rename(origin.path(), &gone).unwrap();
+    let asked: Vec<String> = ["src/Unrelated.php", "views/bin.html.twig", "src", "src/*.php", "src/Missing.php", "this.state"].map(String::from).to_vec();
+    let found = service.existing_files(&snapshot, 0, &asked);
+    std::fs::rename(&gone, origin.path()).unwrap();
+    assert_eq!(found.unwrap(), vec!["src/Unrelated.php".to_string(), "views/bin.html.twig".to_string()]);
+}
+
+#[test]
 fn reads_any_file_of_the_head_and_locates_head_lines_in_a_view() {
     let (_origin, service, snapshot, _data) = setup();
     let lines = service.read_file(&snapshot, 0, "src/Unrelated.php").unwrap();
