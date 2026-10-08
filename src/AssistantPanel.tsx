@@ -41,7 +41,6 @@ interface Props {
   note: string | null;
   onSelect: (id: string | null) => void;
   onAsk: (question: string, choice: { provider: Provider; model: string | null; effort: string | null }) => void;
-  onDraft: (thread: AssistantThread, text: string) => void;
   onDelete: (id: string) => void;
   onClose: () => void;
   /** Makes file references in answers (`src/app.ts:42`) jump there. */
@@ -49,7 +48,7 @@ interface Props {
 }
 
 /** Side-panel conversations with Claude Code or Codex about the range or a selection. */
-export function AssistantPanel({ threads, activeId, context, pending, note, onSelect, onAsk, onDraft, onDelete, onClose, codeRefs }: Props) {
+export function AssistantPanel({ threads, activeId, context, pending, note, onSelect, onAsk, onDelete, onClose, codeRefs }: Props) {
   const width = useSidebarWidth("assistant", 420);
   const [provider, setProvider] = useState<Provider>(() => loadPref("assistant.provider", ["claude", "codex"] as const, "claude"));
   const [model, setModel] = useState(() => localValue(`assistant.model.${provider}`));
@@ -123,11 +122,6 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
           <div key={i} className={`assistant-message ${m.role}${m.error ? " error" : ""}`}>
             {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} /> : <div className="card-body">{m.text}</div>}
             {m.comments?.length ? <CommentCards comments={m.comments} refs={codeRefs} /> : null}
-            {m.role === "assistant" && !m.error && active && (
-              <button className="link" onClick={() => onDraft(active, m.text)}>
-                turn into draft comment
-              </button>
-            )}
             {m.signIn && active && i === active.messages.length - 1 && !pending && (
               <div className="assistant-sign-in" data-testid="assistant-sign-in">
                 {signIn === null && (
