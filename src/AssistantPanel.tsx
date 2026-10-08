@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { signInAssistant, type AssistantSelection, type AssistantThread, type Provider, type ThreadAnchor } from "./api";
-import { Markdown, type CodeRefs } from "./Markdown";
+import { signInAssistant, type AssistantSelection, type AssistantThread, type CommentOutcome, type Provider, type ThreadAnchor } from "./api";
+import { CommentCards, Markdown, type CodeRefs } from "./Markdown";
 import { loadPref, savePref } from "./prefs";
 import { isSubmitKey, mod } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
@@ -15,6 +15,14 @@ const EFFORTS: Record<Provider, string[]> = {
   codex: ["", "minimal", "low", "medium", "high"],
 };
 
+/** The question being answered, the answer so far and what the assistant did to the drafts. */
+export interface PendingAnswer {
+  threadId: string | null;
+  question: string;
+  text: string;
+  comments: CommentOutcome[];
+}
+
 export interface AskContext {
   /** Set when asking about selected lines. */
   selection: AssistantSelection | null;
@@ -28,7 +36,7 @@ interface Props {
   activeId: string | null;
   context: AskContext;
   /** The answer being streamed, if any. */
-  pending: { threadId: string | null; question: string; text: string } | null;
+  pending: PendingAnswer | null;
   /** A short status line (e.g. "Saved as a draft", or an error). */
   note: string | null;
   onSelect: (id: string | null) => void;
@@ -58,7 +66,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
   // short one replaces it, leaving the messages above the visible area.
   useEffect(() => {
     if (body.current) body.current.scrollTop = body.current.scrollHeight;
-  }, [activeId, active?.messages.length, pending?.text]);
+  }, [activeId, active?.messages.length, pending?.text, pending?.comments.length]);
 
   const changeProvider = (next: Provider) => {
     setProvider(next);
@@ -113,7 +121,8 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
       <div className="panel-body assistant-body" ref={body}>
         {(active?.messages ?? []).map((m, i) => (
           <div key={i} className={`assistant-message ${m.role}${m.error ? " error" : ""}`}>
-            {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} comments={m.comments} /> : <div className="card-body">{m.text}</div>}
+            {m.role === "assistant" && !m.error ? <Markdown text={m.text} refs={codeRefs} /> : <div className="card-body">{m.text}</div>}
+            {m.comments?.length ? <CommentCards comments={m.comments} refs={codeRefs} /> : null}
             {m.role === "assistant" && !m.error && active && (
               <button className="link" onClick={() => onDraft(active, m.text)}>
                 turn into draft comment
@@ -159,6 +168,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
             </div>
             <div className="assistant-message assistant streaming" data-testid="assistant-streaming">
               {pending.text ? <Markdown text={pending.text} refs={codeRefs} /> : <div className="card-body">Thinking…</div>}
+              {pending.comments.length > 0 && <CommentCards comments={pending.comments} refs={codeRefs} />}
             </div>
           </>
         )}

@@ -2,8 +2,11 @@
 answers from the prompt and the working directory, and logs how it was called."""
 import json
 import os
+import re
 import sys
 import time
+import urllib.error
+import urllib.request
 
 
 def main(provider):
@@ -16,22 +19,17 @@ def main(provider):
 
     questions = [l[len("Question: "):] for l in prompt.splitlines() if l.startswith("Question: ")]
     question = questions[-1] if questions else prompt.strip()
-    if question.startswith("wait:"):
-        # Holds the answer until the test creates `<log>.go`, so it can change things meanwhile.
-        go = os.environ["WISPY_FAKE_LOG"] + ".go"
-        while not os.path.exists(go):
-            time.sleep(0.05)
-        os.remove(go)
-        question = question[len("wait:"):]
     resumed = "--resume" in args if provider == "claude" else "resume" in args
     entries = sorted(e for e in os.listdir(cwd) if not e.startswith("."))
     answer = f"{'(follow-up) ' if resumed else ''}About “{question}”: I can see {', '.join(entries[:3])} in the **checkout**."
     if question == "refs":
         answer = references(prompt, cwd)
-    if question == "comments":
-        answer = comments(prompt)
+    if question.startswith("tools:"):
+        answer = call_tools(provider, args, json.loads(question[len("tools:"):]))
+    if question in ("comments", "comments:wait"):
+        answer = comments(provider, args, prompt, question.endswith(":wait"))
     if question == "revise":
-        answer = revise(prompt)
+        answer = revise(provider, args)
     if question.startswith("say:"):
         answer = question[len("say:"):].replace("\\n", "\n")
 
@@ -60,49 +58,97 @@ def main(provider):
         emit({"type": "turn.completed", "usage": {}})
 
 
-def comments(prompt):
-    """Review comments the way the prompt asks for them: on two changed lines of the first file
-    in the diff (with a suggestion), on that whole file, and on a file outside the diff."""
+def call_tools(provider, args, steps):
+    """Calls the app's review tools in order (`["wait"]` holds until the test says go) and
+    answers with their results, one per line."""
+    tools = Tools(provider, args)
+    lines = []
+    for step in steps:
+        if step == ["wait"]:
+            wait_for_go()
+            continue
+        name, arguments = step
+        ok, text = tools.call(name, arguments)
+        lines.append(f"{name}: {text if ok else 'error: ' + text}")
+    return "\n".join(lines)
+
+
+def comments(provider, args, prompt, wait):
+    """Review comments as a CLI would add them: on two changed lines of the first file in the
+    diff (with a suggestion), on that whole file, and on a file outside the diff. `wait`: holds
+    after the first one until the test says go."""
     path, start = first_change(prompt)
-    return "\n".join([
-        "Two things:",
-        "",
-        f"````review-comment {path}:{start}-{start + 1}",
-        "This could be **simpler**:",
-        "```suggestion",
-        "simpler();",
-        "```",
-        "````",
-        "",
-        f"```review-comment {path}",
-        "Needs a test.",
-        "```",
-        "",
-        "```review-comment nowhere/Missing.php:3",
-        "Lost.",
-        "```",
-    ])
+    tools = Tools(provider, args)
+    tools.call("add_draft_comment", {"path": path, "start_line": start, "end_line": start + 1, "body": "This could be **simpler**:\n```suggestion\nsimpler();\n```"})
+    if wait:
+        wait_for_go()
+    tools.call("add_draft_comment", {"path": path, "body": "Needs a test."})
+    tools.call("add_draft_comment", {"path": "nowhere/Missing.php", "start_line": 3, "body": "Lost."})
+    return "I added two comments."
 
 
-def revise(prompt):
-    """Rewrites the first draft it wrote (from the prompt's list of drafts), deletes the second,
-    and edits one that doesn't exist."""
+def revise(provider, args):
+    """Lists the drafts, rewrites the first one it wrote, deletes the second, and edits one that
+    doesn't exist."""
+    tools = Tools(provider, args)
+    _, listing = tools.call("list_drafts", {})
     mine = []
-    for i, line in enumerate(lines := prompt.splitlines()):
+    for i, line in enumerate(lines := listing.splitlines()):
         if line.startswith("[d") and line.endswith("— by you:"):
             body = [l[2:] for l in lines[i + 1:] if l.startswith("> ")][:1]
             mine.append((line[1:line.index("]")], body[0] if body else ""))
     (first, body), (second, _) = mine[:2]
-    return "\n".join([
-        f"```review-comment-edit {first}",
-        f"Revised: {body}",
-        "```",
-        f"```review-comment-delete {second}",
-        "```",
-        "```review-comment-edit d99",
-        "Nothing.",
-        "```",
-    ])
+    tools.call("edit_draft", {"ref": first, "body": f"Revised: {body}"})
+    tools.call("delete_draft", {"ref": second})
+    tools.call("edit_draft", {"ref": "d99", "body": "Nothing."})
+    return "Revised."
+
+
+class Tools:
+    """The app's MCP server, found the way each CLI is told about it: Claude's `--mcp-config`,
+    Codex's `-c mcp_servers.wispy={url=…, bearer_token_env_var=…}`."""
+
+    def __init__(self, provider, args):
+        if provider == "claude":
+            server = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]["wispy"]
+            self.url, self.auth = server["url"], server["headers"]["Authorization"]
+        else:
+            config = next(a for a in args if a.startswith("mcp_servers.wispy="))
+            self.url = re.search(r'url="([^"]+)"', config).group(1)
+            self.auth = "Bearer " + os.environ[re.search(r'bearer_token_env_var="([^"]+)"', config).group(1)]
+        self.next_id = 0
+        self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake", "version": "0"}})
+        self.rpc("notifications/initialized", None)
+        self.names = [t["name"] for t in self.rpc("tools/list", {})["tools"]]
+
+    def call(self, name, arguments):
+        """(ok, text) of a tool call; logged."""
+        result = self.rpc("tools/call", {"name": name, "arguments": arguments})
+        text = "".join(c["text"] for c in result["content"])
+        write_log({"tool": name, "arguments": arguments, "result": text, "isError": result.get("isError", False)})
+        return not result.get("isError", False), text
+
+    def rpc(self, method, params):
+        message = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            self.next_id += 1
+            message.update(id=self.next_id, params=params)
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(message).encode(),
+            headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Authorization": self.auth},
+        )
+        with urllib.request.urlopen(request) as response:
+            body = response.read()
+        return json.loads(body)["result"] if body else None
+
+
+def wait_for_go():
+    """Holds until the test creates `<log>.go`, so it can change things meanwhile."""
+    go = os.environ["WISPY_FAKE_LOG"] + ".go"
+    while not os.path.exists(go):
+        time.sleep(0.05)
+    os.remove(go)
 
 
 def first_change(prompt):

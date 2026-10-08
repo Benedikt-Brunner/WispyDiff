@@ -21,7 +21,7 @@ import {
   type Provider,
   type Usages,
 } from "./api";
-import { AssistantPanel, type AskContext } from "./AssistantPanel";
+import { AssistantPanel, type AskContext, type PendingAnswer } from "./AssistantPanel";
 import type { CodeRef } from "./Markdown";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileView } from "./FileView";
@@ -179,7 +179,7 @@ export function DiffViewer(props: Props) {
   // ---------- assistant ----------
   const [assistant, setAssistant] = useState<{ context: AskContext; activeId: string | null; note: string | null } | null>(null);
   const [assistantThreads, setAssistantThreads] = useState<AssistantThread[]>([]);
-  const [pendingAnswer, setPendingAnswer] = useState<{ threadId: string | null; question: string; text: string } | null>(null);
+  const [pendingAnswer, setPendingAnswer] = useState<PendingAnswer | null>(null);
   useEffect(() => {
     listAssistantThreads(stackId)
       .then(setAssistantThreads)
@@ -761,18 +761,22 @@ export function DiffViewer(props: Props) {
     (question: string, choice: { provider: Provider; model: string | null; effort: string | null }) => {
       if (!assistant) return;
       const threadId = assistant.activeId;
-      setPendingAnswer({ threadId, question, text: "" });
+      setPendingAnswer({ threadId, question, text: "", comments: [] });
       // Files hidden by the filter are named to the assistant but their diff is left out.
       const hidden = summary.files.filter((_, i) => filtered[i]).map((f) => f.path);
       const newThread = threadId ? null : { ...choice, selection: assistant.context.selection, anchor: assistant.context.anchor, hidden };
       askAssistant(stackId, lo, hi, threadId, newThread, question, (event) => {
         if (event.kind === "delta") setPendingAnswer((p) => p && { ...p, text: p.text + event.text });
         else if (event.kind === "text") setPendingAnswer((p) => p && { ...p, text: event.text });
+        else if (event.kind === "comment") {
+          // The assistant changed the drafts mid-answer: show them right away.
+          setPendingAnswer((p) => p && { ...p, comments: [...p.comments, event.outcome] });
+          if (!event.outcome.error) onDraftsChanged();
+        }
       })
         .then((thread) => {
           setAssistantThreads((list) => [...list.filter((t) => t.id !== thread.id), thread]);
           const comments = thread.messages[thread.messages.length - 1]?.comments ?? [];
-          if (comments.some((c) => !c.error)) onDraftsChanged();
           const note = comments.length ? commentsNote(comments) : null;
           setAssistant((a) => a && { ...a, activeId: thread.id, note });
         })

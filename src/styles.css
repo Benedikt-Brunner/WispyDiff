@@ -1694,6 +1694,7 @@ body.resizing {
 }
 .assistant-comment-head {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: baseline;
   font-size: 12px;
@@ -1709,14 +1710,7 @@ body.resizing {
   margin-left: auto;
   color: var(--fg-muted);
 }
-.assistant-comment.failed .assistant-comment-action {
-  font-weight: 600;
-}
-.assistant-comment-ref {
-  font-family: var(--mono);
-  color: var(--fg-muted);
-}
-.assistant-comment-status {
+.assistant-comment.failed .assistant-comment-status {
   color: var(--del-fg);
 }
 .assistant-note {

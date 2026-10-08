@@ -136,18 +136,21 @@ export interface AssistantMessage {
   error: boolean;
   /** The failure was the CLI's sign-in (expired or missing). */
   signIn: boolean;
-  /** The review comments in an answer, in order: the draft each became, or why it didn't. */
+  /** What the assistant did to the review's drafts during the turn, in order. */
   comments?: CommentOutcome[];
 }
 
-/** What became of a review block in an answer (a new comment, or an edit/delete of a draft by ref). */
+/** A review tool call of the assistant: a new comment, or an edit/delete of a draft by ref. */
 export interface CommentOutcome {
   action?: "add" | "edit" | "delete";
+  /** A new comment's place, as the assistant asked for it. */
   path: string | null;
   lines: [number, number] | null;
-  /** The ref of an edited/deleted draft ("d3"), and where that draft is. */
+  /** The draft's ref ("d3"), and where the draft is. */
   target?: string | null;
   label?: string | null;
+  /** The text added or written. */
+  body?: string | null;
   draft: string | null;
   error: string | null;
 }
@@ -179,7 +182,9 @@ export type AssistantEvent =
   | { kind: "session"; id: string }
   | { kind: "delta"; text: string }
   | { kind: "text"; text: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** The assistant added, changed or deleted a draft (or failed to). */
+  | { kind: "comment"; outcome: CommentOutcome };
 
 export function askAssistant(
   stackId: string,

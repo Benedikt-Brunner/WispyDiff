@@ -17,13 +17,12 @@ export interface CodeRefs {
 
 /** Rendered HTML (GitHub's `bodyHTML`, or Markdown rendered here); links open in the browser,
  * file references (with `refs`) in the app. */
-export function Html({ html, className = "card-body", refs, comments }: { html: string; className?: string; refs?: CodeRefs; comments?: CommentOutcome[] }) {
+export function Html({ html, className = "card-body", refs }: { html: string; className?: string; refs?: CodeRefs }) {
   const safe = useMemo(() => {
     const doc = sanitize(html);
     if (refs) linkRefs(doc, refs.resolve);
-    if (comments) markComments(doc, comments);
     return doc.body.innerHTML;
-  }, [html, refs, comments]);
+  }, [html, refs]);
   return (
     <div
       className={`${className} markdown`}
@@ -41,12 +40,11 @@ export function Html({ html, className = "card-body", refs, comments }: { html: 
   );
 }
 
-/** Markdown (GitHub-flavored, as the assistant CLIs write it). Review comments the assistant
- * wrote (```` ```review-comment path:lines ```` blocks) show as comment cards; `comments` says
- * what became of each. `breaks`: line breaks are kept, as GitHub does in comments. */
-export function Markdown({ text, className, refs, comments, breaks = false }: { text: string; className?: string; refs?: CodeRefs; comments?: CommentOutcome[]; breaks?: boolean }) {
+/** Markdown (GitHub-flavored, as the assistant CLIs write it). `breaks`: line breaks are kept,
+ * as GitHub does in comments. */
+export function Markdown({ text, className, refs, breaks = false }: { text: string; className?: string; refs?: CodeRefs; breaks?: boolean }) {
   const html = useMemo(() => markdown.parse(text, { async: false, breaks }), [text, breaks]);
-  return <Html html={html} className={className} refs={refs} comments={comments} />;
+  return <Html html={html} className={className} refs={refs} />;
 }
 
 const markdown: Marked = new Marked({
@@ -54,18 +52,8 @@ const markdown: Marked = new Marked({
   breaks: false,
   renderer: {
     code({ text, lang }) {
-      if (/^suggestion\b/.test(lang ?? "")) {
-        return `<div class="suggestion"><div class="suggestion-head">Suggested change</div><pre><code>${escapeHtml(text)}\n</code></pre></div>`;
-      }
-      const block = /^review-comment(?:-(edit|delete))?\s+(\S+)/.exec(lang ?? "");
-      if (!block) return false;
-      const [, change, target] = block;
-      // A new comment's place links to the diff; an edit or delete names the draft by ref.
-      const what = change
-        ? `<span class="assistant-comment-action">${change === "edit" ? "Edit" : "Delete"}</span><span class="assistant-comment-ref">${escapeHtml(target)}</span>`
-        : `<code>${escapeHtml(target)}</code>`;
-      const head = `<div class="assistant-comment-head">${what}<span class="assistant-comment-status"></span></div>`;
-      return `<div class="assistant-comment">${head}${markdown.parse(text, { async: false })}</div>`;
+      if (!/^suggestion\b/.test(lang ?? "")) return false;
+      return `<div class="suggestion"><div class="suggestion-head">Suggested change</div><pre><code>${escapeHtml(text)}\n</code></pre></div>`;
     },
   },
 });
@@ -74,20 +62,31 @@ function escapeHtml(text: string) {
   return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 
-const DONE = { add: ["✓ draft added", "not added"], edit: ["✓ updated", "not updated"], delete: ["✓ deleted", "not deleted"] };
+const ACTIONS = { add: ["Comment", "✓ draft added", "not added"], edit: ["Edit", "✓ updated", "not updated"], delete: ["Delete", "✓ deleted", "not deleted"] };
 
-/** Says on each comment card what became of it. */
-function markComments(doc: Document, comments: CommentOutcome[]) {
-  doc.querySelectorAll(".assistant-comment").forEach((card, i) => {
-    const comment = comments[i];
-    const status = card.querySelector(".assistant-comment-status");
-    if (!comment || !status) return;
-    const [done, failed] = DONE[comment.action ?? "add"];
-    card.classList.add(comment.error ? "failed" : "done");
-    status.textContent = comment.error ? `${failed}: ${comment.error}` : done;
-    const ref = card.querySelector(".assistant-comment-ref");
-    if (ref && comment.label) ref.textContent = `${comment.target} · ${comment.label}`;
-  });
+/** What the assistant did to the review's drafts, one card each: a new comment's place (linked
+ * to the diff), or the draft it changed, what became of it, and the text it wrote. */
+export function CommentCards({ comments, refs }: { comments: CommentOutcome[]; refs?: CodeRefs }) {
+  const html = useMemo(
+    () =>
+      comments
+        .map((c) => {
+          const [action, done, failed] = ACTIONS[c.action ?? "add"];
+          const lines = c.lines ? `:${c.lines[0]}${c.lines[1] !== c.lines[0] ? `-${c.lines[1]}` : ""}` : "";
+          const where = [c.target, c.action === "add" ? null : c.label].filter(Boolean).join(" · ");
+          const head = [
+            `<span class="assistant-comment-action">${action}</span>`,
+            c.path ? `<code>${escapeHtml(c.path + lines)}</code>` : "",
+            where ? `<span class="assistant-comment-ref">${escapeHtml(where)}</span>` : "",
+            `<span class="assistant-comment-status">${escapeHtml(c.error ? `${failed}: ${c.error}` : done)}</span>`,
+          ].join("");
+          const body = c.body ? markdown.parse(c.body, { async: false, breaks: true }) : "";
+          return `<div class="assistant-comment ${c.error ? "failed" : "done"}"><div class="assistant-comment-head">${head}</div>${body}</div>`;
+        })
+        .join(""),
+    [comments],
+  );
+  return <Html html={html} className="card-body assistant-comments" refs={refs} />;
 }
 
 /** Makes sure nothing in the HTML can run here. */

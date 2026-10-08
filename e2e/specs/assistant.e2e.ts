@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { click, clickButton, count, exists, openViaPalette, setTextarea, text, waitFor } from "./helpers";
 
 /** Selects the code of the `from`-th to `to`-th unified change rows, like dragging the mouse. */
@@ -39,11 +39,17 @@ const lastAnswer = () =>
     return answers[answers.length - 1]?.textContent ?? null;
   });
 
-const fakeCalls = () =>
+const fakeLog = () =>
   readFileSync(process.env.WISPY_FAKE_LOG!, "utf8")
     .trim()
     .split("\n")
-    .map((l) => JSON.parse(l) as { provider: string; args: string[]; cwd: string; prompt: string });
+    .map((l) => JSON.parse(l));
+
+/** How the fake CLIs were run. */
+const fakeCalls = () => fakeLog().filter((l) => !("tool" in l)) as { provider: string; args: string[]; cwd: string; prompt: string }[];
+
+/** The review tools the fake CLIs called. */
+const toolCalls = () => fakeLog().filter((l) => "tool" in l) as { tool: string; arguments: Record<string, unknown>; result: string; isError: boolean }[];
 
 describe("assistant", () => {
   it("asks about selected lines with the selection as context", async () => {
@@ -60,7 +66,7 @@ describe("assistant", () => {
 
     const call = fakeCalls().at(-1)!;
     expect(call.provider).toBe("claude");
-    expect(call.args.join(" ")).toContain("--allowed-tools Read,Grep,Glob --permission-mode dontAsk");
+    expect(call.args.join(" ")).toContain("--allowed-tools Read,Grep,Glob,mcp__wispy --permission-mode dontAsk --strict-mcp-config");
     expect(call.prompt).toContain("The question is about these lines of src/Module0/Service0.php (in #2");
     expect(call.cwd).toContain("/worktrees/wispy/fixture/");
   });
@@ -246,13 +252,18 @@ describe("assistant", () => {
     await browser.keys("a");
     await waitFor(() => exists('[data-testid="assistant-panel"]'));
     await chooseProvider("claude");
-    await ask("comments");
-    await waitFor(async () => (await count(".assistant-comment.done")) === 2, 60_000);
+    await ask("comments:wait");
+    // A comment becomes a draft (and a card) while the assistant is still answering.
+    await waitFor(async () => (await count('[data-testid="assistant-streaming"] .assistant-comment.done')) === 1, 60_000);
+    await waitFor(async () => (await drafts()) === before + 1);
+    expect(fakeCalls().at(-1)!.prompt).toContain("add each one with `add_draft_comment`");
+    writeFileSync(`${process.env.WISPY_FAKE_LOG}.go`, "");
+    await waitFor(async () => (await count(".assistant-message.assistant:not(.streaming) .assistant-comment.done")) === 2, 60_000);
     expect(await text(".assistant-comment.failed .assistant-comment-status")).toBe("not added: nowhere/Missing.php isn't changed in this range");
+    expect(toolCalls().at(-1)).toMatchObject({ tool: "add_draft_comment", result: "nowhere/Missing.php isn't changed in this range", isError: true });
     expect(await text('[data-testid="assistant-note"]')).toBe("Added 2 draft comments · 1 failed");
     // The comment's Markdown renders in the card (its suggestion as a code block).
     expect(await text(".assistant-comment.done strong")).toBe("simpler");
-    expect(fakeCalls().at(-1)!.prompt).toContain("````review-comment src/app.ts:42-45");
     await waitFor(async () => (await drafts()) === before + 2);
 
     // The cards' references jump to the drafts, which say who wrote them.
@@ -269,10 +280,10 @@ describe("assistant", () => {
     await waitFor(async () => (await text(".card.draft .markdown strong")) === "simpler");
     expect((await text(".card.draft .suggestion"))?.trim()).toBe("Suggested change\nsimpler();");
 
-    // A follow-up gets the drafts by ref, and edits and deletes them by ref.
+    // A follow-up lists the drafts by ref, and edits and deletes them by ref.
     await ask("revise");
     await waitFor(async () => (await count(".assistant-message.assistant:last-of-type:not(.streaming) .assistant-comment:is(.done, .failed)")) === 3, 60_000);
-    expect(fakeCalls().at(-1)!.prompt).toMatch(/^The review's draft comments \(not posted yet\), by ref:\n/);
+    expect(toolCalls().slice(-4).map((c) => c.tool)).toEqual(["list_drafts", "edit_draft", "delete_draft", "edit_draft"]);
     const cards = await browser.execute(() =>
       [...document.querySelectorAll(".assistant-message.assistant:last-of-type .assistant-comment-head")].map((h) => (h as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
     );
