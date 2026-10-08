@@ -96,9 +96,14 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     let origin = OriginRepo::init();
     origin.write("README.md", "# Shop\n");
     origin.write("src/Order.php", "<?php\n$state = 'open';\n");
+    origin.write("src/composer.lock", "{\"hash\": \"lock-one\"}\n");
+    origin.write("src/Old.lock", "alpha\nbeta\ngamma\ndelta\nold-lock-line\n");
     origin.commit("base");
     origin.checkout_new("feature");
     origin.write("src/Order.php", "<?php\n$state = 'picked';\n");
+    origin.write("src/composer.lock", "{\"hash\": \"lock-two\"}\n");
+    origin.remove("src/Old.lock");
+    origin.write("src/New.lock", "alpha\nbeta\ngamma\ndelta\nnew-lock-line\n");
     origin.commit("pick");
     origin.publish_pr(3, "feature");
     let data = tempfile::tempdir().unwrap();
@@ -112,7 +117,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
 
     let selection = Selection { path: "src/Order.php".into(), pr_label: "#3".into(), start_line: 2, end_line: 2, text: "+$state = 'picked';".into() };
     let mut streamed = String::new();
-    let new = NewThread { provider: Provider::Claude, model: Some("opus".into()), effort: Some("high".into()), selection: Some(selection), anchor: None };
+    let new = NewThread { provider: Provider::Claude, model: Some("opus".into()), effort: Some("high".into()), selection: Some(selection), anchor: None, hidden: vec![] };
     let thread = service
         .ask(&snapshot, (0, 0), None, Some(new), "Is 'picked' a valid state?", |event| {
             if let AssistantEvent::Delta { text } = event {
@@ -134,6 +139,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(prompt.contains("Under review: acme/shop #3"));
     assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
     assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"));
+    assert!(prompt.contains("lock-two") && prompt.contains("new-lock-line") && !prompt.contains("hid these"), "nothing hidden: {prompt}");
     let args: Vec<&str> = calls[0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert!(args.windows(2).any(|w| w == ["--model", "opus"]));
     let cwd = PathBuf::from(calls[0]["cwd"].as_str().unwrap());
@@ -157,7 +163,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(expired.messages.last().unwrap().sign_in, "an expired sign-in offers to sign in again");
 
     // A thread whose first turn failed sends the review context again when asked again.
-    let new = NewThread { provider: Provider::Claude, model: None, effort: None, selection: None, anchor: None };
+    let new = NewThread { provider: Provider::Claude, model: None, effort: None, selection: None, anchor: None, hidden: vec![] };
     let first = service.ask(&snapshot, (0, 0), None, Some(new), "expired", |_| {}).unwrap();
     assert_eq!(first.session, None);
     let retried = service.ask(&snapshot, (0, 0), Some(&first.id), None, "What changed?", |_| {}).unwrap();
@@ -169,11 +175,20 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(call["prompt"].as_str().unwrap().contains("Under review: acme/shop #3"));
     assert!(!call["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
     service.delete_assistant_thread(&first.id).unwrap();
-    let codex = service
-        .ask(&snapshot, (0, 0), None, Some(NewThread { provider: Provider::Codex, model: None, effort: None, selection: None, anchor: None }), "Summarize", |_| {})
-        .unwrap();
+    // Files hidden by the file filter are named, but their changes stay out of the prompt (a
+    // hidden rename's old side too).
+    let hidden = vec!["src/composer.lock".to_string(), "src/New.lock".to_string()];
+    let new = NewThread { provider: Provider::Codex, model: None, effort: None, selection: None, anchor: None, hidden };
+    let codex = service.ask(&snapshot, (0, 0), None, Some(new), "Summarize", |_| {}).unwrap();
     assert_eq!(codex.session.as_deref(), Some("fake-codex-thread"));
     assert!(codex.messages[1].text.contains("About “Summarize”"));
+    let calls = asks(log.path());
+    let prompt = calls.last().unwrap()["prompt"].as_str().unwrap();
+    assert!(prompt.contains("hid these changed files") && prompt.contains("- src/composer.lock\n- src/New.lock\n"), "{prompt}");
+    assert!(prompt.contains("+$state = 'picked';"), "the rest of the diff is still there");
+    for hidden in ["lock-one", "lock-two", "old-lock-line", "new-lock-line"] {
+        assert!(!prompt.contains(hidden), "{hidden} leaked into the prompt: {prompt}");
+    }
 
     assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 2);
     service.delete_assistant_thread(&thread.id).unwrap();

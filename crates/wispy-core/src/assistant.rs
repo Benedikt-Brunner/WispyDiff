@@ -280,6 +280,9 @@ pub struct Context {
     pub diff: String,
     /// Set when asking about selected lines.
     pub selection: Option<Selection>,
+    /// Paths hidden by the reviewer's file filter (left out of `diff`).
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,13 +314,40 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
             selection.path, selection.pr_label, selection.start_line, selection.end_line, selection.text
         ));
     }
+    if !context.hidden.is_empty() {
+        prompt.push_str(
+            "\nThe reviewer hid these changed files, so their changes are left out of the diff below \
+             (they're in the checkout; read them only if the question needs them):\n",
+        );
+        for path in &context.hidden {
+            prompt.push_str(&format!("- {path}\n"));
+        }
+    }
     prompt.push_str(&format!("\nThe diff under review:\n```diff\n{}\n```\n\nQuestion: {question}\n", context.diff));
     prompt
 }
 
-/// The combined diff of a range for the prompt, cut at `limit` bytes.
-pub fn diff_text(git: &crate::git::Git, from: &str, to: &str, limit: usize) -> Result<String> {
-    let out = git.run(&["diff", "--no-color", "--no-ext-diff", "-M", from, to, "--"])?;
+/// The combined diff of a range for the prompt without the `hidden` paths, cut at `limit` bytes.
+pub fn diff_text(git: &crate::git::Git, from: &str, to: &str, hidden: &[String], limit: usize) -> Result<String> {
+    let mut excluded: Vec<&str> = hidden.iter().map(String::as_str).collect();
+    // Pathspecs apply before rename detection: a hidden rename's old path has to go too, or it
+    // would show up as a deletion.
+    let renames = if hidden.is_empty() { Vec::new() } else { git.run(&["diff", "--name-status", "-z", "-M", from, to, "--"])? };
+    let renames = String::from_utf8_lossy(&renames);
+    let mut fields = renames.split('\0');
+    while let Some(status) = fields.next() {
+        let paths = if status.starts_with('R') || status.starts_with('C') { 2 } else { 1 };
+        let paths: Vec<&str> = fields.by_ref().take(paths).collect();
+        if let [old, new] = paths[..] {
+            if hidden.iter().any(|h| h == new) && status.starts_with('R') {
+                excluded.push(old);
+            }
+        }
+    }
+    let excludes: Vec<String> = excluded.iter().map(|p| format!(":(exclude,literal){p}")).collect();
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-M", from, to, "--"];
+    args.extend(excludes.iter().map(String::as_str));
+    let out = git.run(&args)?;
     let mut text = String::from_utf8_lossy(&out).into_owned();
     if text.len() > limit {
         let cut = (0..=limit).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);

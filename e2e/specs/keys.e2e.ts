@@ -242,7 +242,7 @@ describe("keyboard", () => {
     expect(await fileNames()).toEqual(files);
   });
 
-  it("filters files by extension and viewed state, remembered per PR", async () => {
+  it("filters files by extension, remembered per PR", async () => {
     const ext = (path: string) => path.slice(path.lastIndexOf("."));
     const exts = [...new Set(files.map(ext))];
     const hidden = exts[0];
@@ -252,7 +252,7 @@ describe("keyboard", () => {
       );
     await click('[data-testid="file-filter"]');
     await waitFor(() => exists('[data-testid="file-filter-menu"]'));
-    expect(await menuItems()).toEqual([...exts.sort().map((e) => `file-filter-ext${e}`), "file-filter-deleted", "file-filter-viewed"]);
+    expect(await menuItems()).toEqual([...exts.sort().map((e) => `file-filter-ext${e}`)]);
 
     // Unticking an extension leaves its files out of the list and the diff.
     await click(`[data-testid="file-filter-ext${hidden}"]`);
@@ -271,14 +271,6 @@ describe("keyboard", () => {
     await waitFor(async () => JSON.stringify(await selectedChips()) === "[2]");
     await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept));
 
-    // Hiding viewed files: marking one viewed takes it out and moves on.
-    await toTop();
-    await click('[data-testid="file-filter"]');
-    await click('[data-testid="file-filter-viewed"]');
-    await browser.keys("Escape");
-    await browser.keys("v");
-    await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept.slice(1)) && (await activeFile()) === kept[1]);
-
     // Everything filtered out says so; "Show all files" clears the filter.
     await click('[data-testid="file-filter"]');
     for (const e of exts.filter((e) => e !== hidden)) await click(`[data-testid="file-filter-ext${e}"]`);
@@ -287,12 +279,6 @@ describe("keyboard", () => {
     await click('[data-testid="all-filtered"] button');
     await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(files));
     await browser.keys("Escape");
-
-    // Un-viewed again for the other specs.
-    await click(`.file-list li[title="${kept[0]}"]`);
-    await waitFor(async () => (await activeFile()) === kept[0]);
-    await browser.keys("v");
-    await waitFor(async () => !(await listHas(kept[0], "viewed")));
   });
 
   it("lists the keyboard shortcuts with ?", async () => {

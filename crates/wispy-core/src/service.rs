@@ -106,6 +106,9 @@ pub struct NewThread {
     pub effort: Option<String>,
     pub selection: Option<crate::assistant::Selection>,
     pub anchor: Option<crate::assistant::ThreadAnchor>,
+    /// Paths hidden by the file filter: named in the prompt, left out of its diff.
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 /// How much of the range's diff goes into the first prompt.
@@ -599,8 +602,9 @@ impl PrService {
                 let context = Context {
                     range_label: range_label(snapshot, lo, hi),
                     titles: snapshot.stack.prs[lo..=hi].iter().map(|p| format!("#{} {}", p.number, p.title)).collect(),
-                    diff: diff_text(&git, &snapshot.bases[lo], head, PROMPT_DIFF_LIMIT)?,
+                    diff: diff_text(&git, &snapshot.bases[lo], head, &new.hidden, PROMPT_DIFF_LIMIT)?,
                     selection: new.selection,
+                    hidden: new.hidden,
                 };
                 let thread = Thread {
                     id: crate::drafts::new_id(),

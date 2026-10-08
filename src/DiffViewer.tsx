@@ -129,17 +129,12 @@ export function DiffViewer(props: Props) {
 
   const store = useMemo(() => new RowStore(viewId, () => setVersion((v) => v + 1)), [viewId]);
 
-  // ---------- file filter (extensions, deleted, viewed; remembered per PR or range) ----------
+  // ---------- file filter (by extension; remembered per PR or range) ----------
   const filterKey = lo === hi ? prKey(prs[lo]) : `${prKey(prs[lo])}..#${prs[hi].number}`;
   const [filters, setFilters] = useState(() => loadRecord("fileFilters"));
   const filter = useMemo(() => toFileFilter(filters[filterKey]), [filters, filterKey]);
-  const isFiltered = useCallback(
-    (file: FileSummary) =>
-      filter.exts.includes(extensionOf(file.path)) || (filter.deleted && file.status === "deleted") || (filter.viewed && isViewed(file.content_key)),
-    [filter, isViewed],
-  );
   /** Per file index: left out by the filter. */
-  const filtered = useMemo(() => summary.files.map(isFiltered), [summary, isFiltered]);
+  const filtered = useMemo(() => summary.files.map((f) => filter.exts.includes(extensionOf(f.path))), [summary, filter]);
 
   const modeOf = useCallback(
     (index: number): Mode => {
@@ -729,7 +724,9 @@ export function DiffViewer(props: Props) {
       if (!assistant) return;
       const threadId = assistant.activeId;
       setPendingAnswer({ threadId, question, text: "" });
-      const newThread = threadId ? null : { ...choice, selection: assistant.context.selection, anchor: assistant.context.anchor };
+      // Files hidden by the filter are named to the assistant but their diff is left out.
+      const hidden = summary.files.filter((_, i) => filtered[i]).map((f) => f.path);
+      const newThread = threadId ? null : { ...choice, selection: assistant.context.selection, anchor: assistant.context.anchor, hidden };
       askAssistant(stackId, lo, hi, threadId, newThread, question, (event) => {
         if (event.kind === "delta") setPendingAnswer((p) => p && { ...p, text: p.text + event.text });
         else if (event.kind === "text") setPendingAnswer((p) => p && { ...p, text: event.text });
@@ -741,7 +738,7 @@ export function DiffViewer(props: Props) {
         .catch((e) => setAssistant((a) => a && { ...a, note: String(e) }))
         .finally(() => setPendingAnswer(null));
     },
-    [assistant, stackId, lo, hi],
+    [assistant, stackId, lo, hi, summary, filtered],
   );
 
   const answerToDraft = useCallback(
@@ -1016,7 +1013,7 @@ export function DiffViewer(props: Props) {
         setFilters((current) => {
           const all = { ...current };
           delete all[filterKey];
-          if (next.exts.length || next.deleted || next.viewed) all[filterKey] = next;
+          if (next.exts.length) all[filterKey] = next;
           const kept = Object.fromEntries(Object.entries(all).slice(-300));
           saveRecord("fileFilters", kept);
           return kept;
@@ -1666,31 +1663,25 @@ function FileList(props: FileListProps) {
             </button>
           ))}
         </span>
-        <FileFilterMenu files={files} isViewed={isViewed} filter={filter} filteredCount={filteredCount} onChange={onFilterChange} />
+        <FileFilterMenu files={files} filter={filter} filteredCount={filteredCount} onChange={onFilterChange} />
       </div>
     </nav>
   );
 }
 
-/** Files left out of the diff (like GitHub's file filter): extensions, deleted files, viewed files. */
+/** Files left out of the diff by extension (like GitHub's file filter). */
 interface FileFilter {
   /** Hidden extensions ("" = files without one). */
   exts: string[];
-  deleted: boolean;
-  viewed: boolean;
 }
 
-const NO_FILTER: FileFilter = { exts: [], deleted: false, viewed: false };
+const NO_FILTER: FileFilter = { exts: [] };
 
 /** A remembered filter, checked (storage may hold anything). */
 function toFileFilter(value: unknown): FileFilter {
   if (!value || typeof value !== "object") return NO_FILTER;
   const v = value as Partial<FileFilter>;
-  return {
-    exts: Array.isArray(v.exts) ? v.exts.filter((e): e is string => typeof e === "string") : [],
-    deleted: v.deleted === true,
-    viewed: v.viewed === true,
-  };
+  return { exts: Array.isArray(v.exts) ? v.exts.filter((e): e is string => typeof e === "string") : [] };
 }
 
 /** ".php" for "src/a.test.php"; "" without one (dotfiles like ".gitignore" included). */
@@ -1702,13 +1693,12 @@ const extensionOf = (path: string) => {
 
 interface FileFilterMenuProps {
   files: FileSummary[];
-  isViewed: (key: string) => boolean;
   filter: FileFilter;
   filteredCount: number;
   onChange: (filter: FileFilter) => void;
 }
 
-function FileFilterMenu({ files, isViewed, filter, filteredCount, onChange }: FileFilterMenuProps) {
+function FileFilterMenu({ files, filter, filteredCount, onChange }: FileFilterMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const exts = useMemo(() => {
@@ -1717,9 +1707,7 @@ function FileFilterMenu({ files, isViewed, filter, filteredCount, onChange }: Fi
     // Files without an extension last.
     return [...counts].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
   }, [files]);
-  const deleted = useMemo(() => files.filter((f) => f.status === "deleted").length, [files]);
-  const viewed = files.filter((f) => isViewed(f.content_key)).length;
-  const active = filter.exts.length > 0 || filter.deleted || filter.viewed;
+  const active = filter.exts.length > 0;
 
   // Closes on a click elsewhere, or Esc (before the diff's own Esc handling).
   useEffect(() => {
@@ -1775,13 +1763,10 @@ function FileFilterMenu({ files, isViewed, filter, filteredCount, onChange }: Fi
               ext || "No extension",
               count,
               !filter.exts.includes(ext),
-              () => onChange({ ...filter, exts: filter.exts.includes(ext) ? filter.exts.filter((e) => e !== ext) : [...filter.exts, ext] }),
+              () => onChange({ exts: filter.exts.includes(ext) ? filter.exts.filter((e) => e !== ext) : [...filter.exts, ext] }),
               `file-filter-ext${ext}`,
             ),
           )}
-          <hr />
-          {item("Deleted files", deleted, !filter.deleted, () => onChange({ ...filter, deleted: !filter.deleted }), "file-filter-deleted")}
-          {item("Viewed files", viewed, !filter.viewed, () => onChange({ ...filter, viewed: !filter.viewed }), "file-filter-viewed")}
         </div>
       )}
     </span>
