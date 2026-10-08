@@ -155,11 +155,34 @@ describe("reading modes and noise", () => {
         };
       });
       expect(drawn).toEqual({ sideways: 0, clipped: 0 });
-      await browser.keys("z");
-      await waitFor(async () => !(await exists(".diff-canvas.wrap")));
-      expect(await browser.execute(() => [...document.querySelectorAll<HTMLElement>(".row-split")].every((r) => r.offsetHeight === 20))).toBe(true);
+      // Unified: one PR, so no PR tags to make room for; wrapped code runs up to the pane's edge.
       await browser.keys("S");
       await waitFor(async () => (await count('.row-file[data-mode="split"]')) === 0);
+      await waitFor(() =>
+        browser.execute(() => {
+          if ([...document.querySelectorAll<HTMLElement>(".row-add, .row-del, .row-ctx")].some((r) => r.offsetHeight > 20)) return true;
+          const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+          el.scrollTop += el.clientHeight;
+          return false;
+        }),
+      );
+      const unified = await browser.execute(() => {
+        const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+        const probe = document.querySelector<HTMLElement>(".char-probe")!;
+        const charWidth = probe.getBoundingClientRect().width / probe.textContent!.length;
+        const codes = [...document.querySelectorAll<HTMLElement>(".row-add .code, .row-del .code, .row-ctx .code")];
+        const right = el.getBoundingClientRect().left + el.clientWidth;
+        return {
+          sideways: el.scrollWidth - el.clientWidth,
+          clipped: codes.filter((c) => c.scrollHeight > c.closest<HTMLElement>(".row")!.clientHeight + 1 || c.scrollWidth > c.clientWidth + 1).length,
+          // Space between the text area and the pane's edge: an 8px margin and less than one column.
+          wasted: codes.filter((c) => right - (c.getBoundingClientRect().right - parseFloat(getComputedStyle(c).paddingRight)) >= 8 + charWidth).length,
+        };
+      });
+      expect(unified).toEqual({ sideways: 0, clipped: 0, wasted: 0 });
+      await browser.keys("z");
+      await waitFor(async () => !(await exists(".diff-canvas.wrap")));
+      expect(await browser.execute(() => [...document.querySelectorAll<HTMLElement>(".row")].every((r) => r.offsetHeight === 20))).toBe(true);
     } finally {
       await browser.setWindowSize(size.width, size.height);
     }

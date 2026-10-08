@@ -369,10 +369,10 @@ export function DiffViewer(props: Props) {
     if (!wrap || !charWidth || !viewportWidth) return null;
     const fit = (px: number) => Math.max(20, Math.floor(px / charWidth));
     return {
-      unified: fit(viewportWidth - (gutterChars * 2 * charWidth + 44) - WRAP_PAD_UNIFIED),
-      split: fit(viewportWidth / 2 - 1 - (gutterChars * charWidth + 30) - WRAP_PAD_SPLIT),
+      unified: fit(viewportWidth - (gutterChars * 2 * charWidth + 44) - WRAP_PAD - (multiPr ? WRAP_TAG_ROOM : 0)),
+      split: fit(viewportWidth / 2 - 1 - (gutterChars * charWidth + 30) - WRAP_PAD),
     };
-  }, [wrap, charWidth, viewportWidth, gutterChars]);
+  }, [wrap, charWidth, viewportWidth, gutterChars, multiPr]);
   /** Widths of the rows wider than `min` columns, per `file:mode`, fetched as files need them. */
   const [rowWidths, setRowWidths] = useState<{ viewId: string; files: Map<string, { min: number; rows: [number, number][] }> }>({ viewId, files: new Map() });
   const widths = rowWidths.viewId === viewId ? rowWidths.files : null;
@@ -1305,6 +1305,7 @@ export function DiffViewer(props: Props) {
                 // Wrapped: no sideways scrolling, and each line's code is exactly this many columns.
                 "--wrap-unified": columns?.unified,
                 "--wrap-split": columns?.split,
+                "--wrap-tag-room": `${multiPr ? WRAP_TAG_ROOM : 0}px`,
                 minWidth: columns ? undefined : `calc(${summary.max_line_chars + 4}ch + ${gutterChars * 2}ch + 48px)`,
               } as React.CSSProperties
             }
@@ -1370,9 +1371,9 @@ function wordAt(x: number, y: number): string | null {
 const at = (y: number, height = ROW_HEIGHT): React.CSSProperties =>
   height === ROW_HEIGHT ? { transform: `translateY(${y}px)` } : { transform: `translateY(${y}px)`, height };
 const NO_ROWS: WrappedRows = [];
-/** Horizontal padding of a wrapped line's code (unified leaves room for the PR tag). */
-const WRAP_PAD_UNIFIED = 8 + 48;
-const WRAP_PAD_SPLIT = 8 + 24;
+/** Horizontal padding of a wrapped line's code, plus room on the right for unified PR tags when there are any. */
+const WRAP_PAD = 8 + 8;
+const WRAP_TAG_ROOM = 40;
 
 interface FileHeaderProps {
   y: number;
