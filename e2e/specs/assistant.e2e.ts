@@ -203,23 +203,27 @@ describe("assistant", () => {
       const view = document.querySelector(".diff-scroll")!;
       view.scrollTop = view.scrollHeight;
     });
-    await open(7);
-    await waitFor(() =>
-      browser.execute((line: string) => {
-        const view = document.querySelector(".diff-scroll")!.getBoundingClientRect();
-        return [...document.querySelectorAll(".row.selected")].some((r) => {
-          const box = r.getBoundingClientRect();
-          return box.top >= view.top && box.bottom <= view.bottom && [...r.querySelectorAll(".ln")].some((ln) => ln.textContent === line);
-        });
-      }, unchanged.refLine!),
-    );
-    // Back to unified (spec files share the app), and no wrapping.
-    const header = `.row-file[data-file="${range.refPath}"]`;
-    expect(await browser.execute((h: string) => document.querySelector(h)?.getAttribute("data-mode"), header)).toBe("split");
-    await browser.keys("s");
-    await waitFor(() => browser.execute((h: string) => document.querySelector(h)?.getAttribute("data-mode") === "unified", header));
-    await wrap();
-    await waitFor(() => browser.execute(() => localStorage.getItem("wispy.wrap") === "off"));
+    try {
+      await open(7);
+      await waitFor(() =>
+        browser.execute((line: string) => {
+          const view = document.querySelector(".diff-scroll")!.getBoundingClientRect();
+          return [...document.querySelectorAll(".row-split.selected")].some((r) => {
+            const box = r.getBoundingClientRect();
+            return box.top >= view.top && box.bottom <= view.bottom && [...r.querySelectorAll(".ln")].some((ln) => ln.textContent === line);
+          });
+        }, unchanged.refLine!),
+      );
+    } finally {
+      // Back to unified and no wrapping, whatever happened: spec files share the app.
+      if (await exists(".row-split")) {
+        await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+        await browser.keys("s");
+        await waitFor(async () => !(await exists(".row-split")));
+      }
+      await wrap();
+      await waitFor(() => browser.execute(() => localStorage.getItem("wispy.wrap") === "off"));
+    }
     // Files outside the diff, and files the filter hides, open in the file view.
     for (const [i, ref] of [[3, outside], [4, hidden]] as const) {
       await open(i);
