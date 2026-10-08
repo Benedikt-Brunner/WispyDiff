@@ -180,6 +180,17 @@ describe("reading modes and noise", () => {
         };
       });
       expect(unified).toEqual({ sideways: 0, clipped: 0, wasted: 0 });
+      // Two PRs: wrapped code makes room for the PR tags.
+      await browser.keys("}");
+      await waitFor(async () => (await count(".pr-tag")) > 0);
+      const overlapping = await browser.execute(
+        () =>
+          [...document.querySelectorAll<HTMLElement>(".pr-tag")].filter((tag) => {
+            const code = tag.closest(".row")!.querySelector<HTMLElement>(".code")!;
+            return tag.getBoundingClientRect().left < code.getBoundingClientRect().right - parseFloat(getComputedStyle(code).paddingRight);
+          }).length,
+      );
+      expect(overlapping).toBe(0);
       await browser.keys("z");
       await waitFor(async () => !(await exists(".diff-canvas.wrap")));
       expect(await browser.execute(() => [...document.querySelectorAll<HTMLElement>(".row")].every((r) => r.offsetHeight === 20))).toBe(true);
