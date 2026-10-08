@@ -46,7 +46,7 @@ pub struct Ask {
 const TOOLS_TOKEN_VAR: &str = "WISPY_MCP_TOKEN";
 
 /// The CLI invocation for `ask`, restricted to reading files (the review tools change only
-/// the app's local drafts). The prompt goes on stdin.
+/// the app's local drafts; the user's own MCP servers stay available). The prompt goes on stdin.
 pub fn command(ask: &Ask, cwd: &Path) -> Command {
     let binary = ask.provider.binary();
     let mut cmd = Command::new(&binary);
@@ -60,13 +60,12 @@ pub fn command(ask: &Ask, cwd: &Path) -> Command {
     match ask.provider {
         Provider::Claude => {
             cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
-            // Read-only: only tools that can't change anything, nothing else is allowed. No MCP
-            // servers but the app's own.
-            let server = crate::mcp::SERVER_NAME;
-            let allowed = if ask.tools.is_some() { format!("Read,Grep,Glob,mcp__{server}") } else { "Read,Grep,Glob".into() };
-            cmd.args(["--allowed-tools", &allowed, "--permission-mode", "dontAsk", "--strict-mcp-config"]);
+            // Read-only files: the only built-in tools are ones that can't change anything. MCP
+            // tools (the user's own servers and the app's review tools) run without asking, since
+            // nobody can be asked headless.
+            cmd.args(["--tools", "Read,Grep,Glob", "--permission-mode", "bypassPermissions"]);
             if let Some(tools) = &ask.tools {
-                let config = serde_json::json!({ "mcpServers": { server: {
+                let config = serde_json::json!({ "mcpServers": { crate::mcp::SERVER_NAME: {
                     "type": "http", "url": tools.url, "headers": { "Authorization": format!("Bearer {}", tools.token) },
                 } } });
                 cmd.args(["--mcp-config", &config.to_string()]);

@@ -66,7 +66,7 @@ describe("assistant", () => {
 
     const call = fakeCalls().at(-1)!;
     expect(call.provider).toBe("claude");
-    expect(call.args.join(" ")).toContain("--allowed-tools Read,Grep,Glob,mcp__wispy --permission-mode dontAsk --strict-mcp-config");
+    expect(call.args.join(" ")).toContain("--tools Read,Grep,Glob --permission-mode bypassPermissions");
     expect(call.prompt).toContain("The question is about these lines of src/Module0/Service0.php (in #2");
     expect(call.cwd).toContain("/worktrees/wispy/fixture/");
   });

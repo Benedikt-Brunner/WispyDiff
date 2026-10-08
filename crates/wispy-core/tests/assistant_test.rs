@@ -36,17 +36,17 @@ fn builds_read_only_claude_invocations() {
     let first = args(&ask(Provider::Claude, None));
     let joined = first.join(" ");
     assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages"));
-    assert!(joined.contains("--allowed-tools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config"), "{joined}");
+    assert!(joined.contains("--tools Read,Grep,Glob --permission-mode bypassPermissions"), "{joined}");
+    assert!(!joined.contains("--strict-mcp-config"), "the user's own MCP servers stay available");
     assert!(joined.contains("--model m1") && joined.contains("--effort high"));
     assert!(!joined.contains("--resume"));
     assert!(args(&ask(Provider::Claude, Some("s-1"))).join(" ").ends_with("--resume s-1"));
     let defaults = Ask { model: None, effort: None, ..ask(Provider::Claude, None) };
     assert!(!args(&defaults).iter().any(|a| a == "--model" || a == "--effort"));
 
-    // The review tools: only the app's MCP server, its tools allowed.
+    // The review tools: the app's MCP server, next to the user's own.
     let tools = Ask { tools: Some(endpoint()), ..ask(Provider::Claude, None) };
     let with_tools = args(&tools);
-    assert!(with_tools.join(" ").contains("--allowed-tools Read,Grep,Glob,mcp__wispy --permission-mode dontAsk --strict-mcp-config"));
     let config = with_tools.windows(2).find(|w| w[0] == "--mcp-config").map(|w| w[1].clone()).unwrap();
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&config).unwrap(),
