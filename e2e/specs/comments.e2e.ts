@@ -79,9 +79,17 @@ describe("comments", () => {
       await browser.keys("z");
       await waitFor(() => browser.execute((v: string) => localStorage.getItem("wispy.wrap") === v, to));
     };
-    // A narrow window wraps the fixture's lines, so toggling the file list reflows them.
-    const size = await browser.getWindowSize();
-    await browser.setWindowSize(700, 900);
+    // A wide file list leaves room for few columns, so the fixture's lines wrap and toggling the list reflows them.
+    await browser.execute(() => {
+      const handle = document.querySelector<HTMLElement>(".file-list .resize-handle")!;
+      const x = handle.getBoundingClientRect().left + 3;
+      const fire = (target: EventTarget, type: string, clientX: number) =>
+        target.dispatchEvent(new PointerEvent(type, { clientX, button: 0, bubbles: true, cancelable: true }));
+      fire(handle, "pointerdown", x);
+      fire(window, "pointermove", x + 5000);
+      fire(window, "pointerup", x + 5000);
+    });
+    await waitFor(() => browser.execute(() => document.querySelector(".file-list")!.getBoundingClientRect().width > innerWidth / 2));
     await toggleWrap("on");
     try {
       await browser.execute(() => {
@@ -119,8 +127,11 @@ describe("comments", () => {
         await waitFor(async () => !(await exists(".composer-input")));
       }
       if (!(await exists(".file-list"))) await browser.keys([MOD, "b"]);
+      await browser.execute(() =>
+        document.querySelector(".file-list .resize-handle")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+      );
+      await waitFor(() => browser.execute(() => document.querySelector(".file-list")!.getBoundingClientRect().width === 280));
       await toggleWrap("off");
-      await browser.setWindowSize(size.width, size.height);
       await scrollTo(0);
     }
   });
