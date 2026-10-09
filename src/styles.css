@@ -14,6 +14,9 @@
   --del-bg: #fcecee;
   --del-gutter: #f8d7db;
   --del-fg: #cf222e;
+  /* Changed words inside a changed line; derived, so every theme gets them. */
+  --add-word: color-mix(in srgb, var(--add-fg) 22%, transparent);
+  --del-word: color-mix(in srgb, var(--del-fg) 22%, transparent);
   --hunk-bg: #f1f3fb;
   --hunk-fg: #6a73a8;
   --file-bg: #f6f6f4;
@@ -664,6 +667,14 @@ body.resizing {
 .row-del .gutter {
   background: var(--del-gutter);
   color: var(--del-fg);
+}
+.row-add .wd,
+.half-add .wd {
+  background: var(--add-word);
+}
+.row-del .wd,
+.half-del .wd {
+  background: var(--del-word);
 }
 /* Which PR a changed line came from: a bar at the gutter's left edge. */
 .row.attributed .gutter {

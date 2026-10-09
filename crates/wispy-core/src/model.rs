@@ -13,9 +13,10 @@ use crate::highlight::{plain_lines, Language, Seg};
 use crate::highlight_cache::Lines;
 use crate::noise::path_noise;
 use crate::split::align;
+use crate::words::{diff_words, Spans};
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 5;
+pub const MODEL_VERSION: u32 = 7;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -45,6 +46,8 @@ pub struct Row {
     pub h: Vec<u8>,
     /// The line's number in PR `a`'s own diff (where a comment on it must point).
     pub l: Option<u32>,
+    /// The parts that differ from the line opposite it (see [`crate::words`]).
+    pub w: Spans,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,7 +259,7 @@ pub fn file_slice<'a>(view: &'a DiffView, index: usize) -> &'a [Row] {
 }
 
 fn file_rows(index: u32, file: &FileDiff, attrs: &[LineAttr], highlights: &HashMap<String, Lines>) -> Vec<Row> {
-    let row = |k: u8, o: Option<u32>, n: Option<u32>, s: Vec<Seg>| Row { k, f: index, o, n, s, a: None, h: Vec::new(), l: None };
+    let row = |k: u8, o: Option<u32>, n: Option<u32>, s: Vec<Seg>| Row { k, f: index, o, n, s, a: None, h: Vec::new(), l: None, w: Vec::new() };
     let mut rows = vec![row(row_kind::FILE, None, None, vec![(0, file.path().to_string())])];
 
     if file.binary {
@@ -297,7 +300,40 @@ fn file_rows(index: u32, file: &FileDiff, attrs: &[LineAttr], highlights: &HashM
             rows.push(Row { a: attr.pr, h: attr.history, l: attr.line, ..row(kind, line.old_no, line.new_no, segments) });
         }
     }
+    mark_words(&mut rows);
     rows
+}
+
+/// Marks the words that differ in each change block of N deleted lines followed by N added
+/// lines, pairing them in order (as the side-by-side puts them opposite each other). Blocks of
+/// unequal length are restructurings, where line pairs mean little; they stay plain.
+fn mark_words(rows: &mut [Row]) {
+    let (mut dels, mut adds) = (Vec::new(), Vec::new());
+    for index in 0..=rows.len() {
+        let kind = rows.get(index).map(|r| r.k);
+        if kind == Some(row_kind::ADDED) {
+            adds.push(index);
+            continue;
+        }
+        if kind == Some(row_kind::DELETED) && adds.is_empty() {
+            dels.push(index);
+            continue;
+        }
+        if dels.len() == adds.len() {
+            for (&del, &add) in dels.iter().zip(&adds) {
+                let text = |row: &Row| row.s.iter().map(|(_, t)| t.as_str()).collect::<String>();
+                if let Some((old, new)) = diff_words(&text(&rows[del]), &text(&rows[add])) {
+                    rows[del].w = old;
+                    rows[add].w = new;
+                }
+            }
+        }
+        dels.clear();
+        adds.clear();
+        if kind == Some(row_kind::DELETED) {
+            dels.push(index);
+        }
+    }
 }
 
 fn segs_match(segs: &[Seg], text: &str) -> bool {

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::highlight::Seg;
 use crate::model::{row_kind, Row};
+use crate::words::Spans;
 
 /// A side with no line opposite the other side's change.
 pub const FILLER: u8 = 6;
@@ -33,6 +34,9 @@ pub struct SplitRow {
     /// The old / new line's number in that PR's own diff (changed sides only).
     pub ol: Option<u32>,
     pub nl: Option<u32>,
+    /// The changed words of the old / new line (see [`crate::words`]).
+    pub ow: Spans,
+    pub nw: Spans,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -137,6 +141,8 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
     let mut new_attr: HashMap<u32, (u8, Option<u32>)> = HashMap::new();
     let mut old_text: HashMap<u32, &Vec<Seg>> = HashMap::new();
     let mut new_text: HashMap<u32, &Vec<Seg>> = HashMap::new();
+    let mut old_words: HashMap<u32, &Spans> = HashMap::new();
+    let mut new_words: HashMap<u32, &Spans> = HashMap::new();
     for row in rows {
         match row.k {
             row_kind::DELETED => {
@@ -145,6 +151,7 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
                 }
                 if let Some(o) = row.o {
                     old_text.insert(o, &row.s);
+                    old_words.insert(o, &row.w);
                 }
             }
             row_kind::ADDED => {
@@ -153,6 +160,7 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
                 }
                 if let Some(n) = row.n {
                     new_text.insert(n, &row.s);
+                    new_words.insert(n, &row.w);
                 }
             }
             _ => {}
@@ -166,6 +174,9 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
             .or_else(|| fallback.get(&no).copied())
             .cloned()
             .unwrap_or_default()
+    };
+    let words = |words: &HashMap<u32, &Spans>, no: Option<u32>, changed: bool| -> Spans {
+        no.filter(|_| changed).and_then(|no| words.get(&no)).map(|w| (*w).clone()).unwrap_or_default()
     };
     pairs
         .iter()
@@ -185,6 +196,8 @@ pub fn split_rows(rows: &[Row], pairs: &[Pair], old: &[Vec<Seg>], new: &[Vec<Seg
             na: new_pr.map(|a| a.0),
             ol: old_pr.and_then(|a| a.1),
             nl: new_pr.and_then(|a| a.1),
+            ow: words(&old_words, p.o, p.ok == row_kind::DELETED),
+            nw: words(&new_words, p.n, p.nk == row_kind::ADDED),
         })
         .collect()
 }

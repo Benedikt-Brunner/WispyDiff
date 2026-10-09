@@ -43,7 +43,7 @@ import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment, type WrappedR
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
 import { instantJumps } from "./themes";
-import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow } from "./types";
+import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow, type Words } from "./types";
 import { mod } from "./platform";
 import { loadList, loadRecord, saveList, saveRecord } from "./prefs";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
@@ -1488,20 +1488,40 @@ function CollapsedNotice({ y, file, why, tally, onExpand }: CollapsedNoticeProps
   );
 }
 
-function Segments({ segs }: { segs: Seg[] }) {
-  return (
-    <>
-      {segs.map(([cls, text], i) =>
-        cls === 0 ? (
-          text
-        ) : (
-          <span key={i} className={`t${cls}`}>
-            {text}
-          </span>
-        ),
-      )}
-    </>
+const segment = (cls: number, text: string, key: number) =>
+  cls === 0 ? (
+    text
+  ) : (
+    <span key={key} className={`t${cls}`}>
+      {text}
+    </span>
   );
+
+function Segments({ segs, words }: { segs: Seg[]; words?: Words }) {
+  if (!words?.length) return <>{segs.map(([cls, text], i) => segment(cls, text, i))}</>;
+  // Cut the segments at the changed-word bounds and wrap each changed run in one mark.
+  const out: React.ReactNode[] = [];
+  let run: React.ReactNode[] | null = null;
+  let [pos, w] = [0, 0];
+  for (const [cls, text] of segs) {
+    let start = 0;
+    while (start < text.length) {
+      const at = pos + start;
+      while (w < words.length && words[w][1] <= at) w++;
+      const inside = w < words.length && words[w][0] <= at;
+      const end = Math.min(text.length, (inside ? words[w][1] : w < words.length ? words[w][0] : Infinity) - pos);
+      if (inside && !run) run = [];
+      if (!inside && run) {
+        out.push(<span key={out.length} className="wd">{run}</span>);
+        run = null;
+      }
+      (run ?? out).push(segment(cls, text.slice(start, end), (run ?? out).length));
+      start = end;
+    }
+    pos += text.length;
+  }
+  if (run) out.push(<span key={out.length} className="wd">{run}</span>);
+  return <>{out}</>;
 }
 
 type GutterHandler = (event: "down" | "enter" | "up" | "hover", file: number, mode: "unified" | "split", offset: number, side: "old" | "new" | null) => void;
@@ -1573,7 +1593,7 @@ const DiffRow = memo(function DiffRow({ y, height, row, prs, showAttribution, ta
             <span className="sign">{kind === "add" ? "+" : kind === "del" ? "−" : ""}</span>
           </span>
           <span className="code">
-            <Segments segs={row.s} />
+            <Segments segs={row.s} words={row.w} />
           </span>
           {tag && row.a !== null && <span className="pr-tag">#{prs[row.a].number}</span>}
         </div>
@@ -1600,7 +1620,7 @@ interface SplitProps {
 
 const SplitRowView = memo(function SplitRowView({ y, height, row, showAttribution, selected, file, offset, onGutter, marker, onMarker }: SplitProps) {
   if (!row) return <div className="row row-loading" style={at(y, height)} />;
-  const side = (no: number | null, kind: number, segs: Seg[], pr: number | null, left: boolean) => {
+  const side = (no: number | null, kind: number, segs: Seg[], words: Words, pr: number | null, left: boolean) => {
     const cls = sideClass(kind);
     const attributed = showAttribution && pr !== null;
     return (
@@ -1617,7 +1637,7 @@ const SplitRowView = memo(function SplitRowView({ y, height, row, showAttributio
           <span className="ln">{no ?? ""}</span>
         </span>
         <span className="code">
-          <Segments segs={segs} />
+          <Segments segs={segs} words={words} />
         </span>
       </span>
     );
@@ -1631,8 +1651,8 @@ const SplitRowView = memo(function SplitRowView({ y, height, row, showAttributio
       data-mode="split"
       data-offset={offset}
     >
-      {side(row.o, row.ok, row.os, row.oa, true)}
-      {side(row.n, row.nk, row.ns, row.na, false)}
+      {side(row.o, row.ok, row.os, row.ow, row.oa, true)}
+      {side(row.n, row.nk, row.ns, row.nw, row.na, false)}
     </div>
   );
 });

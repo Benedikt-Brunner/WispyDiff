@@ -6,7 +6,7 @@ use wispy_core::highlight_cache::HighlightCache;
 use wispy_core::model::{file_slice, row_kind, DiffView};
 use wispy_core::range::{compute_range, RangeSpec};
 use wispy_core::repo_store::RepoStore;
-use wispy_core::split::{align, FILLER};
+use wispy_core::split::{align, split_rows, FILLER};
 
 const C: u8 = row_kind::CONTEXT;
 const A: u8 = row_kind::ADDED;
@@ -130,4 +130,45 @@ fn whitespace_only_changes_disappear_with_ignore_whitespace() {
     assert_eq!(paths, vec!["b.php"]);
     assert_ne!(spec.cache_key("acme/shop"), spec.clone().with_ignore_whitespace(true).cache_key("acme/shop"));
     assert!(no_ws.rows.iter().any(|r| row_text(r) == "$x = 2;"));
+}
+
+#[test]
+fn replaced_lines_mark_the_words_that_changed_in_both_views() {
+    let before = "a\nlet price = 1;\nlet name = 'x';\nz\n";
+    let after = "a\nlet total = 1;\nlet name = 'y';\nz\n";
+    let view = view_of(&[("a.txt", before)], &[("a.txt", Some(after))]);
+    let rows = file_slice(&view, 0);
+    let words = |kind: u8, text: &str| rows.iter().find(|r| r.k == kind && row_text(r) == text).unwrap().w.clone();
+    assert_eq!(words(D, "let price = 1;"), vec![(4, 9)]);
+    assert_eq!(words(A, "let total = 1;"), vec![(4, 9)]);
+    assert_eq!(words(D, "let name = 'x';"), vec![(12, 13)], "paired in order within the block");
+    assert_eq!(words(A, "let name = 'y';"), vec![(12, 13)]);
+    assert!(words(C, "a").is_empty());
+
+    let pairs = align(rows, 4, 4).pairs;
+    let split = split_rows(rows, &pairs, &[], &[]);
+    assert_eq!((split[1].ow.clone(), split[1].nw.clone()), (vec![(4, 9)], vec![(4, 9)]));
+    assert!(split[0].ow.is_empty() && split[0].nw.is_empty());
+}
+
+#[test]
+fn blocks_of_unequal_length_get_no_word_highlights() {
+    let before = "a\nlet price = 1;\nz\n";
+    let after = "a\nlet total = 1;\nlet extra = 2;\nz\n";
+    let view = view_of(&[("a.txt", before)], &[("a.txt", Some(after))]);
+    assert!(file_slice(&view, 0).iter().all(|r| r.w.is_empty()));
+}
+
+#[test]
+fn a_restructured_block_marks_only_the_lines_that_were_edited() {
+    let before = "x\n  resolveBody: (ctx) => ({\n    orderId: resolveOrderId(ctx),\n    warehouseId: options.warehouseId,\n    sendMail: false,\n  }),\ny\n";
+    let after = "x\n  resolveBody: (ctx) => {\n    const { orderId, warehouseId } = resolveShipmentTarget(ctx);\n\n    return { orderId, warehouseId, sendMail: false };\n  },\ny\n";
+    let view = view_of(&[("a.ts", before)], &[("a.ts", Some(after))]);
+    let marked: Vec<(u8, String, Vec<(u32, u32)>)> =
+        file_slice(&view, 0).iter().filter(|r| !r.w.is_empty()).map(|r| (r.k, row_text(r), r.w.clone())).collect();
+    assert_eq!(
+        marked,
+        vec![(D, "  resolveBody: (ctx) => ({".into(), vec![(24, 25)]), (D, "  }),".into(), vec![(3, 4)])],
+        "the brackets are what changed line for line; the rest was restructured"
+    );
 }

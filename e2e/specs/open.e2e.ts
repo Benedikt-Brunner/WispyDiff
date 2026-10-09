@@ -21,6 +21,9 @@ describe("opening a pull request", () => {
     expect(await count(".row-del")).toBeGreaterThan(0);
     // Highlighted PHP tokens made it through.
     expect(await count(".row-add .t1, .row-add .t2")).toBeGreaterThan(0);
+    // Edited lines mark just the words that changed.
+    expect(await count(".row-del .wd")).toBeGreaterThan(0);
+    expect(await count(".row-add .wd")).toBeGreaterThan(0);
   });
 
   it("navigates hunks with j/k and files with n/p", async () => {
@@ -114,6 +117,7 @@ describe("reading modes and noise", () => {
     await waitFor(async () => (await headerMode("src/Module0/Service0.php")) === "split");
     await waitFor(async () => (await count(".row-split .half-add")) > 0);
     expect(await count(".row-split .half-filler, .row-split .half-ctx")).toBeGreaterThan(0);
+    expect(await count(".row-split .half-add .wd")).toBeGreaterThan(0);
     await browser.keys("s");
     await waitFor(async () => (await headerMode("src/Module0/Service0.php")) === "unified");
   });
