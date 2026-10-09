@@ -91,11 +91,11 @@ export class Layout {
     return lo;
   }
 
-  /** Inserts below rows `first..=last`, with the top of each (stacked in order under their row). */
-  insertsBetween(first: number, last: number): (Insert & { y: number })[] {
+  /** Inserts below rows `first..=last`, plus the one keyed `always` wherever it is, with the top of each (stacked in order under their row). */
+  insertsBetween(first: number, last: number, always?: string): (Insert & { y: number })[] {
     const out: (Insert & { y: number })[] = [];
     this.inserts.forEach((insert, i) => {
-      if (insert.after >= first && insert.after <= last) {
+      if ((insert.after >= first && insert.after <= last) || insert.key === always) {
         const below = insert.after + 1;
         out.push({ ...insert, y: below * ROW_HEIGHT + this.wrappedCumulative[this.wrappedBefore(below)] + this.cumulative[i] });
       }

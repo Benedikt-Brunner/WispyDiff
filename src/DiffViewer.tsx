@@ -894,7 +894,9 @@ export function DiffViewer(props: Props) {
     if (mark.header || mark.row < first || mark.row >= last) continue;
     rendered.push(<CommentMark key={`mark:${mark.row}:${mark.right}`} y={layout.rowY(mark.row)} mark={mark} onShow={showThreads} />);
   }
-  for (const insert of layout.insertsBetween(first - 1, last)) {
+  // The open comment box stays mounted off screen too, or what's typed in it would be lost (e.g. when
+  // wrapped lines reflow after the file list is toggled and the box briefly falls out of the window).
+  for (const insert of layout.insertsBetween(first - 1, last, composer?.key)) {
     rendered.push(
       <InsertBox key={`insert:${insert.key}`} y={insert.y} onHeight={heightReporter(insert.key)}>
         {placedItems.get(insert.key)?.render()}

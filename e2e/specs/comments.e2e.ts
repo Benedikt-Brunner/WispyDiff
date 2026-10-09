@@ -1,4 +1,4 @@
-import { click, clickButton, clickChip, count, exists, gutterDrag, openViaPalette, pressShifted, selectedChips, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, clickChip, count, exists, gutterDrag, MOD, openViaPalette, pressShifted, selectedChips, setTextarea, text, waitFor } from "./helpers";
 
 const draftCount = async () => {
   const label = (await text('[data-testid="review-button"]')) ?? "";
@@ -69,6 +69,71 @@ describe("comments", () => {
     expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
     await browser.keys("Escape");
     await waitFor(async () => !(await exists(".composer-input")));
+  });
+
+  it("keeps the comment being written when it leaves the rendered rows", async () => {
+    const value = () => browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")?.value ?? null);
+    const scrollTo = (top: number) => browser.execute((t: number) => void (document.querySelector(".diff-scroll")!.scrollTop = t), top);
+    const toggleWrap = async (to: "on" | "off") => {
+      await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+      await browser.keys("z");
+      await waitFor(() => browser.execute((v: string) => localStorage.getItem("wispy.wrap") === v, to));
+    };
+    // A wide file list leaves room for few columns, so the fixture's lines wrap and toggling the list reflows them.
+    await browser.execute(() => {
+      const handle = document.querySelector<HTMLElement>(".file-list .resize-handle")!;
+      const x = handle.getBoundingClientRect().left + 3;
+      const fire = (target: EventTarget, type: string, clientX: number) =>
+        target.dispatchEvent(new PointerEvent(type, { clientX, button: 0, bubbles: true, cancelable: true }));
+      fire(handle, "pointerdown", x);
+      fire(window, "pointermove", x + 5000);
+      fire(window, "pointerup", x + 5000);
+    });
+    await waitFor(() => browser.execute(() => document.querySelector(".file-list")!.getBoundingClientRect().width > innerWidth / 2));
+    await toggleWrap("on");
+    try {
+      await browser.execute(() => {
+        const view = document.querySelector(".diff-scroll")!;
+        view.scrollTop = view.scrollHeight / 2;
+      });
+      await waitFor(() =>
+        browser.execute(() => {
+          const view = document.querySelector(".diff-scroll")!.getBoundingClientRect();
+          return [...document.querySelectorAll(".row-add")].some((r) => r.getBoundingClientRect().top > view.top + view.height / 2);
+        }),
+      );
+      const index = await browser.execute(() => {
+        const view = document.querySelector(".diff-scroll")!.getBoundingClientRect();
+        return [...document.querySelectorAll(".row-add")].findIndex((r) => r.getBoundingClientRect().top > view.top + view.height / 2);
+      });
+      await gutterDrag(".row-add", index);
+      await waitFor(() => exists(".composer-input"));
+      await setTextarea(".composer-input", "Half-written thought");
+      for (let i = 0; i < 2; i++) {
+        await browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")!.focus());
+        await browser.keys([MOD, "b"]);
+        await waitFor(async () => (await exists(".file-list")) === (i === 1));
+        expect(await value()).toBe("Half-written thought");
+      }
+      const top = await browser.execute(() => document.querySelector(".diff-scroll")!.scrollTop);
+      await scrollTo(0);
+      await waitFor(async () => (await browser.execute(() => document.querySelector(".diff-scroll")!.scrollTop)) === 0);
+      await scrollTo(top);
+      await waitFor(() => exists(".composer-input"));
+      expect(await value()).toBe("Half-written thought");
+    } finally {
+      if (await exists(".composer-input")) {
+        await clickButton(".composer", "Cancel");
+        await waitFor(async () => !(await exists(".composer-input")));
+      }
+      if (!(await exists(".file-list"))) await browser.keys([MOD, "b"]);
+      await browser.execute(() =>
+        document.querySelector(".file-list .resize-handle")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+      );
+      await waitFor(() => browser.execute(() => document.querySelector(".file-list")!.getBoundingClientRect().width === 280));
+      await toggleWrap("off");
+      await scrollTo(0);
+    }
   });
 
   it("drafts a range comment by dragging across lines, saving it with Enter", async () => {
