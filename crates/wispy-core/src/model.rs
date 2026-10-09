@@ -16,7 +16,7 @@ use crate::split::align;
 use crate::words::{diff_words, Spans};
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 6;
+pub const MODEL_VERSION: u32 = 7;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
