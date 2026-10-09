@@ -1,5 +1,5 @@
 //! Intra-line ("word") diff: which parts of a changed line differ from the line it replaced,
-//! so only those are highlighted (as on GitHub). Background: docs/research/intraline-diff-highlighting.md.
+//! so only those are highlighted (as on GitHub).
 
 /// Changed parts of a line as `[start, end)` offsets in UTF-16 code units (the frontend's
 /// string indices), sorted and disjoint.
