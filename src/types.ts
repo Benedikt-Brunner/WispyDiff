@@ -17,7 +17,12 @@ export interface Row {
   h: number[];
   /** The line's number in PR `a`'s own diff. */
   l: number | null;
+  /** Changed words: [start, end) string offsets of what differs from the line opposite. */
+  w: Words;
 }
+
+/** Sorted, disjoint [start, end) string offsets. */
+export type Words = [number, number][];
 
 /** One aligned side-by-side row: old line opposite new line (either may be a filler). */
 export interface SplitRow {
@@ -31,6 +36,8 @@ export interface SplitRow {
   na: number | null;
   ol: number | null;
   nl: number | null;
+  ow: Words;
+  nw: Words;
 }
 
 export type FileStatus = "added" | "deleted" | "modified" | "renamed" | "copied";

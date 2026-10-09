@@ -7,11 +7,11 @@ fn segs(text: &str) -> Vec<(u8, String)> {
 }
 
 fn row(k: u8, text: &str) -> Row {
-    Row { k, f: 0, o: None, n: None, s: segs(text), a: None, h: Vec::new(), l: None }
+    Row { k, f: 0, o: None, n: None, s: segs(text), a: None, h: Vec::new(), l: None, w: Vec::new() }
 }
 
 fn split(old: &str, new: &str) -> SplitRow {
-    SplitRow { o: None, n: None, ok: row_kind::CONTEXT, nk: row_kind::CONTEXT, os: segs(old), ns: segs(new), oa: None, na: None, ol: None, nl: None }
+    SplitRow { o: None, n: None, ok: row_kind::CONTEXT, nk: row_kind::CONTEXT, os: segs(old), ns: segs(new), oa: None, na: None, ol: None, nl: None, ow: Vec::new(), nw: Vec::new() }
 }
 
 #[test]
