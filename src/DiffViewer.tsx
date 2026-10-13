@@ -1121,7 +1121,10 @@ export function DiffViewer(props: Props) {
       // Files: the header of the file being read sits at the top after n/p.
       const here = fileAt(el.scrollTop);
       const topRow = here === layout.segments[pinned?.file ?? -1] ? here.start : layout.rowAt(heading);
-      const starts = layout.segments.filter((s) => s.mode !== "hidden").map((s) => s.start);
+      const shown = layout.segments.filter((s) => s.mode !== "hidden");
+      const starts = shown.map((s) => s.start);
+      // n/p skip files already viewed.
+      const unviewedStarts = shown.filter((s) => !isViewed(summary.files[s.file].content_key)).map((s) => s.start);
       const changes = layout.changeRows(summary);
       let target: number | undefined;
       let fileTarget: number | undefined;
@@ -1140,7 +1143,7 @@ export function DiffViewer(props: Props) {
           e.preventDefault();
           const down = e.key === "ArrowDown";
           if (e.shiftKey) {
-            // Shift+arrows: next/previous file, like n/p.
+            // Shift+arrows: next/previous file, viewed or not.
             fileTarget = down ? starts.find((r) => r > topRow) : findLast(starts, (r) => r < topRow);
             break;
           }
@@ -1148,10 +1151,10 @@ export function DiffViewer(props: Props) {
           return;
         }
         case "n":
-          fileTarget = starts.find((r) => r > topRow);
+          fileTarget = unviewedStarts.find((r) => r > topRow);
           break;
         case "p":
-          fileTarget = findLast(starts, (r) => r < topRow);
+          fileTarget = findLast(unviewedStarts, (r) => r < topRow);
           break;
         case "s":
           keepFile.current = here.file;

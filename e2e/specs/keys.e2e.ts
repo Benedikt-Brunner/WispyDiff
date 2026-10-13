@@ -70,6 +70,24 @@ describe("keyboard", () => {
     }
   });
 
+  it("skips viewed files with n/p, but not with shift+arrows", async () => {
+    // files[1] viewed: n/p jump over it.
+    await click(`.file-list li[title="${files[1]}"]`);
+    await waitFor(async () => (await activeFile()) === files[1]);
+    await browser.keys("v");
+    await waitFor(async () => (await listHas(files[1], "viewed")) && (await activeFile()) === files[2]);
+    await browser.keys("p");
+    await waitFor(async () => (await activeFile()) === files[0]);
+    await browser.keys("n");
+    await waitFor(async () => (await activeFile()) === files[2]);
+    await pressShifted("ArrowUp");
+    await waitFor(async () => (await activeFile()) === files[1]);
+
+    // Cleanup for other specs.
+    await browser.keys("v");
+    await waitFor(async () => !(await listHas(files[1], "viewed")));
+  });
+
   it("marks the last files viewed even though they can't scroll to the top", async () => {
     const [secondLast, last] = files.slice(-2);
     await click(`.file-list li[title="${secondLast}"]`);
