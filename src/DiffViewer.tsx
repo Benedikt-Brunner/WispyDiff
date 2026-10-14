@@ -534,6 +534,10 @@ export function DiffViewer(props: Props) {
   const pendingFile = useRef<{ from: number; next: number } | null>(null);
   /** After toggling a file (s, expanding, un-viewing): it stays the current file once the layout changes. */
   const keepFile = useRef<number | null>(null);
+  /** After undoing a viewed mark (V): that file's header goes to the top once it has expanded. */
+  const revealFile = useRef<number | null>(null);
+  /** Files marked viewed with `v` in this view, latest last, for V to undo. */
+  const viewedHistory = useRef<{ view: string; paths: string[] }>({ view: "", paths: [] });
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -542,7 +546,13 @@ export function DiffViewer(props: Props) {
     let top = 0;
     const moveOn = pendingFile.current;
     let pin: number | null = null;
-    if (moveOn && previousView.current === viewId && ["collapsed", "hidden"].includes(layout.segments[moveOn.from]?.mode)) {
+    const reveal = revealFile.current;
+    revealFile.current = null;
+    if (reveal !== null && previousView.current === viewId && layout.segments[reveal]) {
+      pendingFile.current = null;
+      top = layout.rowY(layout.segments[reveal].start);
+      pin = reveal;
+    } else if (moveOn && previousView.current === viewId && ["collapsed", "hidden"].includes(layout.segments[moveOn.from]?.mode)) {
       pendingFile.current = null;
       top = layout.rowY(layout.segments[moveOn.next].start);
       pin = moveOn.next;
@@ -1114,7 +1124,7 @@ export function DiffViewer(props: Props) {
       const el = scrollRef.current;
       if (!el) return;
       // Every file filtered out: nothing for the file keys to act on.
-      if (!layout.totalRows && ["s", "e", " ", "c", "v", "u", "x"].includes(e.key)) return;
+      if (!layout.totalRows && ["s", "e", " ", "c", "v", "V", "u", "x"].includes(e.key)) return;
       // While gliding, j/k continue from where the glide is heading.
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
@@ -1236,9 +1246,32 @@ export function DiffViewer(props: Props) {
             setExpanded((s) => withOut(s, file.path));
             if (!viewed) setCollapsed((s) => withOut(s, file.path));
             // Marking viewed moves on to the next file still to review, so v, v, v… works.
+            if (viewedHistory.current.view !== viewId) viewedHistory.current = { view: viewId, paths: [] };
+            const history = viewedHistory.current.paths.filter((p) => p !== file.path);
+            viewedHistory.current.paths = viewed ? [...history, file.path] : history;
             const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key) && !filtered[i]) : -1;
             if (next >= 0) pendingFile.current = { from: here.file, next };
             else keepFile.current = here.file;
+          });
+          break;
+        }
+        case "V": {
+          // Undoes the latest `v` still in effect: un-views that file and goes back to it.
+          if (viewedHistory.current.view !== viewId) return;
+          const paths = viewedHistory.current.paths;
+          let index = -1;
+          while (paths.length && index < 0) {
+            const path = paths.pop();
+            const i = summary.files.findIndex((f) => f.path === path);
+            if (i >= 0 && isViewed(summary.files[i].content_key) && layout.segments[i].mode !== "hidden") index = i;
+          }
+          if (index < 0) return;
+          const file = summary.files[index];
+          changeLayout(() => {
+            onToggleViewed(file.content_key, false);
+            setExpanded((s) => withOut(s, file.path));
+            setCollapsed((s) => withOut(s, file.path));
+            revealFile.current = index;
           });
           break;
         }
@@ -1251,7 +1284,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId]);
 
   return (
     <div className="diff-layout">
