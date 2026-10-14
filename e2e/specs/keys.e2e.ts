@@ -70,6 +70,24 @@ describe("keyboard", () => {
     }
   });
 
+  it("undoes the latest viewed marks with V, going back to each file", async () => {
+    await toTop();
+    await browser.keys("v");
+    await waitFor(async () => (await listHas(files[0], "viewed")) && (await activeFile()) === files[1]);
+    await browser.keys("v");
+    await waitFor(async () => (await listHas(files[1], "viewed")) && (await activeFile()) === files[2]);
+
+    await browser.keys("V");
+    await waitFor(async () => !(await listHas(files[1], "viewed")) && (await activeFile()) === files[1]);
+    expect(await listHas(files[0], "viewed")).toBe(true);
+    await browser.keys("V");
+    await waitFor(async () => !(await listHas(files[0], "viewed")) && (await activeFile()) === files[0]);
+    // Nothing left to undo.
+    await browser.keys("V");
+    await settled();
+    expect(await activeFile()).toBe(files[0]);
+  });
+
   it("skips viewed files with n/p, but not with shift+arrows", async () => {
     // files[1] viewed: n/p jump over it.
     await click(`.file-list li[title="${files[1]}"]`);

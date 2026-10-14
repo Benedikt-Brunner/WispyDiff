@@ -110,6 +110,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [["z"], "Wrap long lines"],
       [["Space", "e"], "Collapse / expand the file"],
       [["v"], "Mark viewed and go to the next file"],
+      [["V"], "Undo the last viewed mark and go back to that file"],
     ],
   ],
   [
