@@ -96,6 +96,54 @@ describe("review progress", () => {
     await waitFor(async () => ((await fileNames()) as string[]).includes("docs/NOTES.md"), 60_000);
   });
 
+  it("warns when marking a file viewed that changed in newer commits, once per version", async () => {
+    // #5 is docs/NOTES.md and `path`; each push changes one of them and is seen by a background refresh.
+    const push = async (file: string, content: string) => {
+      originGit("checkout", "--quiet", "solo");
+      originWrite(file, content);
+      originGit("commit", "--quiet", "-am", `change ${file}`);
+      originGit("update-ref", "refs/pull/5/head", "solo");
+      originGit("checkout", "--quiet", "main");
+      await browser.execute(() => (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke("refresh_inbox"));
+      await waitFor(() => exists(".update-banner"), 60_000);
+      await waitFor(() => browser.execute(() => window.__wispyNewerChecked?.() ?? false), 60_000);
+    };
+    const warning = '[data-testid="newer-warning"]';
+
+    // NOTES.md changed: the warning offers the newer commits instead, and v leaves it unviewed.
+    await push("docs/NOTES.md", "pushed while the PR was open, amended\n");
+    await browser.keys("v");
+    await waitFor(() => exists(warning));
+    expect(await text(warning)).toContain("NOTES.md");
+    await browser.keys("Enter");
+    await waitFor(async () => !(await exists(".update-banner")) && !(await exists(warning)), 60_000);
+    expect(await isViewedInList("docs/NOTES.md")).toBe(false);
+
+    // Only `path` changes next: NOTES.md is marked without a word, `path` warns again (a new version).
+    await push(path, `${originShow(`solo:${path}`)}// one more thing\n`);
+    await browser.keys("v");
+    await waitFor(() => isViewedInList("docs/NOTES.md"));
+    expect(await exists(warning)).toBe(false);
+    await browser.keys("v");
+    await waitFor(() => exists(warning));
+    await browser.keys("Escape");
+    await waitFor(() => isViewedInList(path));
+    expect(await exists(warning)).toBe(false);
+    // Dismissed: not again for this version.
+    await browser.keys("V");
+    await waitFor(async () => !(await isViewedInList(path)));
+    await browser.keys("v");
+    await waitFor(() => isViewedInList(path));
+    expect(await exists(warning)).toBe(false);
+
+    // Leave both unviewed, at the latest version, for the specs below.
+    await browser.keys("V");
+    await browser.keys("V");
+    await waitFor(async () => !(await isViewedInList(path)) && !(await isViewedInList("docs/NOTES.md")));
+    await click(".update-banner");
+    await waitFor(async () => !(await exists(".update-banner")), 60_000);
+  });
+
   it("shows in the inbox that #5 changed since it was marked reviewed, until it's marked again", async () => {
     const marked = 'li[data-pr="5"] .inbox-marked';
     await goHome();

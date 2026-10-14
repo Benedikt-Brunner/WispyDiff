@@ -1744,6 +1744,20 @@ body.resizing {
 .theme-list {
   outline: none;
 }
+.newer-warning {
+  width: min(440px, calc(100vw - 32px));
+  outline: none;
+}
+.newer-warning-text {
+  margin: 0;
+  padding: 4px 16px 12px;
+}
+.newer-warning-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 16px 14px;
+}
 .theme-list li {
   display: flex;
   justify-content: space-between;

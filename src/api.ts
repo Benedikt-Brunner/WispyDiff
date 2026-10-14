@@ -11,6 +11,10 @@ export const refreshPr = (input: string, knownStackId: string) =>
 export const selectRange = (stackId: string, lo: number, hi: number, ignoreWhitespace: boolean) =>
   invoke<OpenedRange>("select_range", { stackId, lo, hi, ignoreWhitespace });
 
+/** Each file's content key in a range, by path (without opening the range). */
+export const rangeKeys = (stackId: string, lo: number, hi: number, ignoreWhitespace: boolean) =>
+  invoke<Record<string, string>>("range_keys", { stackId, lo, hi, ignoreWhitespace });
+
 /** Unified rows of one file, by offset within the file (0 = header). */
 export const getRows = (viewId: string, file: number, start: number, end: number) =>
   invoke<Row[]>("get_rows", { viewId, file, start, end });

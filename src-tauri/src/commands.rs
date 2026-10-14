@@ -142,6 +142,25 @@ pub async fn select_range(
     Ok(OpenedRange { view_id: id, range: Range { lo, hi }, ignore_whitespace, summary: view.summary.clone(), since: None })
 }
 
+/// Each file's content key in range `lo..=hi`, by path — without opening the range (used to
+/// tell which files a newer version of the stack changed).
+#[tauri::command]
+pub async fn range_keys(
+    stack_id: String,
+    lo: usize,
+    hi: usize,
+    ignore_whitespace: bool,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
+    let view = match state.view(&view_id(&stack_id, lo, hi, ignore_whitespace)) {
+        Some(view) => view,
+        None => blocking(move || service.range_with(&snapshot, lo, hi, ignore_whitespace)).await?,
+    };
+    Ok(view.summary.files.iter().map(|f| (f.path.clone(), f.content_key.clone())).collect())
+}
+
 /// Shows only what changed in `lo..=hi` since a checkpoint (rebase-aware).
 #[tauri::command]
 pub async fn select_since(

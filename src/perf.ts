@@ -38,6 +38,8 @@ declare global {
     __wispyErrors?: string[];
     /** Set by App: how many ranges of a stack are precomputed, and the open stack. */
     __wispyRanges?: { readyCount: (stackId: string) => number; current: () => string | null };
+    /** Set by App: whether the waiting newer version's file keys for the shown range are known. */
+    __wispyNewerChecked?: () => boolean;
   }
 }
 

@@ -96,12 +96,14 @@ interface Props {
   /** Viewed marks, by file content key. */
   isViewed: (key: string) => boolean;
   onToggleViewed: (key: string, viewed: boolean) => void;
+  /** Before marking a file viewed: false holds the mark back, `mark` does it later. */
+  confirmViewed: (path: string, key: string, mark: () => void) => boolean;
 }
 
 export function DiffViewer(props: Props) {
   const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, wrap, onWrapChange, isIgnored } = props;
   const { hiddenCommentPrs, onCommentsHiddenChange, onShowFiles } = props;
-  const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed } = props;
+  const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed, confirmViewed } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -1241,18 +1243,20 @@ export function DiffViewer(props: Props) {
         case "v": {
           const file = summary.files[here.file];
           const viewed = !isViewed(file.content_key);
-          changeLayout(() => {
-            onToggleViewed(file.content_key, viewed);
-            setExpanded((s) => withOut(s, file.path));
-            if (!viewed) setCollapsed((s) => withOut(s, file.path));
-            // Marking viewed moves on to the next file still to review, so v, v, v… works.
-            if (viewedHistory.current.view !== viewId) viewedHistory.current = { view: viewId, paths: [] };
-            const history = viewedHistory.current.paths.filter((p) => p !== file.path);
-            viewedHistory.current.paths = viewed ? [...history, file.path] : history;
-            const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key) && !filtered[i]) : -1;
-            if (next >= 0) pendingFile.current = { from: here.file, next };
-            else keepFile.current = here.file;
-          });
+          const toggle = () =>
+            changeLayout(() => {
+              onToggleViewed(file.content_key, viewed);
+              setExpanded((s) => withOut(s, file.path));
+              if (!viewed) setCollapsed((s) => withOut(s, file.path));
+              // Marking viewed moves on to the next file still to review, so v, v, v… works.
+              if (viewedHistory.current.view !== viewId) viewedHistory.current = { view: viewId, paths: [] };
+              const history = viewedHistory.current.paths.filter((p) => p !== file.path);
+              viewedHistory.current.paths = viewed ? [...history, file.path] : history;
+              const next = viewed ? summary.files.findIndex((f, i) => i > here.file && !isViewed(f.content_key) && !filtered[i]) : -1;
+              if (next >= 0) pendingFile.current = { from: here.file, next };
+              else keepFile.current = here.file;
+            });
+          if (!viewed || confirmViewed(file.path, file.content_key, toggle)) toggle();
           break;
         }
         case "V": {
@@ -1284,7 +1288,7 @@ export function DiffViewer(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId]);
+  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, confirmViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId]);
 
   return (
     <div className="diff-layout">
