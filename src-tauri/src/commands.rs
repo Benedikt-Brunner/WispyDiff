@@ -492,6 +492,13 @@ pub async fn read_file(stack_id: String, pr_index: usize, path: String, state: S
     blocking(move || service.read_file(&snapshot, pr_index, &path).map(|lines| lines.as_ref().clone())).await
 }
 
+/// One level of indentation in a file on a stack PR's head (for indenting suggested changes).
+#[tauri::command]
+pub async fn indent_unit(stack_id: String, pr_index: usize, path: String, state: State<'_, AppState>) -> Result<String, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    blocking(move || service.indent_unit(&snapshot, pr_index, &path)).await
+}
+
 /// Which of `paths` are files on a stack PR's head (for file references in assistant answers).
 #[tauri::command]
 pub async fn existing_files(stack_id: String, pr_index: usize, paths: Vec<String>, state: State<'_, AppState>) -> Result<Vec<String>, String> {

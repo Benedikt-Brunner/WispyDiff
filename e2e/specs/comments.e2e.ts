@@ -67,6 +67,20 @@ describe("comments", () => {
     expect(await clickButton(".composer", "Suggest change")).toBe(true);
     const value = await browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")!.value);
     expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
+
+    // Tab / Shift+Tab indent and outdent the suggested lines the way the file does (4 spaces).
+    const state = () =>
+      browser.execute(() => {
+        const el = document.querySelector<HTMLTextAreaElement>(".composer-input")!;
+        return { value: el.value, caret: el.selectionStart };
+      });
+    const before = await state();
+    await browser.keys("Tab");
+    await waitFor(async () => (await state()).value === `Simpler:\n\`\`\`suggestion\n    ${line}\n\`\`\``);
+    await waitFor(async () => (await state()).caret === before.caret + 4);
+    await pressShifted("Tab");
+    await waitFor(async () => (await state()).value === value);
+    expect(await browser.execute(() => document.activeElement?.classList.contains("composer-input"))).toBe(true);
     await browser.keys("Escape");
     await waitFor(async () => !(await exists(".composer-input")));
   });

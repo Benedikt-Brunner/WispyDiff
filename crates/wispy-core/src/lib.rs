@@ -11,6 +11,7 @@ pub mod git;
 pub mod github;
 pub mod highlight;
 pub mod highlight_cache;
+pub mod indent;
 pub mod mcp;
 pub mod inbox;
 pub mod model;

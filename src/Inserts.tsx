@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Html, Markdown } from "./Markdown";
 import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
 import { isSubmitKey, mod, keyLabel } from "./platform";
+import { reindent } from "./indent";
 
 /** Measures its content and reports the height, so the layout can make room for it. */
 export function InsertBox({ y, onHeight, children }: { y: number; onHeight: (h: number) => void; children: React.ReactNode }) {
@@ -30,14 +31,34 @@ interface ComposerProps {
   saveLabel?: string;
   /** The commented lines on the PR's head, offered as a GitHub suggestion to edit (null: not possible). */
   suggestion?: string | null;
+  /** One level of the file's indentation, for Tab / Shift+Tab in a suggestion (asked for once one is there). */
+  indentUnit?: () => Promise<string>;
   onSave: (text: string) => void;
   onCancel: () => void;
 }
 
-export function Composer({ title, fileFallback, initial = "", saveLabel = "Save draft", suggestion = null, onSave, onCancel }: ComposerProps) {
+export function Composer({ title, fileFallback, initial = "", saveLabel = "Save draft", suggestion = null, indentUnit, onSave, onCancel }: ComposerProps) {
   const [text, setText] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
+  const [unit, setUnit] = useState<string | null>(null);
+  const hasSuggestion = text.includes("```suggestion");
+  useEffect(() => {
+    if (!hasSuggestion || unit !== null) return;
+    setUnit("    ");
+    indentUnit?.().then(setUnit).catch(() => undefined);
+  }, [hasSuggestion, unit, indentUnit]);
+  /** Tab / Shift+Tab inside a suggestion: indents or outdents the selected lines. */
+  const indent = (outdent: boolean) => {
+    const el = ref.current;
+    const edit = el && reindent(el.value, el.selectionStart, el.selectionEnd, unit ?? "    ", outdent);
+    if (!el || !edit) return false;
+    el.setSelectionRange(edit.from, edit.to);
+    // Typed in, so ⌘Z undoes it.
+    if (!document.execCommand("insertText", false, edit.insert)) setText(el.value.slice(0, edit.from) + edit.insert + el.value.slice(edit.to));
+    requestAnimationFrame(() => el.setSelectionRange(edit.start, edit.end));
+    return true;
+  };
   const save = () => text.trim() && onSave(text.trim());
   // A file comment can't carry a suggestion.
   const canSuggest = suggestion !== null && fileFallback !== true;
@@ -80,6 +101,8 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
             e.preventDefault();
             e.stopPropagation();
             suggest();
+          } else if (e.key === "Tab" && !mod(e) && !e.altKey && indent(e.shiftKey)) {
+            e.preventDefault();
           } else if (e.key === "Escape") {
             e.preventDefault();
             onCancel();
@@ -108,11 +131,12 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
 interface DraftCardProps {
   shown: ShownDraft;
   label: string;
+  indentUnit?: () => Promise<string>;
   onEdit: (text: string) => void;
   onDelete: () => void;
 }
 
-export function DraftCard({ shown, label, onEdit, onDelete }: DraftCardProps) {
+export function DraftCard({ shown, label, indentUnit, onEdit, onDelete }: DraftCardProps) {
   const [editing, setEditing] = useState(false);
   const { draft } = shown;
   if (editing) {
@@ -122,6 +146,7 @@ export function DraftCard({ shown, label, onEdit, onDelete }: DraftCardProps) {
         fileFallback={null}
         initial={draft.body}
         saveLabel="Save"
+        indentUnit={indentUnit}
         onSave={(text) => {
           onEdit(text);
           setEditing(false);

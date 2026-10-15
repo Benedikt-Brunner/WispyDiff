@@ -161,6 +161,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [["h"], "Hide / show the selected PRs' comment threads"],
       [["↵"], "Save the comment (⇧↵: new line)"],
       [[keyLabel("G")], "Suggest a change to the commented lines"],
+      [["Tab", "⇧Tab"], "Indent / outdent the selected lines of a suggestion"],
       [[clickLabel, "u"], "Usages of the name under the mouse"],
       [["/"], "Search the repo"],
       [["a"], "Ask the assistant (about the selected lines, if any)"],
