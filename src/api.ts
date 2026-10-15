@@ -105,6 +105,9 @@ export function grep(stackId: string, prIndex: number, query: string, wholeWord:
 export const readFile = (stackId: string, prIndex: number, path: string) =>
   invoke<import("./types").Seg[][]>("read_file", { stackId, prIndex, path });
 
+/** One level of indentation (a tab or some spaces) in a file on a stack PR's head. */
+export const indentUnit = (stackId: string, prIndex: number, path: string) => invoke<string>("indent_unit", { stackId, prIndex, path });
+
 export const existingFiles = (stackId: string, prIndex: number, paths: string[]) => invoke<string[]>("existing_files", { stackId, prIndex, paths });
 
 export const locateLine = (viewId: string, file: number, line: number) =>

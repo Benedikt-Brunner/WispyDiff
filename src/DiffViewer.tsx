@@ -10,6 +10,7 @@ import {
   locateLine,
   readFile,
   existingFiles,
+  indentUnit,
   updateDraft,
   usages as fetchUsages,
   askAssistant,
@@ -298,8 +299,8 @@ export function DiffViewer(props: Props) {
   );
 
   const items = useMemo(
-    () => commentItems({ drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, closeComposer: () => setComposer(null), isHidden, hideThread }),
-    [drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, isHidden, hideThread],
+    () => commentItems({ drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, closeComposer: () => setComposer(null), isHidden, hideThread, indentUnit: (pr, path) => indentUnit(stackId, pr, path) }),
+    [drafts, threads, composer, lo, hi, prs, saveDraft, removeDraft, editDraft, isHidden, hideThread, stackId],
   );
   const anchorList = useMemo(() => {
     const unique = new Map<string, Anchor>();
@@ -2116,6 +2117,8 @@ interface ItemSources {
   closeComposer: () => void;
   isHidden: (thread: ReviewThread, prIndex: number) => boolean;
   hideThread: (threadId: string) => void;
+  /** One level of indentation in a file on a PR's head. */
+  indentUnit: (prIndex: number, path: string) => Promise<string>;
 }
 
 /** Threads, drafts and the open composer of the PRs in the range, as placeable items. */
@@ -2175,6 +2178,7 @@ function commentItems(src: ItemSources): CommentItem[] {
         <DraftCard
           shown={shown}
           label={`#${prs[prIndex].number} · ${where}`}
+          indentUnit={() => src.indentUnit(prIndex, path)}
           onEdit={(body) => void src.editDraft(draft.id, body)}
           onDelete={() => void src.removeDraft(draft.id)}
         />
@@ -2199,6 +2203,7 @@ function commentItems(src: ItemSources): CommentItem[] {
           title={`Comment on #${prs[composer.prIndex].number} · ${where}`}
           fileFallback={composer.fallback}
           suggestion={composer.suggestion}
+          indentUnit={() => src.indentUnit(composer.prIndex, composer.path)}
           onSave={(body) => {
             src.closeComposer();
             void src.saveDraft({

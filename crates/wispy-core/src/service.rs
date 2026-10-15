@@ -17,7 +17,7 @@ use crate::github::GitHubClient;
 use crate::highlight::Highlighter;
 use crate::highlight_cache::HighlightCache;
 use crate::highlight::Language;
-use crate::model::{file_slice, DiffView};
+use crate::model::{file_slice, read_blobs, DiffView};
 use crate::pr_ref::PrRef;
 use crate::range::{blob_lines, compute_range};
 use crate::repo_store::RepoStore;
@@ -555,6 +555,14 @@ impl PrService {
         let git = self.git(snapshot)?;
         let blob = git.run_string(&["rev-parse", &format!("{}:{path}", snapshot.heads[index])])?;
         blob_lines(&git, &blob, Language::from_path(path), &self.highlighter, &self.highlights)
+    }
+
+    /// One level of indentation (a tab or some spaces) in a file on stack PR `index`'s head.
+    pub fn indent_unit(&self, snapshot: &StackSnapshot, index: usize, path: &str) -> Result<String> {
+        let git = self.git(snapshot)?;
+        let blob = git.run_string(&["rev-parse", &format!("{}:{path}", snapshot.heads[index])])?;
+        let content = read_blobs(&git, &[&blob])?.remove(&blob).unwrap_or_default();
+        Ok(crate::indent::indent_unit(&String::from_utf8_lossy(&content)))
     }
 
     /// Which of `paths` are files on the head of stack PR `index`. Reads only trees, so nothing

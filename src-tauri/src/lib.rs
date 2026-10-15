@@ -59,6 +59,7 @@ pub fn run() {
             commands::grep,
             commands::read_file,
             commands::existing_files,
+            commands::indent_unit,
             commands::locate_line,
             commands::ask_assistant,
             commands::list_assistant_threads,
