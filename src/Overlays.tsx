@@ -57,6 +57,47 @@ export function ThemePicker({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Marking a file viewed while newer commits are waiting and it changed in them: load the
+ * newer version (Enter; the file stays unviewed) or mark it anyway (Esc; no more warnings for that version).
+ */
+export function NewerChangesWarning({ path, onLoad, onDismiss }: { path: string; onLoad: () => void; onDismiss: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => box.current?.focus(), []);
+  return (
+    <div className="palette-backdrop" onMouseDown={onDismiss}>
+      <div
+        ref={box}
+        className="palette newer-warning"
+        role="alertdialog"
+        aria-label="Newer changes"
+        tabIndex={-1}
+        data-testid="newer-warning"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onLoad();
+          else if (e.key === "Escape") onDismiss();
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+      >
+        <div className="overlay-title">Newer changes</div>
+        <p className="newer-warning-text">
+          <code>{path.split("/").pop()}</code> changed in commits pushed since this version was loaded.
+        </p>
+        <div className="newer-warning-actions">
+          <button className="button" onClick={onDismiss}>
+            Mark viewed anyway <kbd>Esc</kbd>
+          </button>
+          <button className="button primary" onClick={onLoad}>
+            Load latest <kbd>↵</kbd>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const SHORTCUTS: [string, [string[], string][]][] = [
   [
     "Anywhere",

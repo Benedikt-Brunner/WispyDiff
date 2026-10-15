@@ -9,6 +9,7 @@ import {
   listThreads,
   markReviewed,
   openPr,
+  rangeKeys,
   refreshPr,
   selectRange,
   selectSince,
@@ -22,7 +23,7 @@ import { DiffViewer, type BaseMode } from "./DiffViewer";
 import { globMatcher } from "./glob";
 import { Inbox, type InboxEntry } from "./Inbox";
 import { Mark } from "./Logo";
-import { ShortcutsHelp, ThemePicker } from "./Overlays";
+import { NewerChangesWarning, ShortcutsHelp, ThemePicker } from "./Overlays";
 import { mark } from "./perf";
 import { loadList, loadPref, saveList, savePref } from "./prefs";
 import { rememberPr } from "./recent";
@@ -183,6 +184,43 @@ export default function App() {
       for (const k of keys) void setViewed(repo, k, value);
     },
     [repo, shown],
+  );
+
+  // Marking a file viewed while a newer version is waiting warns once per version, and only
+  // when the file changed in it (its content key at the same range differs; unknown counts as changed).
+  const [newerKeys, setNewerKeys] = useState<{ for: string; keys: Record<string, string> | null } | null>(null);
+  const newerRange = useMemo(() => {
+    if (!newerVersion || !stack || !shown) return null;
+    const lo = newerVersion.prs.findIndex((p) => p.number === stack.prs[shown.range.lo].number);
+    const hi = newerVersion.prs.findIndex((p) => p.number === stack.prs[shown.range.hi].number);
+    const ignoreWhitespace = shown.since ? false : shown.ignoreWhitespace;
+    return { key: `${newerVersion.stackId}:${lo}-${hi}:${ignoreWhitespace}`, lo, hi, ignoreWhitespace, stackId: newerVersion.stackId };
+  }, [newerVersion, stack, shown]);
+  useEffect(() => {
+    if (!newerRange) return;
+    const { key, stackId: id, lo, hi, ignoreWhitespace } = newerRange;
+    if (lo < 0 || hi < lo) return setNewerKeys({ for: key, keys: null });
+    let live = true;
+    rangeKeys(id, lo, hi, ignoreWhitespace)
+      .then((keys) => live && setNewerKeys({ for: key, keys }))
+      .catch(() => live && setNewerKeys({ for: key, keys: null }));
+    return () => void (live = false);
+  }, [newerRange]);
+  useEffect(() => {
+    window.__wispyNewerChecked = () => newerRange !== null && newerKeys?.for === newerRange.key;
+  }, [newerRange, newerKeys]);
+  const dismissedVersion = useRef<string | null>(null);
+  const [viewedWarning, setViewedWarning] = useState<{ path: string; mark: () => void } | null>(null);
+  const confirmViewed = useCallback(
+    (path: string, key: string, markViewed: () => void) => {
+      if (!newerVersion || !newerRange || dismissedVersion.current === newerVersion.stackId) return true;
+      const current = shown?.since?.fullKeys[path] ?? key;
+      const newer = newerKeys?.for === newerRange.key ? newerKeys.keys : null;
+      if (newer && newer[path] === current) return true;
+      setViewedWarning({ path, mark: markViewed });
+      return false;
+    },
+    [newerVersion, newerRange, newerKeys, shown],
   );
 
   const updateIgnore = useCallback(
@@ -353,7 +391,7 @@ export default function App() {
         e.preventDefault();
         setPaletteOpen(false);
         setOverlay("shortcuts");
-      } else if (overlay) {
+      } else if (overlay || viewedWarning) {
         return;
       } else if (mod(e) && e.key === "i") {
         e.preventDefault();
@@ -397,7 +435,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, sheetOpen, overlay, home, stack, shown, chooseRange, toggleWhitespace, markRangeReviewed, toggleSince]);
+  }, [paletteOpen, sheetOpen, overlay, viewedWarning, home, stack, shown, chooseRange, toggleWhitespace, markRangeReviewed, toggleSince]);
 
   const isStack = stack !== null && stack.prs.length > 1;
   const showingDiff = !home && stack !== null && shown !== null;
@@ -445,7 +483,7 @@ export default function App() {
             multiPr={shown.range.hi > shown.range.lo}
             showFiles={showFiles}
             onShowFiles={() => setShowFiles(true)}
-            keyboardEnabled={!paletteOpen && !sheetOpen && !overlay && !home}
+            keyboardEnabled={!paletteOpen && !sheetOpen && !overlay && !home && !viewedWarning}
             defaultMode={defaultMode}
             onDefaultModeChange={changeDefaultMode}
             wrap={wrap}
@@ -455,6 +493,7 @@ export default function App() {
             isIgnored={isIgnored}
             isViewed={isViewed}
             onToggleViewed={toggleViewed}
+            confirmViewed={confirmViewed}
           />
         ) : (
           <Inbox entries={inbox} online={online} keyboardEnabled={!paletteOpen && !overlay} onOpen={open} onRefresh={refreshInbox} />
@@ -481,6 +520,20 @@ export default function App() {
         <div className="toast" role="status">
           {toast}
         </div>
+      )}
+      {viewedWarning && (
+        <NewerChangesWarning
+          path={viewedWarning.path}
+          onLoad={() => {
+            setViewedWarning(null);
+            if (newerVersion) show(newerVersion);
+          }}
+          onDismiss={() => {
+            dismissedVersion.current = newerVersion?.stackId ?? null;
+            setViewedWarning(null);
+            viewedWarning.mark();
+          }}
+        />
       )}
       {overlay === "theme" && <ThemePicker onClose={() => setOverlay(null)} />}
       {overlay === "shortcuts" && <ShortcutsHelp onClose={() => setOverlay(null)} />}
