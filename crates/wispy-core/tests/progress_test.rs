@@ -154,3 +154,106 @@ fn checkpoints_must_cover_both_ends_of_the_range() {
     assert_eq!(service.checkpoints(&snapshot, 1, 1).unwrap().len(), 2);
     assert_eq!(service.checkpoints(&snapshot, 0, 0).unwrap(), vec![both]);
 }
+
+#[test]
+fn since_checkpoint_leaves_out_what_merging_main_brought_in_even_when_it_conflicted() {
+    let origin = origin();
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new("http://127.0.0.1:9", "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let reviewed = service.fetch(stack(&origin)).unwrap();
+    let checkpoint = service.mark_reviewed(&reviewed, 0, 0, "manual").unwrap();
+
+    // main rewrites the line the PR changed (and b.txt); the author merges main in, resolving
+    // the conflict, then makes a real change.
+    origin.checkout("main");
+    origin.write("a.txt", &lines("a", 10).replace("a 3\n", "a III\n"));
+    origin.write("b.txt", &lines("b", 10).replace("b 5\n", "b five\n"));
+    origin.commit("main moves");
+    origin.checkout("feature");
+    origin.git(&["merge", "--quiet", "--no-edit", "-X", "ours", "main"]);
+    origin.write("a.txt", &lines("a", 10).replace("a 3\n", "a three (resolved)\n"));
+    origin.git(&["commit", "--quiet", "--all", "--amend", "--no-edit"]);
+    origin.write("a.txt", &lines("a", 10).replace("a 3\n", "a three (resolved)\n").replace("a 8\n", "a eight\n"));
+    origin.commit("review fix");
+    origin.publish_pr(1, "feature");
+    let now = service.fetch(stack(&origin)).unwrap();
+
+    let (interdiff, conflicts) = service.interdiff(&now, 0, 0, &checkpoint).unwrap();
+    assert!(!conflicts);
+    assert_eq!(paths(&interdiff), vec!["a.txt"], "b.txt and the resolution came in with the merge");
+    assert_eq!((interdiff.summary.additions, interdiff.summary.deletions), (1, 1), "only line 8");
+}
+
+#[test]
+fn since_checkpoint_still_shows_a_merged_branch_that_is_not_in_the_base() {
+    let origin = origin();
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new("http://127.0.0.1:9", "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let reviewed = service.fetch(stack(&origin)).unwrap();
+    let checkpoint = service.mark_reviewed(&reviewed, 0, 0, "manual").unwrap();
+
+    // The author merges a side branch of their own (not main) into the PR.
+    origin.checkout("main");
+    origin.checkout_new("helper");
+    origin.write("c.txt", "helper\n");
+    origin.commit("helper");
+    origin.checkout("feature");
+    origin.git(&["merge", "--quiet", "--no-edit", "helper"]);
+    origin.publish_pr(1, "feature");
+    let now = service.fetch(stack(&origin)).unwrap();
+
+    let (interdiff, conflicts) = service.interdiff(&now, 0, 0, &checkpoint).unwrap();
+    assert!(!conflicts);
+    assert_eq!(paths(&interdiff), vec!["c.txt"], "the PR now really contains c.txt");
+}
+
+#[test]
+fn since_checkpoint_leaves_out_the_pr_below_merged_into_a_stacked_pr() {
+    let origin = OriginRepo::init();
+    origin.write("a.txt", &lines("a", 10));
+    origin.commit("base");
+    for (n, branch) in [(1, "s/1"), (2, "s/2")] {
+        origin.checkout_new(branch);
+        origin.write(&format!("f{n}.txt"), &lines("f", 10));
+        origin.commit(branch);
+        origin.publish_pr(n, branch);
+    }
+    let url = origin.url();
+    let stack = || Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 1 };
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new("http://127.0.0.1:9", "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let reviewed = service.fetch(stack()).unwrap();
+    let checkpoint = service.mark_reviewed(&reviewed, 1, 1, "manual").unwrap();
+
+    // The PR below gets a fix, which the author merges up into #2 before changing #2 itself.
+    origin.checkout("s/1");
+    origin.write("f1.txt", &lines("f", 10).replace("f 2\n", "f two\n"));
+    origin.commit("fix below");
+    origin.publish_pr(1, "s/1");
+    origin.checkout("s/2");
+    origin.git(&["merge", "--quiet", "--no-edit", "s/1"]);
+    origin.write("f2.txt", &lines("f", 10).replace("f 4\n", "f four\n"));
+    origin.commit("fix #2");
+    origin.publish_pr(2, "s/2");
+    let now = service.fetch(stack()).unwrap();
+
+    let (interdiff, conflicts) = service.interdiff(&now, 1, 1, &checkpoint).unwrap();
+    assert!(!conflicts);
+    assert_eq!(paths(&interdiff), vec!["f2.txt"], "f1.txt belongs to #1");
+    assert_eq!((interdiff.summary.additions, interdiff.summary.deletions), (1, 1));
+}

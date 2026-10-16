@@ -765,7 +765,8 @@ impl PrService {
             .collect())
     }
 
-    /// What changed in `lo..=hi` since `checkpoint`, ignoring changes a rebase brought in.
+    /// What changed in `lo..=hi` since `checkpoint`, ignoring changes a rebase or a merge of the
+    /// base brought in.
     /// Returns the view and whether replaying conflicted (see [`crate::progress::Interdiff`]).
     pub fn interdiff(&self, snapshot: &StackSnapshot, lo: usize, hi: usize, checkpoint: &Checkpoint) -> Result<(Arc<DiffView>, bool)> {
         let (bottom, top) = (snapshot.stack.prs[lo].number, snapshot.stack.prs[hi].number);
@@ -773,7 +774,10 @@ impl PrService {
             return Err(crate::Error::GitHub("checkpoint doesn't cover this range".into()));
         };
         let git = self.git(snapshot)?;
-        let (from, conflicts) = crate::progress::replayed_base(&git, &old_bottom.base, &old_top.head, &snapshot.bases[lo])?;
+        let (from, conflicts) = match crate::progress::merges_from_base(&git, &old_top.head, &snapshot.heads[hi], &snapshot.bases[lo])? {
+            Some(tree) => (tree, false),
+            None => crate::progress::replayed_base(&git, &old_bottom.base, &old_top.head, &snapshot.bases[lo])?,
+        };
         let spec = crate::range::RangeSpec { from, heads: vec![snapshot.heads[hi].clone()], prs: vec![hi as u8], ignore_whitespace: false };
         if let Some(view) = self.cache.diff_view(snapshot.repo_slug(), &spec)? {
             return Ok((Arc::new(view), conflicts));
