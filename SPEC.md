@@ -57,7 +57,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 ## Code intelligence
 - **Name-based tree-sitter** symbol matching over **full contents of touched files** at the range head (`⌘`-click a name, or `u` for the name under the mouse). The panel lists definitions, uses in changed lines, and uses in unchanged code. Jump in-tool (a line outside the hunks switches its file to side-by-side and flashes); files outside the diff open in a read-only file view. The index is built per view in the background right after it opens.
 - **Streamed `git grep`** over the whole repo (`/`, or "Search the whole repo" from usages). The first search of a head downloads that tree's missing blobs in one batch (the clone is blobless); hits stream to the panel as they're found. Prefetching downloads every inbox stack head's files, so search works offline; when blobs can't be downloaded, the files already present are searched and the panel says how many weren't.
-- Languages: PHP, TS/JS, Vue SFC (HTML with `<script>`/`<style>` in their languages), Twig (HTML with Twig tags tokenized on top), HTML, CSS (+ highlight-only JSON, YAML, SQL).
+- Languages: PHP (heredoc / nowdoc bodies whose label names a language, e.g. `<<<SQL`, highlighted in it), TS/JS, Vue SFC (HTML with `<script>`/`<style>` in their languages), Twig (HTML with Twig tags tokenized on top), HTML, CSS (+ highlight-only JSON, YAML, SQL).
 
 ## Comments
 - **Stored locally**, anchored to the reviewed SHA. Kinds: single line, multi-line range, file-level, per-PR summary.

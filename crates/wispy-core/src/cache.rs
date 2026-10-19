@@ -8,7 +8,7 @@ use crate::drafts::Draft;
 use crate::error::{Error, Result};
 use crate::github::ReviewThread;
 use crate::highlight::Seg;
-use crate::highlight_cache::{BlobStore, Lines};
+use crate::highlight_cache::{key_prefix, BlobStore, Lines};
 use crate::model::DiffView;
 use crate::pr_ref::PrRef;
 use crate::progress::Checkpoint;
@@ -109,6 +109,11 @@ impl Cache {
                  created_at INTEGER NOT NULL DEFAULT (unixepoch())
              );",
         )?;
+        // Files highlighted by an older highlighter are never read again. A range on the key
+        // (rather than NOT LIKE) uses the primary key, so it costs nothing once they're gone.
+        let prefix = key_prefix();
+        let after_prefix = format!("{}{}", &prefix[..prefix.len() - 1], (b':' + 1) as char);
+        conn.execute("DELETE FROM highlighted_blobs WHERE key < ?1 OR key >= ?2", params![prefix, after_prefix])?;
         Ok(Cache { writer: Mutex::new(conn), readers })
     }
 

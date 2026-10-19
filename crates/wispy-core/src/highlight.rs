@@ -33,6 +33,9 @@ pub const TOKEN_CLASSES: &[&str] = &[
     "module",
 ];
 
+/// Bump whenever highlighting output changes, to invalidate cached highlighted files and views.
+pub const HIGHLIGHT_VERSION: u32 = 2;
+
 /// Files above these limits are shown without highlighting.
 const MAX_HIGHLIGHT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_HIGHLIGHT_LINE: usize = 5_000;
@@ -166,6 +169,7 @@ impl Highlighter {
         let mut lines = match language.filter(|_| highlightable) {
             Some(Language::Vue) => self.highlight_vue(source),
             Some(Language::Twig) => self.highlight_twig(source),
+            Some(Language::Php) => self.highlight_php(source),
             Some(lang) => self.grammar(lang, source),
             None => plain_lines(source),
         };
@@ -221,6 +225,30 @@ impl Highlighter {
         lines
     }
 
+    /// PHP for the whole file, then the body of each heredoc / nowdoc whose label names a
+    /// language (`<<<SQL`, `<<<'HTML'`, …) re-highlighted in that language.
+    fn highlight_php(&self, source: &str) -> Vec<Vec<Seg>> {
+        let mut lines = self.grammar(Language::Php, source);
+        let raw: Vec<&str> = source.split('\n').collect();
+        let mut i = 0;
+        while i < raw.len() {
+            let Some((label, lang)) = heredoc_opening(raw[i]).filter(|_| !opens_inside_comment(&lines[i])) else {
+                i += 1;
+                continue;
+            };
+            let start = i + 1;
+            let Some(end) = (start..raw.len()).find(|&j| closes_heredoc(raw[j], label)) else {
+                break;
+            };
+            let inner = raw[start..end].join("\n");
+            for (offset, segs) in self.grammar(lang, &inner).into_iter().enumerate() {
+                lines[start + offset] = segs;
+            }
+            i = end + 1;
+        }
+        lines
+    }
+
     /// HTML for the whole file with Twig's `{{ }}`, `{% %}` and `{# #}` regions tokenized on top.
     fn highlight_twig(&self, source: &str) -> Vec<Vec<Seg>> {
         let base = self.grammar(Language::Html, source);
@@ -232,6 +260,39 @@ impl Default for Highlighter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The label and its language when `line` ends with a heredoc / nowdoc opening (`<<<SQL`,
+/// `<<<"SQL"`, `<<<'SQL'`) whose label names a supported language.
+fn heredoc_opening(line: &str) -> Option<(&str, Language)> {
+    let (_, rest) = line.rsplit_once("<<<")?;
+    let rest = rest.trim_end_matches('\r').trim_start_matches([' ', '\t']);
+    let label = match rest.as_bytes().first()? {
+        quote @ (b'\'' | b'"') => rest[1..].strip_suffix(*quote as char)?,
+        _ => rest,
+    };
+    if label.is_empty() || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    let lang = match label.to_ascii_lowercase().as_str() {
+        "javascript" => Language::JavaScript,
+        "typescript" => Language::TypeScript,
+        name => Language::from_path(&format!("heredoc.{name}"))?,
+    };
+    Some((label, lang))
+}
+
+/// Whether the `<<<` on a highlighted line sits in a comment (a heredoc there opens nothing).
+fn opens_inside_comment(segs: &[Seg]) -> bool {
+    segs.iter().any(|(class, text)| TOKEN_CLASSES[*class as usize] == "comment" && text.contains("<<<"))
+}
+
+/// Whether `line` is the closing marker of a heredoc labelled `label` (PHP 7.3+ allows it
+/// indented and followed by more code, e.g. `SQL;` or `SQL, $params);`).
+fn closes_heredoc(line: &str, label: &str) -> bool {
+    line.trim_start()
+        .strip_prefix(label)
+        .is_some_and(|rest| !rest.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_'))
 }
 
 pub fn plain_lines(source: &str) -> Vec<Vec<Seg>> {

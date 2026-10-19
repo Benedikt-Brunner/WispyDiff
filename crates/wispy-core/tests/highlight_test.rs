@@ -103,3 +103,23 @@ fn detects_templates_and_styles() {
     assert_eq!(Language::from_path("src/component/Bin.vue"), Some(Language::Vue));
     assert_eq!(Language::from_path("app.scss"), Some(Language::Css));
 }
+#[test]
+fn highlights_php_heredocs_in_the_language_their_label_names() {
+    let highlighter = Highlighter::new();
+    let source = "<?php\n$sql = <<<SQL\n    SELECT id FROM bin\n    SQL;\n$html = <<<'HTML'\n<div class=\"bin\"></div>\nHTML;\n$text = <<<EOT\nSELECT plain\nEOT;\n";
+    assert_eq!(class_of(&highlighter, Language::Php, source, 2, "SELECT"), "keyword");
+    assert_eq!(class_of(&highlighter, Language::Php, source, 5, "div"), "tag");
+    // An unknown label, and the lines after a heredoc, stay PHP.
+    assert_ne!(class_of(&highlighter, Language::Php, source, 8, "SELECT plain"), "keyword");
+    assert_eq!(class_of(&highlighter, Language::Php, source, 7, "text"), "variable");
+}
+
+#[test]
+fn ignores_heredoc_openings_in_comments_and_unclosed_heredocs() {
+    let highlighter = Highlighter::new();
+    let commented = "<?php\n// use <<<SQL\nSELECT 1\nSQL;\n";
+    let lines = highlighter.highlight(Some(Language::Php), commented);
+    assert!(lines[2].iter().all(|(class, _)| TOKEN_CLASSES[*class as usize] != "keyword"), "{:?}", lines[2]);
+    let unclosed = "<?php\n$a = <<<SQL\nSELECT 1\n";
+    assert_eq!(highlighter.highlight(Some(Language::Php), unclosed).len(), 3);
+}

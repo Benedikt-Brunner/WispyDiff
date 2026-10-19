@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::highlight::{Language, Seg};
+use crate::highlight::{Language, Seg, HIGHLIGHT_VERSION};
 
 pub type Lines = Arc<Vec<Vec<Seg>>>;
 
@@ -67,7 +67,12 @@ impl HighlightCache {
 }
 
 fn key(blob: &str, language: Option<Language>) -> String {
-    format!("{blob}:{language:?}")
+    format!("{}{blob}:{language:?}", key_prefix())
+}
+
+/// Every current key starts with this; stored entries without it are from older highlighters.
+pub fn key_prefix() -> String {
+    format!("h{HIGHLIGHT_VERSION}:")
 }
 
 impl Default for HighlightCache {
