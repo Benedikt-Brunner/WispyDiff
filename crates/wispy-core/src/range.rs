@@ -10,7 +10,7 @@ use crate::attribution::{attribute, Step};
 use crate::diff::{parse_patch, FileDiff, LineKind, PATCH_ARGS};
 use crate::error::Result;
 use crate::git::Git;
-use crate::highlight::{Highlighter, Language};
+use crate::highlight::{Highlighter, Language, HIGHLIGHT_VERSION};
 use crate::highlight_cache::{HighlightCache, Lines};
 use crate::model::{read_blobs, DiffView, MODEL_VERSION};
 use crate::noise::generated_paths;
@@ -36,7 +36,7 @@ impl RangeSpec {
     pub fn cache_key(&self, repo_slug: &str) -> String {
         let steps: Vec<String> = self.prs.iter().zip(&self.heads).map(|(pr, head)| format!("{pr}={head}")).collect();
         let whitespace = if self.ignore_whitespace { ":w" } else { "" };
-        format!("v{MODEL_VERSION}:{repo_slug}:{}..{}{whitespace}", self.from, steps.join(","))
+        format!("v{MODEL_VERSION}.{HIGHLIGHT_VERSION}:{repo_slug}:{}..{}{whitespace}", self.from, steps.join(","))
     }
 
     pub fn with_ignore_whitespace(mut self, ignore: bool) -> Self {

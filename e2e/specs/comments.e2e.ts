@@ -236,9 +236,10 @@ describe("comments", () => {
     await waitFor(async () => (await text(".card.thread .badge.ok")) === "resolved");
     await clickButton(".card.thread:has(.badge.ok)", "hide");
     await waitFor(async () => !(await exists(".card.thread .badge.ok")) && (await exists(".comment-mark.settled")));
-    const bodies = await browser.execute(() => [...document.querySelectorAll(".card.thread .card-body")].map((b) => b.textContent));
-    expect(bodies).toContain("Why this threshold?");
-    expect(bodies).toContain("These three lines");
+    const bodies = () => browser.execute(() => [...document.querySelectorAll(".card.thread .card-body")].map((b) => b.textContent));
+    // The posted threads arrive with the refetch after submitting, not necessarily all at once.
+    await waitFor(async () => (await bodies()).includes("These three lines"));
+    expect(await bodies()).toContain("Why this threshold?");
     expect(await count(".card.draft")).toBe(0);
   });
 
