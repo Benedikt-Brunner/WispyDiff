@@ -1,4 +1,4 @@
-import { click, clickChip, count, exists, isFocused, openViaPalette, scrollTop, selectedChips, settled, text, typeInPalette, waitFor, MOD } from "./helpers";
+import { click, clickChip, count, exists, isFocused, openViaPalette, pressShifted, scrollTop, selectedChips, settled, text, typeInPalette, waitFor, MOD } from "./helpers";
 
 describe("opening a pull request", () => {
   it("shows the palette focused (on launch, or with ⌘K once something is open)", async () => {
@@ -99,11 +99,18 @@ describe("reading modes and noise", () => {
 
   it("collapses lockfiles and generated files by default", async () => {
     await openViaPalette("wispy/fixture#1");
-    await click('.file-list li[title="composer.lock"]');
-    await waitFor(async () => (await headerMode("composer.lock")) === "collapsed");
     const muted = await browser.execute(() => [...document.querySelectorAll(".file-list li.muted")].map((li) => li.getAttribute("title")));
     expect(muted).toEqual(["composer.lock", "src/Generated/ApiClient.php"]);
-    expect(await text(".row-collapsed .code")).toContain("lockfile");
+    // Reached with ⇧↓ from the top (clicking it in the file list would open it for a look).
+    const active = () => browser.execute(() => document.querySelector(".file-list li.active")?.getAttribute("title"));
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop = 0;
+    });
+    await waitFor(async () => (await active()) === ".gitattributes");
+    await pressShifted("ArrowDown");
+    await waitFor(async () => (await active()) === "composer.lock");
+    await waitFor(async () => (await headerMode("composer.lock")) === "collapsed");
+    expect(await text('.row-collapsed[data-file="composer.lock"] .code')).toContain("lockfile");
   });
 
   it("expands a collapsed file with e", async () => {

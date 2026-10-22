@@ -25,6 +25,7 @@ import {
 import { AssistantPanel, type AskContext, type PendingAnswer } from "./AssistantPanel";
 import type { CodeRef } from "./Markdown";
 import { CodePanel, type PanelState } from "./CodePanel";
+import { FileSearch } from "./FileSearch";
 import { FileView } from "./FileView";
 import {
   prKey,
@@ -59,6 +60,8 @@ const PREFETCH_SCREENS = 2;
 const ARROW_STEP = 3 * ROW_HEIGHT;
 /** Rows kept above the target when jumping, so the jump target isn't glued to the top edge. */
 const JUMP_MARGIN = 3;
+/** Two Shift presses this close together (ms) open the file search. */
+const DOUBLE_SHIFT = 400;
 
 export type BaseMode = "unified" | "split";
 
@@ -118,6 +121,9 @@ export function DiffViewer(props: Props) {
   const [overrides, setOverrides] = useState<Map<string, BaseMode>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  /** A collapsed file opened for a look (clicked in the file list, picked in the file search):
+   * it collapses again once another file is shown, unless it's worked with first (see `keepOpen`). */
+  const [temporary, setTemporary] = useState<string | null>(null);
   /** The file list as a flat list or a directory tree (`t`, remembered). */
   const [listMode, setListMode] = useState(() => loadPref("fileList", LIST_MODES, "list"));
   const toggleListMode = useCallback(
@@ -144,18 +150,23 @@ export function DiffViewer(props: Props) {
   /** Per file index: left out by the filter. */
   const filtered = useMemo(() => summary.files.map((f) => !filter.off && filter.exts.includes(extensionOf(f.path))), [summary, filter]);
   const [filterOpen, setFilterOpen] = useState(false);
+  /** The ⇧⇧ file search is open. */
+  const [fileSearch, setFileSearch] = useState(false);
+  /** When Shift was last pressed on its own (a second press soon after opens the file search). */
+  const lastShift = useRef(-Infinity);
 
   const modeOf = useCallback(
     (index: number): Mode => {
       const file = summary.files[index];
       if (filtered[index]) return "hidden";
       const hidden =
-        collapsed.has(file.path) || ((file.noise !== null || isIgnored(file.path) || isViewed(file.content_key)) && !expanded.has(file.path));
+        file.path !== temporary &&
+        (collapsed.has(file.path) || ((file.noise !== null || isIgnored(file.path) || isViewed(file.content_key)) && !expanded.has(file.path)));
       if (hidden) return "collapsed";
       const wanted = overrides.get(file.path) ?? defaultMode;
       return wanted === "split" && file.split_rows > 0 ? "split" : "unified";
     },
-    [summary, overrides, expanded, collapsed, defaultMode, isIgnored, isViewed, filtered],
+    [summary, overrides, expanded, collapsed, temporary, defaultMode, isIgnored, isViewed, filtered],
   );
   const baseLayout = useMemo(() => new Layout(summary, modeOf), [summary, modeOf]);
 
@@ -640,8 +651,21 @@ export function DiffViewer(props: Props) {
     [store],
   );
 
+  /** A file opened for a look stays open once it's worked with (commented on, s, e). */
+  const keepOpen = useCallback(
+    (file: number) => {
+      const path = summary.files[file]?.path;
+      if (path === undefined || path !== temporary) return;
+      setExpanded((s) => new Set(s).add(path));
+      setCollapsed((s) => withOut(s, path));
+      setTemporary(null);
+    },
+    [summary, temporary],
+  );
+
   const openComposer = useCallback(
     (start: Target, end: Target) => {
+      keepOpen(end.file);
       const same = start.anchor.pr === end.anchor.pr && start.anchor.side === end.anchor.side && start.anchor.path === end.anchor.path;
       const from = same ? start : end;
       const lines = [from.anchor.line, end.anchor.line].sort((a, b) => a - b);
@@ -663,17 +687,18 @@ export function DiffViewer(props: Props) {
         .then((accepted) => setComposer((c) => (c?.key === state.key ? { ...c, fallback: !accepted } : c)))
         .catch(() => undefined);
     },
-    [stackId, headText],
+    [stackId, headText, keepOpen],
   );
 
   const openFileComposer = useCallback(
     (file: number) => {
+      keepOpen(file);
       const summaryFile = summary.files[file];
       const touched = summaryFile.prs.filter((p) => p >= lo && p <= hi);
       const pr = touched.length ? Math.max(...touched) : hi;
       setComposer({ key: `composer:file:${summaryFile.path}`, kind: "file", prIndex: pr, path: pathInPr(summaryFile, pr, "RIGHT"), side: null, line: null, startLine: null, fallback: false, suggestion: null });
     },
-    [summary, lo, hi],
+    [summary, lo, hi, keepOpen],
   );
 
   /** Gutter interactions: click = comment on the line, drag = comment on a range. */
@@ -1080,11 +1105,12 @@ export function DiffViewer(props: Props) {
           setCollapsed((s) => withOut(s, file.path));
           return;
         }
+        keepOpen(segment.file);
         const next: BaseMode = segment.mode === "split" ? "unified" : "split";
         setOverrides((m) => new Map(m).set(file.path, next));
       });
     },
-    [summary, changeLayout],
+    [summary, changeLayout, keepOpen],
   );
 
   const toggleCollapsed = useCallback(
@@ -1101,6 +1127,22 @@ export function DiffViewer(props: Props) {
       });
     },
     [summary, changeLayout],
+  );
+
+  /** Puts file `index`'s header at the top (file list, n/p, ⇧↓/⇧↑, file search). With `open`, a
+   * collapsed file opens for a look; a file opened that way collapses again once another is shown. */
+  const goToFile = useCallback(
+    (index: number, open: boolean) => {
+      const { path } = summary.files[index];
+      const opens = open && layout.segments[index].mode === "collapsed";
+      const closes = temporary !== null && temporary !== path;
+      if (!opens && !closes) return scrollToRow(layout.segments[index].start, 0, index);
+      changeLayout(() => {
+        revealFile.current = index;
+        setTemporary(opens ? path : null);
+      });
+    },
+    [summary, layout, temporary, scrollToRow, changeLayout],
   );
 
   const changeFilter = useCallback(
@@ -1120,8 +1162,17 @@ export function DiffViewer(props: Props) {
   const filteredCount = useMemo(() => filtered.filter(Boolean).length, [filtered]);
 
   useEffect(() => {
-    if (!keyboardEnabled) return;
+    if (!keyboardEnabled || fileSearch) return;
+    const resetShift = () => (lastShift.current = -Infinity);
     const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Shift") resetShift();
+      else if (!e.repeat) {
+        if (e.timeStamp - lastShift.current < DOUBLE_SHIFT && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+          resetShift();
+          setFileSearch(true);
+        } else lastShift.current = e.timeStamp;
+        return;
+      }
       // Escape works from anywhere (e.g. the assistant's model picker); text fields handle their own.
       if (e.metaKey || e.ctrlKey || e.altKey || (isTyping(e.target) && e.key !== "Escape")) return;
       const el = scrollRef.current;
@@ -1206,6 +1257,11 @@ export function DiffViewer(props: Props) {
           break;
         case "e":
         case " ": {
+          // A file opened for a look stays open instead.
+          if (summary.files[here.file].path === temporary) {
+            keepOpen(here.file);
+            break;
+          }
           // Collapse/expand without touching the viewed mark. Collapsing moves on to the next
           // file that's still open, like `v`.
           const next =
@@ -1249,6 +1305,7 @@ export function DiffViewer(props: Props) {
               onToggleViewed(file.content_key, viewed);
               setExpanded((s) => withOut(s, file.path));
               if (!viewed) setCollapsed((s) => withOut(s, file.path));
+              if (file.path === temporary) setTemporary(null);
               // Marking viewed moves on to the next file still to review, so v, v, v… works.
               if (viewedHistory.current.view !== viewId) viewedHistory.current = { view: viewId, paths: [] };
               const history = viewedHistory.current.paths.filter((p) => p !== file.path);
@@ -1285,11 +1342,16 @@ export function DiffViewer(props: Props) {
       }
       e.preventDefault();
       if (target !== undefined) scrollToRow(target);
-      if (fileTarget !== undefined) scrollToRow(fileTarget, 0, layout.segmentAt(fileTarget).file);
+      if (fileTarget !== undefined) goToFile(layout.segmentAt(fileTarget).file, false);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [keyboardEnabled, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, confirmViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId]);
+    // Shift-clicking twice (the stack bar's ranges) isn't ⇧⇧.
+    window.addEventListener("mousedown", resetShift);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", resetShift);
+    };
+  }, [keyboardEnabled, fileSearch, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, confirmViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId, temporary, keepOpen, goToFile]);
 
   return (
     <div className="diff-layout">
@@ -1303,7 +1365,7 @@ export function DiffViewer(props: Props) {
           openThreads={(i) => tallies.get(i)?.get("open") ?? 0}
           mode={listMode}
           onToggleMode={toggleListMode}
-          onSelect={(index) => scrollToRow(layout.segments[index].start, 0, index)}
+          onSelect={(index) => goToFile(index, true)}
           filtered={filtered}
           filteredCount={filteredCount}
           filter={filter}
@@ -1388,6 +1450,20 @@ export function DiffViewer(props: Props) {
         />
       )}
       {fileView && <FileView {...fileView} onClose={() => setFileView(null)} />}
+      {fileSearch && (
+        <FileSearch
+          files={summary.files}
+          filtered={filtered}
+          isViewed={isViewed}
+          onPick={(index) => {
+            setFileSearch(false);
+            // Files the filter hides open in the file view, like usages in them.
+            if (filtered[index]) jump({ path: summary.files[index].path, line: 1 });
+            else goToFile(index, true);
+          }}
+          onClose={() => setFileSearch(false)}
+        />
+      )}
     </div>
   );
 }

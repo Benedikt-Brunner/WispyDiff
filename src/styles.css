@@ -362,6 +362,47 @@ body,
   background: var(--selection);
 }
 
+/* ⇧⇧ file search: name first, its directory after it, matched characters marked. */
+.file-search .palette-list {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.file-search .palette-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+.file-search .palette-list li.muted {
+  opacity: 0.55;
+}
+.file-search-viewed {
+  width: 1ch;
+  flex: none;
+  color: var(--fg-muted);
+}
+.file-search-name {
+  flex: none;
+}
+.file-search-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+.file-search-tag {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.file-search mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ---------- diff ---------- */
 
 /* A sidebar's draggable edge; it straddles the border so it's easy to grab. */

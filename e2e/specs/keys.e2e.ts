@@ -1,4 +1,4 @@
-import { click, exists, openViaPalette, pressShifted, scrollTop, selectedChips, settled, text, waitFor, MOD } from "./helpers";
+import { click, exists, openViaPalette, pressShifted, scrollTop, selectedChips, settled, submitInput, text, waitFor, MOD } from "./helpers";
 
 const activeFile = () => browser.execute(() => document.querySelector(".file-list li.active")?.getAttribute("title") ?? null);
 const fileNames = () => browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")!));
@@ -10,6 +10,11 @@ const toTop = async () => {
   });
   await waitFor(async () => (await scrollTop()) === 0);
 };
+/** Shift pressed twice in quick succession. */
+const doubleShift = () =>
+  browser.execute(() => {
+    for (let i = 0; i < 2; i++) document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", shiftKey: true, bubbles: true }));
+  });
 const theme = () => browser.execute(() => document.documentElement.dataset.theme ?? null);
 
 describe("keyboard", () => {
@@ -45,12 +50,86 @@ describe("keyboard", () => {
     expect(await listHas(files[0], "viewed")).toBe(false);
     expect(await text(".row-collapsed .code")).toContain("collapsed");
 
-    // Expanding stays on the file.
+    // Clicking it opens it for a look; Space keeps it open, staying on the file.
+    await click(`.file-list li[title="${files[0]}"]`);
+    await waitFor(async () => (await activeFile()) === files[0] && !(await listHas(files[0], "muted")));
+    await browser.keys(" ");
+    await settled();
+    expect(await activeFile()).toBe(files[0]);
+    await click(`.file-list li[title="${files[1]}"]`);
+    await waitFor(async () => (await activeFile()) === files[1]);
+    expect(await listHas(files[0], "muted")).toBe(false);
+  });
+
+  it("opens a collapsed file clicked in the file list until another file is shown", async () => {
+    await toTop();
+    await browser.keys(" ");
+    await waitFor(async () => (await listHas(files[0], "muted")) && (await activeFile()) === files[1]);
+    const look = async () => {
+      await click(`.file-list li[title="${files[0]}"]`);
+      await waitFor(async () => (await activeFile()) === files[0] && !(await listHas(files[0], "muted")));
+    };
+
+    // Another file in the list, n, and ⇧↓ each collapse it again.
+    await look();
+    await click(`.file-list li[title="${files[2]}"]`);
+    await waitFor(async () => (await activeFile()) === files[2] && (await listHas(files[0], "muted")));
+    await look();
+    await browser.keys("n");
+    await waitFor(async () => (await activeFile()) === files[1] && (await listHas(files[0], "muted")));
+    await look();
+    await pressShifted("ArrowDown");
+    await waitFor(async () => (await activeFile()) === files[1] && (await listHas(files[0], "muted")));
+
+    // Working with it (s) keeps it open.
+    await look();
+    await browser.keys("s");
+    await settled();
+    await click(`.file-list li[title="${files[1]}"]`);
+    await waitFor(async () => (await activeFile()) === files[1]);
+    expect(await listHas(files[0], "muted")).toBe(false);
+    // Back to unified, for the other specs.
+    await click(`.file-list li[title="${files[0]}"]`);
+    await waitFor(async () => (await activeFile()) === files[0]);
+    await browser.keys("s");
+    await settled();
+  });
+
+  it("finds files by fuzzy name with Shift Shift, opening a collapsed one for a look", async () => {
+    const basename = (p: string) => p.split("/").pop()!;
+    const unique = files.filter((f) => files.filter((g) => basename(g) === basename(f)).length === 1);
+    const target = unique[unique.length - 1];
+    await toTop();
+    await doubleShift();
+    await waitFor(() => exists('[data-testid="file-search"]'));
+    await submitInput('[data-testid="file-search"] .palette-input', basename(target));
+    await waitFor(async () => !(await exists('[data-testid="file-search"]')) && (await activeFile()) === target);
+
+    // Escape closes it without moving.
+    await doubleShift();
+    await waitFor(() => exists('[data-testid="file-search"]'));
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="file-search"]')));
+    expect(await activeFile()).toBe(target);
+
+    // A collapsed file opens until moving on.
+    await toTop();
+    await browser.keys(" ");
+    await waitFor(async () => (await listHas(files[0], "muted")) && (await activeFile()) === files[1]);
+    await doubleShift();
+    await waitFor(() => exists('[data-testid="file-search"]'));
+    await submitInput('[data-testid="file-search"] .palette-input', files[0]);
+    await waitFor(async () => (await activeFile()) === files[0] && !(await listHas(files[0], "muted")));
+    await browser.keys("n");
+    await waitFor(async () => (await activeFile()) === files[1] && (await listHas(files[0], "muted")));
+
+    // Opened for good again, for the other specs.
     await click(`.file-list li[title="${files[0]}"]`);
     await waitFor(async () => (await activeFile()) === files[0]);
     await browser.keys(" ");
-    await waitFor(async () => !(await listHas(files[0], "muted")));
-    expect(await activeFile()).toBe(files[0]);
+    await click(`.file-list li[title="${files[1]}"]`);
+    await waitFor(async () => (await activeFile()) === files[1]);
+    expect(await listHas(files[0], "muted")).toBe(false);
   });
 
   it("moves on to the next file when marking one viewed, so v v marks two in a row", async () => {
