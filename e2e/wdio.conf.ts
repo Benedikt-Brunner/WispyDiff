@@ -55,6 +55,11 @@ export const config: WebdriverIO.Config = {
         title: document.querySelector(".pr-title")?.textContent ?? null,
         palette: document.querySelector(".palette") !== null,
         inserts: document.querySelectorAll(".insert").length,
+        // What the comment boxes and gutter icons on screen are, and where the view is.
+        cards: [...document.querySelectorAll(".card")].map((c) => `${c.className}: ${c.textContent?.slice(0, 80)}`),
+        marks: [...document.querySelectorAll(".comment-mark")].map((m) => m.getAttribute("title")),
+        files: [...document.querySelectorAll(".row-file")].map((r) => r.getAttribute("data-file")),
+        scrollTop: document.querySelector(".diff-scroll")?.scrollTop ?? null,
       }))
       .catch((e) => ({ unavailable: String(e) }));
     console.log(`[failure] ${test.title}: ${JSON.stringify(report)}`);
