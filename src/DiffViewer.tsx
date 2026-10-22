@@ -1763,9 +1763,13 @@ function FileList(props: FileListProps) {
         title={f.path}
       >
         <span className={`file-status status-${f.status}`}>{viewed ? "✓" : statusLetter(f.status)}</span>
+        {/* rtl truncates long paths from the left; the ltr isolate keeps the bidi algorithm
+            from reordering the name (a leading "0001-" would otherwise move to the end). */}
         <span className="file-name">
-          {depth === undefined && <span className="file-dir">{dirname(f.path)}</span>}
-          {basename(f.path)}
+          <bdi dir="ltr">
+            {depth === undefined && <span className="file-dir">{dirname(f.path)}</span>}
+            {basename(f.path)}
+          </bdi>
         </span>
         {showPrs && (
           <span className="file-prs">
