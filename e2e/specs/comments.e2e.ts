@@ -65,24 +65,28 @@ describe("comments", () => {
     await waitFor(() => exists(".composer-input"));
     await setTextarea(".composer-input", "Simpler:");
     expect(await clickButton(".composer", "Suggest change")).toBe(true);
-    const value = await browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")!.value);
-    expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
-
-    // Tab / Shift+Tab indent and outdent the suggested lines the way the file does (4 spaces).
     const state = () =>
       browser.execute(() => {
         const el = document.querySelector<HTMLTextAreaElement>(".composer-input")!;
         return { value: el.value, caret: el.selectionStart };
       });
+    const { value } = await state();
+    expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
+    // The caret lands at the end of the suggested lines on the next frame.
+    await waitFor(async () => (await state()).caret === value.length - "\n```".length);
+
+    // Tab / Shift+Tab indent and outdent the suggested lines the way the file does (4 spaces).
     const before = await state();
     await browser.keys("Tab");
     await waitFor(async () => (await state()).value === `Simpler:\n\`\`\`suggestion\n    ${line}\n\`\`\``);
     await waitFor(async () => (await state()).caret === before.caret + 4);
     await pressShifted("Tab");
     await waitFor(async () => (await state()).value === value);
+    await waitFor(async () => (await state()).caret === before.caret);
 
     // Enter inside the block breaks the line, indented like the caret's, instead of saving.
     await browser.keys("Tab");
+    await waitFor(async () => (await state()).caret === before.caret + 4);
     await browser.keys("Enter");
     const lead = `    ${/^[ \t]*/.exec(line!)![0]}`;
     const broken = `Simpler:\n\`\`\`suggestion\n    ${line}\n${lead}\n\`\`\``;
