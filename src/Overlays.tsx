@@ -162,6 +162,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [["↵"], "Save the comment (⇧↵: new line)"],
       [[keyLabel("G")], "Suggest a change to the commented lines"],
       [["Tab", "⇧Tab"], "Indent / outdent the selected lines of a suggestion"],
+      [["↵"], `New line in a suggestion, indented like the last (${keyLabel("↵")} saves)`],
       [[clickLabel, "u"], "Usages of the name under the mouse"],
       [["/"], "Search the repo"],
       [["a"], "Ask the assistant (about the selected lines, if any)"],

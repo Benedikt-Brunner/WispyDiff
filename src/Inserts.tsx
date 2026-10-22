@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Html, Markdown } from "./Markdown";
 import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
 import { isSubmitKey, mod, keyLabel } from "./platform";
-import { reindent } from "./indent";
+import { newline, reindent, type Edit } from "./indent";
 
 /** Measures its content and reports the height, so the layout can make room for it. */
 export function InsertBox({ y, onHeight, children }: { y: number; onHeight: (h: number) => void; children: React.ReactNode }) {
@@ -48,16 +48,23 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
     setUnit("    ");
     indentUnit?.().then(setUnit).catch(() => undefined);
   }, [hasSuggestion, unit, indentUnit]);
-  /** Tab / Shift+Tab inside a suggestion: indents or outdents the selected lines. */
-  const indent = (outdent: boolean) => {
-    const el = ref.current;
-    const edit = el && reindent(el.value, el.selectionStart, el.selectionEnd, unit ?? "    ", outdent);
-    if (!el || !edit) return false;
+  /** Types an edit in (so ⌘Z undoes it) and selects what it says; false when there's none. */
+  const apply = (el: HTMLTextAreaElement, edit: Edit | null) => {
+    if (!edit) return false;
     el.setSelectionRange(edit.from, edit.to);
-    // Typed in, so ⌘Z undoes it.
     if (!document.execCommand("insertText", false, edit.insert)) setText(el.value.slice(0, edit.from) + edit.insert + el.value.slice(edit.to));
     requestAnimationFrame(() => el.setSelectionRange(edit.start, edit.end));
     return true;
+  };
+  /** Tab / Shift+Tab inside a suggestion: indents or outdents the selected lines. */
+  const indent = (outdent: boolean) => {
+    const el = ref.current;
+    return !!el && apply(el, reindent(el.value, el.selectionStart, el.selectionEnd, unit ?? "    ", outdent));
+  };
+  /** Enter inside a suggestion: a new line, indented like the caret's (⌘↵ still saves). */
+  const breakLine = () => {
+    const el = ref.current;
+    return !!el && apply(el, newline(el.value, el.selectionStart, el.selectionEnd));
   };
   const save = () => text.trim() && onSave(text.trim());
   // A file comment can't carry a suggestion.
@@ -94,7 +101,9 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
         rows={Math.min(20, Math.max(3, text.split("\n").length))}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (isSubmitKey(e)) {
+          if (e.key === "Enter" && !mod(e) && !e.altKey && !e.nativeEvent.isComposing && breakLine()) {
+            e.preventDefault();
+          } else if (isSubmitKey(e)) {
             e.preventDefault();
             save();
           } else if (e.key.toLowerCase() === "g" && mod(e) && canSuggest) {

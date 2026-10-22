@@ -80,6 +80,15 @@ describe("comments", () => {
     await waitFor(async () => (await state()).caret === before.caret + 4);
     await pressShifted("Tab");
     await waitFor(async () => (await state()).value === value);
+
+    // Enter inside the block breaks the line, indented like the caret's, instead of saving.
+    await browser.keys("Tab");
+    await browser.keys("Enter");
+    const lead = `    ${/^[ \t]*/.exec(line!)![0]}`;
+    const broken = `Simpler:\n\`\`\`suggestion\n    ${line}\n${lead}\n\`\`\``;
+    await waitFor(async () => (await state()).value === broken);
+    await waitFor(async () => (await state()).caret === broken.length - "\n```".length);
+    expect(await exists(".composer-input")).toBe(true);
     expect(await browser.execute(() => document.activeElement?.classList.contains("composer-input"))).toBe(true);
     await browser.keys("Escape");
     await waitFor(async () => !(await exists(".composer-input")));
