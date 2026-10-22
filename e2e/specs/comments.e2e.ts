@@ -251,8 +251,19 @@ describe("comments", () => {
     await waitFor(async () => !(await exists(".card.thread .badge.ok")) && (await exists(".comment-mark.settled")));
     const bodies = () => browser.execute(() => [...document.querySelectorAll(".card.thread .card-body")].map((b) => b.textContent));
     // The posted threads arrive with the refetch after submitting, not necessarily all at once.
-    await waitFor(async () => (await bodies()).includes("These three lines"));
-    expect(await bodies()).toContain("Why this threshold?");
+    // Which rows they're on depends on what was rendered when they were drafted (it differs on
+    // macOS CI), so page down from the top until both have been on screen.
+    await browser.execute(() => void (document.querySelector(".diff-scroll")!.scrollTop = 0));
+    const seen = new Set<string | null>();
+    await waitFor(async () => {
+      for (const body of await bodies()) seen.add(body);
+      if (seen.has("These three lines") && seen.has("Why this threshold?")) return true;
+      await browser.execute(() => {
+        const el = document.querySelector(".diff-scroll")!;
+        el.scrollTop = el.scrollTop + el.clientHeight >= el.scrollHeight ? 0 : el.scrollTop + el.clientHeight / 2;
+      });
+      return false;
+    });
     expect(await count(".card.draft")).toBe(0);
   });
 
