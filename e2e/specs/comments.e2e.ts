@@ -65,24 +65,28 @@ describe("comments", () => {
     await waitFor(() => exists(".composer-input"));
     await setTextarea(".composer-input", "Simpler:");
     expect(await clickButton(".composer", "Suggest change")).toBe(true);
-    const value = await browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")!.value);
-    expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
-
-    // Tab / Shift+Tab indent and outdent the suggested lines the way the file does (4 spaces).
     const state = () =>
       browser.execute(() => {
         const el = document.querySelector<HTMLTextAreaElement>(".composer-input")!;
         return { value: el.value, caret: el.selectionStart };
       });
+    const { value } = await state();
+    expect(value).toBe(`Simpler:\n\`\`\`suggestion\n${line}\n\`\`\``);
+    // The caret lands at the end of the suggested lines on the next frame.
+    await waitFor(async () => (await state()).caret === value.length - "\n```".length);
+
+    // Tab / Shift+Tab indent and outdent the suggested lines the way the file does (4 spaces).
     const before = await state();
     await browser.keys("Tab");
     await waitFor(async () => (await state()).value === `Simpler:\n\`\`\`suggestion\n    ${line}\n\`\`\``);
     await waitFor(async () => (await state()).caret === before.caret + 4);
     await pressShifted("Tab");
     await waitFor(async () => (await state()).value === value);
+    await waitFor(async () => (await state()).caret === before.caret);
 
     // Enter inside the block breaks the line, indented like the caret's, instead of saving.
     await browser.keys("Tab");
+    await waitFor(async () => (await state()).caret === before.caret + 4);
     await browser.keys("Enter");
     const lead = `    ${/^[ \t]*/.exec(line!)![0]}`;
     const broken = `Simpler:\n\`\`\`suggestion\n    ${line}\n${lead}\n\`\`\``;
@@ -247,8 +251,19 @@ describe("comments", () => {
     await waitFor(async () => !(await exists(".card.thread .badge.ok")) && (await exists(".comment-mark.settled")));
     const bodies = () => browser.execute(() => [...document.querySelectorAll(".card.thread .card-body")].map((b) => b.textContent));
     // The posted threads arrive with the refetch after submitting, not necessarily all at once.
-    await waitFor(async () => (await bodies()).includes("These three lines"));
-    expect(await bodies()).toContain("Why this threshold?");
+    // Which rows they're on depends on what was rendered when they were drafted (it differs on
+    // macOS CI), so page down from the top until both have been on screen.
+    await browser.execute(() => void (document.querySelector(".diff-scroll")!.scrollTop = 0));
+    const seen = new Set<string | null>();
+    await waitFor(async () => {
+      for (const body of await bodies()) seen.add(body);
+      if (seen.has("These three lines") && seen.has("Why this threshold?")) return true;
+      await browser.execute(() => {
+        const el = document.querySelector(".diff-scroll")!;
+        el.scrollTop = el.scrollTop + el.clientHeight >= el.scrollHeight ? 0 : el.scrollTop + el.clientHeight / 2;
+      });
+      return false;
+    });
     expect(await count(".card.draft")).toBe(0);
   });
 
