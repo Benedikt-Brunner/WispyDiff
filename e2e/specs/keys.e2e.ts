@@ -386,6 +386,16 @@ describe("keyboard", () => {
     await waitFor(async () => JSON.stringify(await selectedChips()) === "[2]");
     await waitFor(async () => JSON.stringify(await fileNames()) === JSON.stringify(kept));
 
+    // The file search still finds hidden files; they open in the file view, which says why.
+    const hiddenFile = files.find((f) => ext(f) === hidden)!;
+    await doubleShift();
+    await waitFor(() => exists('[data-testid="file-search"]'));
+    await submitInput('[data-testid="file-search"] .palette-input', hiddenFile);
+    await waitFor(async () => (await text('[data-testid="file-view"] .sheet-title')) === hiddenFile);
+    expect(await text('[data-testid="file-view"] .file-view-note')).toContain("hidden by the file filter");
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="file-view"]')));
+
     // Everything filtered out says so; "Show all files" clears the filter.
     await click('[data-testid="file-filter"]');
     for (const e of exts.filter((e) => e !== hidden)) await click(`[data-testid="file-filter-ext${e}"]`);

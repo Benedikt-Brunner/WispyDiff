@@ -7,13 +7,15 @@ interface Props {
   line: number;
   /** Last line to highlight (`line` if just one). */
   end?: number;
+  /** In the diff, but left out by the file filter. */
+  filtered?: boolean;
   lines: Seg[][] | null;
   error: string | null;
   onClose: () => void;
 }
 
-/** A whole file from the head, read-only (for search hits outside the diff). */
-export function FileView({ path, line, end = line, lines, error, onClose }: Props) {
+/** A whole file from the head, read-only (for search hits outside the diff or in files the filter hides). */
+export function FileView({ path, line, end = line, filtered = false, lines, error, onClose }: Props) {
   const scroll = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
   const [height, setHeight] = useState(600);
@@ -59,7 +61,7 @@ export function FileView({ path, line, end = line, lines, error, onClose }: Prop
       <div className="file-view" onMouseDown={(e) => e.stopPropagation()} data-testid="file-view">
         <div className="sheet-head">
           <span className="sheet-title">{path}</span>
-          <span className="file-view-note">read-only · not part of this diff</span>
+          <span className="file-view-note">read-only · {filtered ? "hidden by the file filter" : "not part of this diff"}</span>
           <button className="link" onClick={onClose}>
             close
           </button>

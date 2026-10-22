@@ -186,7 +186,7 @@ export function DiffViewer(props: Props) {
   const [grepStatus, setGrepStatus] = useState<string>("idle");
   /** Files the last search skipped because they couldn't be downloaded (offline). */
   const [grepUnsearched, setGrepUnsearched] = useState(0);
-  const [fileView, setFileView] = useState<{ path: string; line: number; end: number; lines: Seg[][] | null; error: string | null } | null>(null);
+  const [fileView, setFileView] = useState<{ path: string; line: number; end: number; filtered: boolean; lines: Seg[][] | null; error: string | null } | null>(null);
   const [flash, setFlash] = useState<{ file: number; from: number; to: number } | null>(null);
   const pendingJump = useRef<{ file: number; line: number; end: number } | null>(null);
 
@@ -524,7 +524,8 @@ export function DiffViewer(props: Props) {
         void jumpToLine(file, target.line, target.end);
         return;
       }
-      setFileView({ path: target.path, line: target.line, end: target.end ?? target.line, lines: null, error: null });
+      const filtered = file >= 0 && layout.segments[file].mode === "hidden";
+      setFileView({ path: target.path, line: target.line, end: target.end ?? target.line, filtered, lines: null, error: null });
       readFile(stackId, hi, target.path)
         .then((lines) => setFileView((v) => (v?.path === target.path ? { ...v, lines } : v)))
         .catch((e) => setFileView((v) => (v?.path === target.path ? { ...v, error: String(e) } : v)));
