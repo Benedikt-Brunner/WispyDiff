@@ -11,6 +11,14 @@ dev:
 build:
     pnpm tauri build
 
+# Build the latest `main` and install it (macOS: /Applications/WispyDiff.app, Linux: ~/.local/bin/wispydiff).
+install:
+    scripts/auto-update.sh run --force
+
+# Rebuild and reinstall in the background whenever `main` moves: enable | disable | status.
+auto-update cmd="enable":
+    scripts/auto-update.sh {{cmd}}
+
 # Core tests, frontend type-check, and functional e2e tests.
 test: test-core typecheck e2e-functional
 
