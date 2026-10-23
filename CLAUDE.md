@@ -14,6 +14,7 @@ behaviour, performance budgets and milestones — read it before changing anythi
 - `just test` — core tests, type-check, all functional e2e specs.
 - `just bench` — performance budgets on this machine. Run it before merging anything touching rendering or the core.
 - `just dev` — run the app.
+- `just install` / `just auto-update [enable|disable|status]` — build `main` into the local installation, once or whenever it moves (`scripts/auto-update.sh`; builds in its own clone, never this checkout).
 
 ## Rules
 - Performance budgets in SPEC.md are binding; `perf.e2e.ts` enforces them. Heavy work happens in Rust, precomputed per SHA and cached; the frontend only renders visible rows.
