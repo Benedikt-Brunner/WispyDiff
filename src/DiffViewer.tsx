@@ -1503,13 +1503,15 @@ interface FileHeaderProps {
 const FileHeader = memo(function FileHeader({ y, file, mode, onComment, hidden, onShowHidden }: FileHeaderProps) {
   return (
     <div className="row row-file" style={at(y)} data-file={file.path} data-mode={mode}>
-      <span className={`file-status status-${file.status}`}>{statusLetter(file.status)}</span>
-      <span className="file-path">
-        {file.old_path && <span className="file-old-path">{file.old_path} → </span>}
-        {file.path}
-      </span>
-      <span className="file-counts">
-        <span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span>
+      <span className="file-title">
+        <span className={`file-status status-${file.status}`}>{statusLetter(file.status)}</span>
+        <span className="file-path">
+          {file.old_path && <span className="file-old-path">{file.old_path} → </span>}
+          {file.path}
+        </span>
+        <span className="file-counts">
+          <span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span>
+        </span>
       </span>
       {file.noise && <span className="file-badge">{file.noise}</span>}
       <span className="file-mode">{mode === "split" ? "side by side" : mode === "collapsed" ? "collapsed" : ""}</span>
