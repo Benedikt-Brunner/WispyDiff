@@ -22,6 +22,8 @@ pub enum Error {
     NoToken(String),
     #[error("{0}")]
     Assistant(String),
+    #[error("image: {0}")]
+    Image(String),
 }
 
 impl Error {

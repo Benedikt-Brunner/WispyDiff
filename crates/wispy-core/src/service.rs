@@ -11,8 +11,9 @@ use crate::drafts::{now, Draft, DraftKind, DraftStatus};
 use crate::github::{ReviewThread, Side, Verdict};
 use crate::inbox::{group, InboxGroup};
 use crate::progress::{Checkpoint, CheckpointEntry};
+use crate::images::Image;
 use crate::review::{self, Outcome, Planned, Target};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::github::GitHubClient;
 use crate::highlight::Highlighter;
 use crate::highlight_cache::HighlightCache;
@@ -270,6 +271,26 @@ impl PrService {
         draft.updated_at = now();
         self.cache.put_draft(&draft)?;
         Ok(Some(draft))
+    }
+
+    /// Keeps a pasted image (base64) locally and returns the Markdown that shows it; it's
+    /// uploaded to GitHub when a draft referring to it is submitted.
+    pub fn save_image(&self, content_type: &str, base64: &str) -> Result<String> {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.decode(base64).map_err(|e| Error::Image(e.to_string()))?;
+        self.save_image_data(content_type, data)
+    }
+
+    /// Keeps a pasted image locally; returns the Markdown that shows it.
+    pub fn save_image_data(&self, content_type: &str, data: Vec<u8>) -> Result<String> {
+        let image = Image::new(content_type, data)?;
+        self.cache.put_image(&image)?;
+        Ok(image.markdown())
+    }
+
+    /// A pasted image as a `data:` URL, for showing it in a draft.
+    pub fn image_data_url(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.cache.image(id)?.map(|image| image.data_url()))
     }
 
     pub fn delete_draft(&self, id: &str) -> Result<()> {

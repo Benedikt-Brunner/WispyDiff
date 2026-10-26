@@ -5535,6 +5535,7 @@ dependencies = [
 name = "wispydiff"
 version = "0.1.0"
 dependencies = [
+ "gtk",
  "serde",
  "serde_json",
  "tauri",

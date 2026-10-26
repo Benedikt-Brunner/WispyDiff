@@ -127,6 +127,8 @@ const RESOLVE_MUTATION: &str =
 
 pub struct GitHubClient {
     api_base: String,
+    /// Where attachments go (`uploads.github.com`; the API server itself when overridden in tests).
+    uploads_base: String,
     token: String,
     http: reqwest::Client,
 }
@@ -138,7 +140,9 @@ impl GitHubClient {
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
-        Ok(GitHubClient { api_base: api_base.into().trim_end_matches('/').to_string(), token: token.into(), http })
+        let api_base = api_base.into().trim_end_matches('/').to_string();
+        let uploads_base = if api_base == DEFAULT_API_BASE { "https://uploads.github.com".to_string() } else { api_base.clone() };
+        Ok(GitHubClient { api_base, uploads_base, token: token.into(), http })
     }
 
     pub fn token(&self) -> &str {
@@ -267,6 +271,35 @@ impl GitHubClient {
         Ok(crate::inbox::merge(prs))
     }
 
+    /// The repository's numeric id (attachments are uploaded against it).
+    pub async fn repository_id(&self, owner: &str, repo: &str) -> Result<u64> {
+        let repository: serde_json::Value = self.get(&format!("/repos/{owner}/{repo}"), &[]).await?;
+        repository["id"].as_u64().ok_or_else(|| Error::GitHub(format!("no id for {owner}/{repo}")))
+    }
+
+    /// Uploads an image as a comment attachment (as `gh … --attach` does; needs write access to
+    /// the repository) and returns its URL. An upload can't be undone.
+    pub async fn upload_image(&self, repository_id: u64, name: &str, content_type: &str, data: Vec<u8>) -> Result<String> {
+        let path = "/user-attachments/assets";
+        let query = [("name", name.to_string()), ("content_type", content_type.to_string()), ("repository_id", repository_id.to_string())];
+        let request = self
+            .http
+            .post(format!("{}{path}", self.uploads_base))
+            .query(&query)
+            .bearer_auth(&self.token)
+            .header("Accept", "application/vnd.github+json")
+            .header("Content-Type", "application/octet-stream")
+            .timeout(std::time::Duration::from_secs(120))
+            .body(data);
+        let response = request.send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            // GitHub answers 404, not 403, when the token can't write to the repository.
+            return Err(Error::GitHub("uploading images needs write access to the repository".into()));
+        }
+        let asset: serde_json::Value = Self::read(response, "POST", path).await?;
+        asset["url"].as_str().map(str::to_string).ok_or_else(|| Error::GitHub("the image upload returned no URL".into()))
+    }
+
     /// The login of the token's user.
     pub async fn viewer(&self) -> Result<String> {
         let user: serde_json::Value = self.get("/user", &[]).await?;
@@ -303,6 +336,10 @@ impl GitHubClient {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .await?;
+        Self::read(response, method, path).await
+    }
+
+    async fn read<T: serde::de::DeserializeOwned>(response: reqwest::Response, method: &str, path: &str) -> Result<T> {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

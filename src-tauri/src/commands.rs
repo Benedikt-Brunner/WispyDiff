@@ -324,6 +324,29 @@ pub async fn delete_draft(id: String, state: State<'_, AppState>) -> Result<(), 
     blocking(move || service.delete_draft(&id)).await
 }
 
+/// Keeps a pasted image (base64) for a comment; returns the Markdown to insert.
+#[tauri::command]
+pub async fn save_image(content_type: String, data: String, state: State<'_, AppState>) -> Result<String, String> {
+    let service = state.service()?;
+    blocking(move || service.save_image(&content_type, &data)).await
+}
+
+/// Keeps the clipboard's image for a comment when the paste event didn't carry it (Linux);
+/// returns the Markdown to insert, or nothing when there's no image.
+#[tauri::command]
+pub async fn paste_clipboard_image(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let service = state.service()?;
+    let png = tauri::async_runtime::spawn_blocking(move || crate::clipboard::image_png(&app)).await.map_err(|e| e.to_string())??;
+    let Some(png) = png else { return Ok(None) };
+    blocking(move || service.save_image_data("image/png", png)).await.map(Some)
+}
+
+#[tauri::command]
+pub async fn image_data_url(id: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let service = state.service()?;
+    blocking(move || service.image_data_url(&id)).await
+}
+
 /// Whether a line comment on these lines would be accepted as such (else: file comment).
 #[tauri::command]
 pub async fn accepts_line_comment(

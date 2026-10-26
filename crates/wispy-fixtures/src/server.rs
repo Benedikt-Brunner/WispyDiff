@@ -143,6 +143,16 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
     if path == "/graphql" {
         return graphql(body, fixture, state);
     }
+    if path == format!("/repos/{}/{}", fixture.owner, fixture.repo) {
+        return ("200 OK", json!({ "id": 4242, "full_name": format!("{}/{}", fixture.owner, fixture.repo) }));
+    }
+    if (method, path) == ("POST", "/user-attachments/assets") {
+        if param("repository_id").as_deref() != Some("4242") || !param("content_type").is_some_and(|t| t.starts_with("image/")) {
+            return ("422 Unprocessable Entity", json!({ "message": "Bad upload" }));
+        }
+        let id = state.id();
+        return ("201 Created", json!({ "url": format!("https://github.com/user-attachments/assets/fixture-{id}") }));
+    }
     if path == pulls {
         let owner_prefix = format!("{}:", fixture.owner);
         let head = param("head").map(|h| h.strip_prefix(&owner_prefix).map(str::to_string).unwrap_or(h));

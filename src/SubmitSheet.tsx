@@ -3,6 +3,7 @@ import { deleteDraft, prepareSubmit, submitReview, updateDraft, type SubmitPlan 
 import { lineLabel, type Outcome, type Planned, type Verdict } from "./comments";
 import type { OpenedStack } from "./types";
 import { isSubmitKey } from "./platform";
+import { pasteImages } from "./images";
 
 interface Props {
   stackId: string;
@@ -140,6 +141,9 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                       rows={2}
                       value={summaries[index] ?? ""}
                       onChange={(e) => setSummaries((s) => ({ ...s, [index]: e.target.value }))}
+                      onPaste={(e) =>
+                        pasteImages(e, (message) => message && setResults((r) => ({ ...r, [index]: { state: "error", message: `Couldn't paste the image: ${message}` } })))
+                      }
                       onKeyDown={(e) => {
                         if (isSubmitKey(e)) {
                           e.preventDefault();

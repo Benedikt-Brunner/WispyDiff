@@ -162,9 +162,10 @@ fn marker(token: &str) -> String {
 
 /// Sends the payload. Each draft's status is persisted before and after its request, so a
 /// crash or network failure never loses a draft or posts it twice.
-pub async fn send(github: &GitHubClient, cache: &Cache, target: &Target<'_>, payload: Payload, verdict: Verdict) -> Result<Outcome> {
+pub async fn send(github: &GitHubClient, cache: &Cache, target: &Target<'_>, mut payload: Payload, verdict: Verdict) -> Result<Outcome> {
     let mut outcome = Outcome::default();
     let pr = target.pr;
+    crate::images::upload(github, cache, pr, &mut payload).await?;
 
     let review_ids: Vec<String> = payload
         .review_comments

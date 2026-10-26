@@ -295,4 +295,51 @@ describe("comments", () => {
     await clickButton(".card.draft", "Delete");
     await waitFor(async () => (await draftCount()) === 0);
   });
+
+  it("pastes an image into a comment, shows it, and uploads it on submit", async () => {
+    await gutterDrag(".row-add", 0);
+    await waitFor(() => exists(".composer-input"));
+    await setTextarea(".composer-input", "Renders like this: ");
+    // A 1×1 PNG on the clipboard, pasted at the end of the text.
+    await browser.execute(() => {
+      const el = document.querySelector<HTMLTextAreaElement>(".composer-input")!;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      const png = atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+      const clipboard = new DataTransfer();
+      clipboard.items.add(new File([Uint8Array.from(png, (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", { value: clipboard });
+      el.dispatchEvent(paste);
+    });
+    const value = () => browser.execute(() => document.querySelector<HTMLTextAreaElement>(".composer-input")?.value ?? "");
+    await waitFor(async () => /^Renders like this: !\[image\]\(wispy-image:\w+\)$/.test(await value()));
+    await clickButton(".composer", "Save draft");
+    await waitFor(() =>
+      browser.execute(() => [...document.querySelectorAll(".card.draft img")].some((img) => img.getAttribute("src")?.startsWith("data:image/png;base64,"))),
+    );
+
+    await click('[data-testid="review-button"]');
+    await waitFor(async () => (await count('.sheet-pr[data-pr="2"] .sheet-items li')) === 1);
+    // Approving again keeps #2's latest review "approved" for the inbox spec.
+    await browser.execute(() => {
+      const select = document.querySelector<HTMLSelectElement>('.sheet-pr[data-pr="2"] select')!;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "APPROVE");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await click('[data-testid="submit-all"]');
+    await waitFor(async () => !(await exists(".sheet")), 60_000);
+    await waitFor(async () => (await draftCount()) === 0);
+    // The posted comment points at the uploaded image (the fake GitHub shows the Markdown as text).
+    await browser.execute(() => void (document.querySelector(".diff-scroll")!.scrollTop = 0));
+    await waitFor(async () => {
+      const bodies = await browser.execute(() => [...document.querySelectorAll(".card.thread .card-body")].map((b) => b.textContent ?? ""));
+      if (bodies.some((b) => /^Renders like this: !\[image\]\(https:\/\/github\.com\/user-attachments\/assets\/fixture-\d+\)$/.test(b))) return true;
+      await browser.execute(() => {
+        const el = document.querySelector(".diff-scroll")!;
+        el.scrollTop = el.scrollTop + el.clientHeight >= el.scrollHeight ? 0 : el.scrollTop + el.clientHeight / 2;
+      });
+      return false;
+    });
+  });
 });

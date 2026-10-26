@@ -1,3 +1,4 @@
+mod clipboard;
 mod commands;
 mod prefetch;
 mod state;
@@ -45,6 +46,9 @@ pub fn run() {
             commands::create_draft,
             commands::update_draft,
             commands::delete_draft,
+            commands::save_image,
+            commands::image_data_url,
+            commands::paste_clipboard_image,
             commands::accepts_line_comment,
             commands::list_threads,
             commands::locate_anchors,

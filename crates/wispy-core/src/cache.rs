@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::github::ReviewThread;
 use crate::highlight::Seg;
 use crate::highlight_cache::{key_prefix, BlobStore, Lines};
+use crate::images::Image;
 use crate::model::DiffView;
 use crate::pr_ref::PrRef;
 use crate::progress::Checkpoint;
@@ -102,6 +103,18 @@ impl Cache {
              CREATE TABLE IF NOT EXISTS repo_settings (
                  repo TEXT PRIMARY KEY,
                  data TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS images (
+                 id TEXT PRIMARY KEY,
+                 content_type TEXT NOT NULL,
+                 data BLOB NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS image_uploads (
+                 id TEXT NOT NULL,
+                 repo TEXT NOT NULL,
+                 url TEXT NOT NULL,
+                 PRIMARY KEY (id, repo)
              );
              CREATE TABLE IF NOT EXISTS diff_views (
                  key TEXT PRIMARY KEY,
@@ -214,6 +227,36 @@ impl Cache {
     /// Whether any PR of `repo` in `prs` has something not yet posted.
     pub fn has_pending_drafts(&self, repo: &str, prs: &[u64]) -> Result<bool> {
         Ok(self.drafts(repo, prs)?.iter().any(Draft::is_pending))
+    }
+
+    pub fn put_image(&self, image: &Image) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO images (id, content_type, data) VALUES (?1, ?2, ?3)",
+            params![image.id, image.content_type, image.data],
+        )?;
+        Ok(())
+    }
+
+    pub fn image(&self, id: &str) -> Result<Option<Image>> {
+        let found = self
+            .reader()?
+            .query_row("SELECT content_type, data FROM images WHERE id = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+        Ok(found.map(|(content_type, data)| Image { id: id.to_string(), content_type, data }))
+    }
+
+    /// Where the image was uploaded for `repo` (GitHub's attachments belong to a repository).
+    pub fn image_url(&self, id: &str, repo: &str) -> Result<Option<String>> {
+        let url = self
+            .reader()?
+            .query_row("SELECT url FROM image_uploads WHERE id = ?1 AND repo = ?2", [id, repo], |row| row.get(0))
+            .optional()?;
+        Ok(url)
+    }
+
+    pub fn put_image_url(&self, id: &str, repo: &str, url: &str) -> Result<()> {
+        self.conn().execute("INSERT OR REPLACE INTO image_uploads (id, repo, url) VALUES (?1, ?2, ?3)", [id, repo, url])?;
+        Ok(())
     }
 
     pub fn put_threads(&self, repo: &str, pr: u64, threads: &[ReviewThread]) -> Result<()> {

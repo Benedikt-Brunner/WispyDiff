@@ -3,6 +3,7 @@ import { Html, Markdown } from "./Markdown";
 import type { ReviewThread, ShownDraft, ThreadComment } from "./comments";
 import { isSubmitKey, mod, keyLabel } from "./platform";
 import { newline, reindent, type Edit } from "./indent";
+import { pasteImages } from "./images";
 
 /** Measures its content and reports the height, so the layout can make room for it. */
 export function InsertBox({ y, onHeight, children }: { y: number; onHeight: (h: number) => void; children: React.ReactNode }) {
@@ -39,6 +40,7 @@ interface ComposerProps {
 
 export function Composer({ title, fileFallback, initial = "", saveLabel = "Save draft", suggestion = null, indentUnit, onSave, onCancel }: ComposerProps) {
   const [text, setText] = useState(initial);
+  const [pasteError, setPasteError] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
   const [unit, setUnit] = useState<string | null>(null);
@@ -97,9 +99,10 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
         ref={ref}
         className="composer-input"
         value={text}
-        placeholder={`Leave a comment · ↵ to save · ⇧↵ for a new line${canSuggest ? ` · ${keyLabel("G")} to suggest a change` : ""} · Esc to cancel`}
+        placeholder={`Leave a comment · ↵ to save · ⇧↵ for a new line${canSuggest ? ` · ${keyLabel("G")} to suggest a change` : ""} · paste images · Esc to cancel`}
         rows={Math.min(20, Math.max(3, text.split("\n").length))}
         onChange={(e) => setText(e.target.value)}
+        onPaste={(e) => pasteImages(e, setPasteError)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !mod(e) && !e.altKey && !e.nativeEvent.isComposing && breakLine()) {
             e.preventDefault();
@@ -120,6 +123,7 @@ export function Composer({ title, fileFallback, initial = "", saveLabel = "Save 
           if (!mod(e)) e.stopPropagation();
         }}
       />
+      {pasteError && <div className="card-error">Couldn't paste the image: {pasteError}</div>}
       <div className="card-actions">
         <button className="button primary" onClick={save} disabled={!text.trim()}>
           {saveLabel}
