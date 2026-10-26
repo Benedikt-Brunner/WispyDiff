@@ -46,9 +46,14 @@ just build   # macOS: target/release/bundle/macos/WispyDiff.app
 To keep an installed copy on the latest `main`, `just auto-update` sets up a background job
 (launchd on macOS, a systemd user timer on Linux) that checks every 10 minutes, rebuilds new
 commits in its own clone and installs them to `/Applications/WispyDiff.app` (macOS) or
-`~/.local/bin/wispydiff` (Linux); restart the app to use an update. `just auto-update status`
-shows what's installed, `just auto-update disable` stops it, and `just install` builds and
-installs the latest `main` once.
+`~/.local/bin/wispydiff` (Linux, with an app launcher entry and icons under `~/.local/share`);
+restart the app to use an update. `just auto-update status` shows what's installed,
+`just auto-update disable` stops it (and removes the Linux launcher entry), and `just install`
+builds and installs the latest `main` once.
+
+Switching from the `.deb` on Linux: remove it first (`sudo apt remove wispy-diff`), otherwise its
+`/usr/bin/wispydiff` and launcher entry take precedence over the auto-updated copy. Then run
+`just auto-update enable`.
 
 WispyDiff keeps its own blobless clones under `~/Library/Application Support/WispyDiff` (macOS)
 or `~/.local/share/WispyDiff` (Linux) and never touches your working copies.
