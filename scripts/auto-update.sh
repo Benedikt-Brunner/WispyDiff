@@ -2,10 +2,12 @@
 # Keeps the local installation on the latest `main`. A launchd agent (macOS) or systemd user timer
 # (Linux) runs `run` every 10 minutes; when `main` moved, it builds it in a private clone under the
 # updater dir (never your checkout) and swaps the result in: /Applications/WispyDiff.app on macOS,
-# ~/.local/bin/wispydiff on Linux. A running app keeps going; a notification says to restart it.
+# ~/.local/bin/wispydiff (plus an app launcher entry and icons under ~/.local/share) on Linux. A
+# running app keeps going; a notification says to restart it.
 #
 #   auto-update.sh enable          install and start the background job (it updates right away)
-#   auto-update.sh disable         stop and remove it (the build cache stays in the updater dir)
+#   auto-update.sh disable         stop and remove it and the Linux launcher entry (the build cache
+#                                  and the installed app stay)
 #   auto-update.sh run [--force]   check once; --force rebuilds even when up to date
 #   auto-update.sh status          installed commit, latest main, recent log
 #
@@ -91,7 +93,47 @@ install_build() {
   else
     cp "$SRC/target/release/wispydiff" "$staged"
     mv -f "$staged" "$TARGET"
+    install_launcher
   fi
+}
+
+# Linux: the app launcher entry and its icons, as the .deb bundle would install them system-wide.
+APPS_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/applications
+ICONS_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor
+DESKTOP_FILE=$APPS_DIR/WispyDiff.desktop
+ICON_SIZES="32x32:32x32.png 128x128:128x128.png 256x256:128x128@2x.png 512x512:icon.png"
+
+install_launcher() {
+  local size_file size
+  for size_file in $ICON_SIZES; do
+    size=${size_file%%:*}
+    mkdir -p "$ICONS_DIR/$size/apps"
+    cp "$SRC/src-tauri/icons/${size_file#*:}" "$ICONS_DIR/$size/apps/wispydiff.png"
+  done
+  mkdir -p "$APPS_DIR"
+  # Exec is absolute: ~/.local/bin is often not on the desktop session's PATH.
+  cat > "$DESKTOP_FILE.new" << EOF
+[Desktop Entry]
+Type=Application
+Name=WispyDiff
+Comment=Distraction-free review of stacked GitHub PRs
+Exec="$TARGET"
+Icon=wispydiff
+StartupWMClass=wispydiff
+Terminal=false
+EOF
+  mv -f "$DESKTOP_FILE.new" "$DESKTOP_FILE"
+  touch "$ICONS_DIR" # icon caches notice the change by the directory's mtime
+  if command -v update-desktop-database > /dev/null; then update-desktop-database -q "$APPS_DIR" || true; fi
+}
+
+remove_launcher() {
+  local size_file
+  rm -f "$DESKTOP_FILE"
+  for size_file in $ICON_SIZES; do
+    rm -f "$ICONS_DIR/${size_file%%:*}/apps/wispydiff.png"
+  done
+  if command -v update-desktop-database > /dev/null; then update-desktop-database -q "$APPS_DIR" || true; fi
 }
 
 # The job runs the copy in the updater dir, so it picks up changes to this script with `main`.
@@ -255,6 +297,7 @@ disable() {
     systemctl --user disable --now wispydiff-updater.timer 2> /dev/null || true
     rm -f "$units/wispydiff-updater.timer" "$units/wispydiff-updater.service"
     systemctl --user daemon-reload
+    remove_launcher
   fi
   echo "Auto-update disabled. The build cache stays in $DIR; delete it to free the space."
 }
@@ -287,5 +330,5 @@ case "${1:-}" in
   disable) disable ;;
   run) run "${2:-}" ;;
   status) status ;;
-  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
