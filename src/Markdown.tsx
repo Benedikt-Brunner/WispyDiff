@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Marked } from "marked";
 import { openUrl, type CommentOutcome } from "./api";
+import { IMAGE_SCHEME, imageUrls, loadImages } from "./images";
 
 /** A reference to code in an assistant answer, e.g. `src/app.ts:42-50`. */
 export interface CodeRef {
@@ -18,11 +19,22 @@ export interface CodeRefs {
 /** Rendered HTML (GitHub's `bodyHTML`, or Markdown rendered here); links open in the browser,
  * file references (with `refs`) in the app. */
 export function Html({ html, className = "card-body", refs }: { html: string; className?: string; refs?: CodeRefs }) {
-  const safe = useMemo(() => {
+  const [loaded, setLoaded] = useState(0);
+  const { safe, missing } = useMemo(() => {
     const doc = sanitize(html);
     if (refs) linkRefs(doc, refs.resolve);
-    return doc.body.innerHTML;
-  }, [html, refs]);
+    const missing = showPastedImages(doc);
+    return { safe: doc.body.innerHTML, missing };
+    // `loaded`: pasted images arrived.
+  }, [html, refs, loaded]);
+  useEffect(() => {
+    if (!missing.length) return;
+    let live = true;
+    void loadImages(missing).then(() => live && setLoaded((n) => n + 1));
+    return () => {
+      live = false;
+    };
+  }, [missing]);
   return (
     <div
       className={`${className} markdown`}
@@ -87,6 +99,21 @@ export function CommentCards({ comments, refs }: { comments: CommentOutcome[]; r
     [comments],
   );
   return <Html html={html} className="card-body assistant-comments" refs={refs} />;
+}
+
+/** Shows images pasted into drafts (kept locally until submitted); returns those not loaded yet. */
+function showPastedImages(doc: Document) {
+  const missing: string[] = [];
+  for (const img of doc.body.querySelectorAll("img")) {
+    const src = img.getAttribute("src") ?? "";
+    if (!src.startsWith(IMAGE_SCHEME)) continue;
+    const id = src.slice(IMAGE_SCHEME.length);
+    const url = imageUrls.get(id);
+    img.removeAttribute("src");
+    if (url) img.src = url;
+    else if (url === undefined) missing.push(id);
+  }
+  return missing;
 }
 
 /** Makes sure nothing in the HTML can run here. */

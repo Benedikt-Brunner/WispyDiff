@@ -41,6 +41,11 @@ export const updateDraft = (id: string, change: { body?: string; asFile?: boolea
 
 export const deleteDraft = (id: string) => invoke<void>("delete_draft", { id });
 
+/** Keeps a pasted image (base64) locally; returns the Markdown that shows it. */
+export const saveImage = (contentType: string, data: string) => invoke<string>("save_image", { contentType, data });
+
+export const imageDataUrl = (id: string) => invoke<string | null>("image_data_url", { id });
+
 export const acceptsLineComment = (stackId: string, prIndex: number, path: string, side: Side, start: number, end: number) =>
   invoke<boolean>("accepts_line_comment", { stackId, prIndex, path, side, start, end });
 

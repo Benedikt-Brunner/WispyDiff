@@ -1,13 +1,14 @@
 mod support;
 
 use support::{pull_request, OriginRepo};
-use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
+use wiremock::matchers::{body_partial_json, body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wispy_core::anchors::{quoted_body, Coverage};
 use wispy_core::cache::Cache;
 use wispy_core::drafts::{new_id, Draft, DraftKind, DraftStatus};
 use wispy_core::git::Git;
 use wispy_core::github::{GitHubClient, Side, Verdict};
+use wispy_core::images::Image;
 use wispy_core::pr_ref::PrRef;
 use wispy_core::repo_store::RepoStore;
 use wispy_core::review::{payload, plan, reconcile, send, Plan, Target};
@@ -217,6 +218,96 @@ async fn keeps_rejected_drafts_locally_with_the_error() {
     assert_eq!(stored.status, DraftStatus::Failed);
     assert!(stored.error.unwrap().contains("Validation Failed"));
     assert_eq!(stored.body, "why ten?");
+}
+
+#[tokio::test]
+async fn uploads_pasted_images_once_and_posts_their_urls() {
+    let (fx, server, github, cache) = service_fixture().await;
+    let image = Image::new("image/png", b"PNG fake".to_vec()).unwrap();
+    cache.put_image(&image).unwrap();
+    let line = line_draft(&fx, 10, None, &format!("looks off: {}", image.markdown()));
+    let reply = {
+        let mut reply = line_draft(&fx, 1, None, &format!("same here {}", image.markdown()));
+        reply.kind = DraftKind::Reply;
+        reply.reply_to = Some(4242);
+        reply
+    };
+    cache.put_draft(&line).unwrap();
+    cache.put_draft(&reply).unwrap();
+    let url = "https://github.com/user-attachments/assets/abc-123";
+
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/shop"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": 77 })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/user-attachments/assets"))
+        .and(query_param("repository_id", "77"))
+        .and(query_param("content_type", "image/png"))
+        .and(query_param("name", "image.png"))
+        .and(header("authorization", "Bearer t"))
+        .and(body_string_contains("PNG fake"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({ "url": url })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The review is rejected the first time, so submitting again must reuse the upload.
+    Mock::given(path("/repos/acme/shop/pulls/1/reviews"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({ "message": "Validation Failed" })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/shop/pulls/1/reviews"))
+        .and(body_string_contains(format!("looks off: ![image]({url})")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": 1 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/shop/pulls/1/comments/4242/replies"))
+        .and(body_string_contains(format!("same here ![image]({url})")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({ "id": 3 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let pr = pr();
+    let coverage = Coverage::compute(&fx.git, &fx.base, &fx.head).unwrap();
+    let target = Target { pr: &pr, head: &fx.head, base: &fx.base, coverage: &coverage };
+    for _ in 0..2 {
+        let planned = plan(&fx.git, &target, &cache.drafts("acme/shop", &[1]).unwrap()).unwrap();
+        send(&github, &cache, &target, payload(&fx.git, &target, &planned, None).unwrap(), Verdict::Comment).await.unwrap();
+    }
+
+    assert!(cache.drafts("acme/shop", &[1]).unwrap().iter().all(|d| d.status == DraftStatus::Posted));
+    assert_eq!(cache.draft(&line.id).unwrap().unwrap().body, line.body, "the draft keeps its local reference");
+}
+
+#[tokio::test]
+async fn a_missing_pasted_image_stops_the_submit_before_anything_is_posted() {
+    let (fx, server, github, cache) = service_fixture().await;
+    let line = line_draft(&fx, 10, None, "see ![image](wispy-image:gone)");
+    cache.put_draft(&line).unwrap();
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+
+    let pr = pr();
+    let coverage = Coverage::compute(&fx.git, &fx.base, &fx.head).unwrap();
+    let target = Target { pr: &pr, head: &fx.head, base: &fx.base, coverage: &coverage };
+    let planned = plan(&fx.git, &target, &cache.drafts("acme/shop", &[1]).unwrap()).unwrap();
+    let err = send(&github, &cache, &target, payload(&fx.git, &target, &planned, None).unwrap(), Verdict::Comment).await.unwrap_err();
+
+    assert!(err.to_string().contains("missing"), "{err}");
+    assert_eq!(cache.draft(&line.id).unwrap().unwrap().status, DraftStatus::Draft);
+}
+
+#[test]
+fn refuses_pasted_images_github_would_not_take() {
+    assert!(Image::new("image/png", vec![1]).is_ok());
+    assert!(Image::new("image/tiff", vec![1]).unwrap_err().to_string().contains("PNG, JPEG, GIF or WebP"));
+    assert!(Image::new("image/png", vec![]).is_err());
+    assert!(Image::new("image/png", vec![0; 10 * 1024 * 1024 + 1]).unwrap_err().to_string().contains("at most 10 MB"));
 }
 
 #[tokio::test]

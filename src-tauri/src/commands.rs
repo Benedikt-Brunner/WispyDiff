@@ -324,6 +324,19 @@ pub async fn delete_draft(id: String, state: State<'_, AppState>) -> Result<(), 
     blocking(move || service.delete_draft(&id)).await
 }
 
+/// Keeps a pasted image (base64) for a comment; returns the Markdown to insert.
+#[tauri::command]
+pub async fn save_image(content_type: String, data: String, state: State<'_, AppState>) -> Result<String, String> {
+    let service = state.service()?;
+    blocking(move || service.save_image(&content_type, &data)).await
+}
+
+#[tauri::command]
+pub async fn image_data_url(id: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let service = state.service()?;
+    blocking(move || service.image_data_url(&id)).await
+}
+
 /// Whether a line comment on these lines would be accepted as such (else: file comment).
 #[tauri::command]
 pub async fn accepts_line_comment(
