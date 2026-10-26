@@ -21,6 +21,10 @@ serde_json = "1"
 tauri-plugin-wdio = { version = "1", optional = true }
 tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The same GTK Tauri runs on, for clipboard images (see clipboard.rs).
+gtk = "0.18"
+
 [features]
 # Embeds the WebDriver server used by the e2e and performance suites (release builds too,
 # so performance is measured on optimized code).

@@ -278,6 +278,11 @@ impl PrService {
     pub fn save_image(&self, content_type: &str, base64: &str) -> Result<String> {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.decode(base64).map_err(|e| Error::Image(e.to_string()))?;
+        self.save_image_data(content_type, data)
+    }
+
+    /// Keeps a pasted image locally; returns the Markdown that shows it.
+    pub fn save_image_data(&self, content_type: &str, data: Vec<u8>) -> Result<String> {
         let image = Image::new(content_type, data)?;
         self.cache.put_image(&image)?;
         Ok(image.markdown())

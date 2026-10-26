@@ -1,4 +1,4 @@
-import { imageDataUrl, saveImage } from "./api";
+import { imageDataUrl, pasteClipboardImage, saveImage } from "./api";
 
 /** How a draft refers to a pasted image until submitting uploads it. */
 export const IMAGE_SCHEME = "wispy-image:";
@@ -9,19 +9,20 @@ export function pastedImages(e: React.ClipboardEvent) {
 }
 
 /**
- * Pastes clipboard images into a text box as Markdown (stored locally, uploaded on submit).
- * Returns false (letting the paste through) when there's no image; `onError` gets refusals.
+ * Pastes clipboard images into a text box as Markdown (stored locally, uploaded on submit);
+ * text pastes as usual. `onError` gets refusals ("" once a paste worked).
  */
 export function pasteImages(e: React.ClipboardEvent<HTMLTextAreaElement>, onError: (message: string) => void) {
   const files = pastedImages(e);
-  if (!files.length) return false;
-  e.preventDefault();
   const el = e.currentTarget;
+  // WebKitGTK leaves images out of the paste event; the app reads them from the clipboard then.
+  if (files.length) e.preventDefault();
   void (async () => {
     try {
-      const markdown = await Promise.all(files.map(async (file) => saveImage(file.type, await base64(file))));
+      const markdown = files.length ? await Promise.all(files.map(async (file) => saveImage(file.type, await base64(file)))) : [await pasteClipboardImage()];
+      const text = markdown.filter(Boolean).join("\n");
+      if (!text) return;
       el.focus();
-      const text = markdown.join("\n");
       // Typed in, so ⌘Z undoes it and React's onChange sees it.
       if (!document.execCommand("insertText", false, text)) el.setRangeText(text, el.selectionStart, el.selectionEnd, "end");
       onError("");
@@ -29,7 +30,6 @@ export function pasteImages(e: React.ClipboardEvent<HTMLTextAreaElement>, onErro
       onError(String(err));
     }
   })();
-  return true;
 }
 
 async function base64(file: Blob) {

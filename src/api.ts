@@ -44,6 +44,9 @@ export const deleteDraft = (id: string) => invoke<void>("delete_draft", { id });
 /** Keeps a pasted image (base64) locally; returns the Markdown that shows it. */
 export const saveImage = (contentType: string, data: string) => invoke<string>("save_image", { contentType, data });
 
+/** Keeps the clipboard's image when the paste event didn't carry it (Linux); null: none there. */
+export const pasteClipboardImage = () => invoke<string | null>("paste_clipboard_image");
+
 export const imageDataUrl = (id: string) => invoke<string | null>("image_data_url", { id });
 
 export const acceptsLineComment = (stackId: string, prIndex: number, path: string, side: Side, start: number, end: number) =>
