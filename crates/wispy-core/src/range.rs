@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::attribution::{attribute, Step};
-use crate::diff::{parse_patch, FileDiff, LineKind, PATCH_ARGS};
+use crate::diff::{parse_patch, tree_order, FileDiff, LineKind, PATCH_ARGS};
 use crate::error::Result;
 use crate::git::Git;
 use crate::highlight::{Highlighter, Language, HIGHLIGHT_VERSION};
@@ -62,7 +62,9 @@ pub fn compute_range(git: &Git, spec: &RangeSpec, highlighter: &Highlighter, cac
         endpoints.extend(starts.zip(&spec.heads).map(|(from, to)| (from, to.as_str())));
     }
     let mut diffs = endpoints.par_iter().map(|(from, to)| diff(from, to)).collect::<Result<Vec<_>>>()?.into_iter();
-    let combined = diffs.next().expect("combined diff");
+    let mut combined = diffs.next().expect("combined diff");
+    // The file list shows this order, as a tree too: each directory's folders before its files.
+    combined.sort_by(|a, b| tree_order(a.path(), b.path()));
     let step_files: Vec<Vec<FileDiff>> = diffs.collect();
 
     let steps: Vec<Step> = if step_files.is_empty() {

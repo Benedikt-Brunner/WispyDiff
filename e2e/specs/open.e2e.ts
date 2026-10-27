@@ -100,12 +100,11 @@ describe("reading modes and noise", () => {
   it("collapses lockfiles and generated files by default", async () => {
     await openViaPalette("wispy/fixture#1");
     const muted = await browser.execute(() => [...document.querySelectorAll(".file-list li.muted")].map((li) => li.getAttribute("title")));
-    expect(muted).toEqual(["composer.lock", "src/Generated/ApiClient.php"]);
-    // Reached with ⇧↓ from the top (clicking it in the file list would open it for a look).
+    // Folders before files: src/ comes first, then the top-level files.
+    expect(muted).toEqual(["src/Generated/ApiClient.php", "composer.lock"]);
+    // Reached with ⇧↓ from the file before it (clicking it in the file list would open it for a look).
     const active = () => browser.execute(() => document.querySelector(".file-list li.active")?.getAttribute("title"));
-    await browser.execute(() => {
-      document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop = 0;
-    });
+    await click('.file-list li[title=".gitattributes"]');
     await waitFor(async () => (await active()) === ".gitattributes");
     await pressShifted("ArrowDown");
     await waitFor(async () => (await active()) === "composer.lock");

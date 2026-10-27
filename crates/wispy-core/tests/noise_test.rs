@@ -44,11 +44,11 @@ fn marks_files_generated_by_the_head_gitattributes() {
     assert_eq!(
         noise,
         vec![
-            (".gitattributes", None),
-            ("composer.lock", Some("lockfile")),
-            ("src/Api.php", None),
             ("src/Generated/Client.php", Some("generated")),
             ("src/Proto/Order.pb.php", Some("generated")),
+            ("src/Api.php", None),
+            (".gitattributes", None),
+            ("composer.lock", Some("lockfile")),
         ]
     );
 }
