@@ -84,6 +84,22 @@ impl FileDiff {
     }
 }
 
+/// Orders paths like a directory tree: within each directory, its subdirectories come
+/// before its files, and names otherwise keep git's byte order.
+pub fn tree_order(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.split('/').peekable(), b.split('/').peekable());
+    loop {
+        match (a.next(), b.next()) {
+            (Some(x), Some(y)) if x == y => continue,
+            (Some(x), Some(y)) => {
+                let (x_dir, y_dir) = (a.peek().is_some(), b.peek().is_some());
+                return y_dir.cmp(&x_dir).then_with(|| x.cmp(y));
+            }
+            (x, y) => return x.is_some().cmp(&y.is_some()),
+        }
+    }
+}
+
 pub fn parse_patch(input: &[u8]) -> Result<Vec<FileDiff>> {
     let mut files: Vec<FileDiff> = Vec::new();
     let mut hunk_state: Option<HunkState> = None;

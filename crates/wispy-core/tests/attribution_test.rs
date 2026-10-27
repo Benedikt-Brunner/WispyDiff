@@ -84,8 +84,8 @@ fn attributes_each_line_to_the_last_pr_that_touched_it() {
     let view = view(&snapshot, &root, 0, 2);
 
     let paths: Vec<_> = view.summary.files.iter().map(|f| f.path.as_str()).collect();
-    assert_eq!(paths, vec!["new.ts", "src/lib.php"]);
-    assert_eq!(view.summary.files[1].old_path.as_deref(), Some("lib.php"), "rename detected");
+    assert_eq!(paths, vec!["src/lib.php", "new.ts"]);
+    assert_eq!(view.summary.files[0].old_path.as_deref(), Some("lib.php"), "rename detected");
 
     let attr = |kind, text| {
         let row = find(&view, kind, text);
@@ -101,8 +101,8 @@ fn attributes_each_line_to_the_last_pr_that_touched_it() {
     assert_eq!(attr(row_kind::DELETED, "line 4"), (Some(1), vec![]));
     assert!(view.rows.iter().filter(|r| r.k == row_kind::CONTEXT).all(|r| r.a.is_none()));
 
-    assert_eq!(view.summary.files[0].prs, vec![2]);
-    assert_eq!(view.summary.files[1].prs, vec![0, 1, 2]);
+    assert_eq!(view.summary.files[0].prs, vec![0, 1, 2]);
+    assert_eq!(view.summary.files[1].prs, vec![2]);
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn records_each_line_number_in_the_diff_of_the_pr_it_belongs_to() {
     assert_eq!(find(&view, row_kind::DELETED, "line 4").l, Some(4));
     assert_eq!(find(&view, row_kind::DELETED, "line 1").l, Some(1));
     // PR 1 and 2 knew the file as lib.php; the view shows src/lib.php (renamed by PR 3).
-    let file = &view.summary.files[1];
+    let file = &view.summary.files[0];
     assert_eq!(file.pr_paths, vec![(0, "lib.php".to_string()), (1, "lib.php".to_string())]);
 }
 
@@ -169,8 +169,8 @@ fn locates_pr_level_anchors_in_a_range_view() {
     let anchor = |pr: u8, path: &str, side, line| Anchor { pr, path: path.into(), side, line };
 
     let added = locate(&view, 2, &anchor(0, "lib.php", Side::Right, 21)).expect("found");
-    assert_eq!(added.file, 1);
-    let rows = wispy_core::model::file_slice(&view, 1);
+    assert_eq!(added.file, 0);
+    let rows = wispy_core::model::file_slice(&view, 0);
     assert_eq!(support::row_text(&rows[added.unified.unwrap() as usize]), "added by pr1");
     assert!(added.split.is_some());
 
@@ -180,7 +180,7 @@ fn locates_pr_level_anchors_in_a_range_view() {
     // An unchanged line far from any hunk exists only in the side-by-side rows.
     let unchanged = locate(&view, 2, &anchor(2, "src/lib.php", Side::Right, 10)).expect("found");
     assert_eq!(unchanged.unified, None);
-    let file = &view.summary.files[1];
+    let file = &view.summary.files[0];
     let pairs = wispy_core::split::align(rows, file.old_lines, file.new_lines).pairs;
     let pair = pairs[unchanged.split.unwrap() as usize - 1];
     assert_eq!((pair.n, pair.nk), (Some(10), row_kind::CONTEXT));

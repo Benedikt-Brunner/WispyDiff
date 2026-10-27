@@ -172,3 +172,20 @@ fn a_restructured_block_marks_only_the_lines_that_were_edited() {
         "the brackets are what changed line for line; the rest was restructured"
     );
 }
+
+#[test]
+fn files_are_ordered_like_a_tree_with_folders_before_files() {
+    let view = view_of(
+        &[],
+        &[
+            ("src/a.ts", Some("a\n")),
+            ("src/b/x.ts", Some("x\n")),
+            ("src/c.ts", Some("c\n")),
+            ("src/b-c.ts", Some("bc\n")),
+            ("README.md", Some("r\n")),
+            ("docs/guide.md", Some("g\n")),
+        ],
+    );
+    let paths: Vec<&str> = view.summary.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["docs/guide.md", "src/b/x.ts", "src/a.ts", "src/b-c.ts", "src/c.ts", "README.md"]);
+}
