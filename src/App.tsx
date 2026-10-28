@@ -410,6 +410,11 @@ export default function App() {
           void markRangeReviewed();
           return;
         }
+        if (e.key === "r") {
+          e.preventDefault();
+          setSheetOpen(true);
+          return;
+        }
         if (e.key === "d") {
           e.preventDefault();
           toggleSince();
@@ -453,7 +458,7 @@ export default function App() {
           <span className="titlebar-hint" data-tauri-drag-region />
         )}
         {showingDiff && (
-          <button className="review-button" onClick={() => setSheetOpen(true)} data-testid="review-button">
+          <button className="review-button" onClick={() => setSheetOpen(true)} title="Submit review (r)" data-testid="review-button">
             Submit review{drafts.length ? ` · ${drafts.length}` : ""}
           </button>
         )}
@@ -502,6 +507,7 @@ export default function App() {
       {sheetOpen && stack && (
         <SubmitSheet
           stackId={stack.stackId}
+          shown={shown?.range ?? { lo: 0, hi: stack.prs.length - 1 }}
           onClose={() => setSheetOpen(false)}
           onSubmitted={(fresh, done) => {
             if (done) {

@@ -1293,7 +1293,11 @@ body.resizing {
 }
 .sheet-foot {
   border-top: 1px solid var(--border);
-  justify-content: flex-end;
+  gap: 12px;
+}
+.sheet-keys {
+  color: var(--fg-muted);
+  font-size: 12px;
 }
 .sheet-title {
   font-weight: 600;

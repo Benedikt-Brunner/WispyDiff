@@ -298,7 +298,8 @@ fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
         "draft": false,
         "merged_at": null,
         "html_url": format!("https://github.com/{}/{}/pull/{}", fixture.owner, fixture.repo, pr.number),
-        "user": { "login": "fixture-bot" },
+        // As in the inbox search: #1 is yours.
+        "user": { "login": if pr.number == 1 { "you" } else { "fixture-bot" } },
         "base": { "ref": pr.base_ref, "sha": base_sha, "repo": repo },
         "head": { "ref": pr.head_ref, "sha": head_sha, "repo": repo },
     })

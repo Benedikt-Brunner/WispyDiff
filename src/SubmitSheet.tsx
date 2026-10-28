@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteDraft, prepareSubmit, submitReview, updateDraft, type SubmitPlan } from "./api";
 import { lineLabel, type Outcome, type Planned, type Verdict } from "./comments";
 import type { OpenedStack } from "./types";
-import { isSubmitKey } from "./platform";
+import { isSubmitKey, keyLabel, mod } from "./platform";
 import { pasteImages } from "./images";
 
 interface Props {
   stackId: string;
+  /** The PRs on screen: the sheet starts in the first of them with drafts (else the lowest). */
+  shown: { lo: number; hi: number };
   onClose: () => void;
   /**
    * Called after submitting, with the stack as it was on GitHub when planning. `done`: everything went out
@@ -15,16 +17,20 @@ interface Props {
   onSubmitted: (fresh: OpenedStack, done: boolean) => void;
 }
 
+/** ⌘1 / ⌘2 / ⌘3 pick the verdict of the PR being written in. */
+const VERDICT_KEYS: Record<string, Verdict> = { "1": "COMMENT", "2": "APPROVE", "3": "REQUEST_CHANGES" };
+
 type Result = { state: "sending" } | { state: "done"; outcome: Outcome } | { state: "error"; message: string };
 
 /** One click from the diff: review each PR of the stack with its drafts, verdict and summary. */
-export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
+export function SubmitSheet({ stackId, shown, onClose, onSubmitted }: Props) {
   const [plan, setPlan] = useState<SubmitPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [verdicts, setVerdicts] = useState<Record<number, Verdict>>({});
   const [summaries, setSummaries] = useState<Record<number, string>>({});
   const [results, setResults] = useState<Record<number, Result>>({});
   const [submitting, setSubmitting] = useState(false);
+  const sheet = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     setError(null);
@@ -34,13 +40,9 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
   }, [stackId]);
   useEffect(load, [load]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !submitting && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, submitting]);
-
   const plannedFor = (index: number): Planned[] => plan?.prs.find((p) => p.prIndex === index)?.planned ?? [];
+  /** GitHub lets the author of a PR only comment on it. */
+  const own = (index: number) => plan?.stack.prs[index]?.author === plan?.viewer;
   const blocked = (index: number) => plannedFor(index).some((p) => p.plan.kind === "outdated");
   const hasWork = (index: number) =>
     plannedFor(index).length > 0 || (verdicts[index] ?? "COMMENT") !== "COMMENT" || (summaries[index] ?? "").trim() !== "";
@@ -77,6 +79,35 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
   };
   const submitAll = () => submit(plan ? plan.stack.prs.map((_, i) => i) : []);
 
+  const summaryOf = (index: number) => sheet.current?.querySelector<HTMLTextAreaElement>(`.sheet-pr[data-index="${index}"] .sheet-summary`);
+  // Keyboard first: start in the summary of the PR on screen (the first with drafts), unless already in the sheet.
+  useEffect(() => {
+    if (!plan || submitting || sheet.current?.contains(document.activeElement)) return;
+    const onScreen = plan.stack.prs.map((_, i) => i).filter((i) => i >= shown.lo && i <= shown.hi);
+    summaryOf(onScreen.find((i) => plannedFor(i).length > 0) ?? shown.lo)?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, submitting]);
+
+  // Re-registered every render, so it always sees the current verdicts, summaries and plan.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (!submitting) onClose();
+      } else if (mod(e) && e.key === "Enter") {
+        e.preventDefault();
+        if (plan && !submitting) void submitAll();
+      } else if (mod(e) && VERDICT_KEYS[e.key]) {
+        e.preventDefault();
+        const section = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".sheet-pr");
+        const index = Number(section?.dataset.index ?? plan?.prs[0]?.prIndex ?? 0);
+        const verdict = VERDICT_KEYS[e.key];
+        if (plan && !submitting && (verdict === "COMMENT" || !own(index))) setVerdicts((v) => ({ ...v, [index]: verdict }));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   const resolveOutdated = async (id: string, choice: "file" | "discard") => {
     if (choice === "file") await updateDraft(id, { asFile: true });
     else await deleteDraft(id);
@@ -85,7 +116,7 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
 
   return (
     <div className="palette-backdrop" onMouseDown={() => !submitting && onClose()}>
-      <div className="sheet" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label="Submit review">
+      <div className="sheet" ref={sheet} onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label="Submit review">
         <div className="sheet-head">
           <span className="sheet-title">Submit review</span>
           <button className="link" onClick={onClose} disabled={submitting}>
@@ -108,7 +139,7 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                 const planned = plannedFor(index);
                 const result = results[index];
                 return (
-                  <section className="sheet-pr" key={pr.number} data-pr={pr.number}>
+                  <section className="sheet-pr" key={pr.number} data-pr={pr.number} data-index={index}>
                     <div className="sheet-pr-head">
                       <span className="stack-number">#{pr.number}</span>
                       <span className="sheet-pr-title">{pr.title}</span>
@@ -119,11 +150,12 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                         className="verdict"
                         value={verdicts[index] ?? "COMMENT"}
                         onChange={(e) => setVerdicts((v) => ({ ...v, [index]: e.target.value as Verdict }))}
-                        disabled={submitting}
+                        disabled={submitting || own(index)}
+                        title={own(index) ? "Your own PR: GitHub only lets you comment" : `${keyLabel("1")} Comment · ${keyLabel("2")} Approve · ${keyLabel("3")} Request changes`}
                       >
                         <option value="COMMENT">Comment</option>
-                        <option value="APPROVE">Approve</option>
-                        <option value="REQUEST_CHANGES">Request changes</option>
+                        {!own(index) && <option value="APPROVE">Approve</option>}
+                        {!own(index) && <option value="REQUEST_CHANGES">Request changes</option>}
                       </select>
                       <button
                         className="button"
@@ -145,9 +177,14 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
                         pasteImages(e, (message) => message && setResults((r) => ({ ...r, [index]: { state: "error", message: `Couldn't paste the image: ${message}` } })))
                       }
                       onKeyDown={(e) => {
-                        if (isSubmitKey(e)) {
+                        if (isSubmitKey(e) && !mod(e)) {
                           e.preventDefault();
                           void submit([index]);
+                        } else if (e.key === "Tab" && !mod(e) && !e.altKey) {
+                          // The next / previous PR's summary, wrapping.
+                          e.preventDefault();
+                          const size = plan.stack.prs.length;
+                          summaryOf((index + (e.shiftKey ? size - 1 : 1)) % size)?.focus();
                         }
                       }}
                       disabled={submitting}
@@ -188,7 +225,10 @@ export function SubmitSheet({ stackId, onClose, onSubmitted }: Props) {
               })}
             </div>
             <div className="sheet-foot">
-              <button className="button primary" onClick={() => void submitAll()} disabled={submitting} data-testid="submit-all">
+              <span className="sheet-keys">
+                {keyLabel("1")} comment · {keyLabel("2")} approve · {keyLabel("3")} request changes · ⇥ next PR · ↵ submit PR · {keyLabel("↵")} all
+              </span>
+              <button className="button primary" onClick={() => void submitAll()} disabled={submitting} title={`Submit all (${keyLabel("↵")})`} data-testid="submit-all">
                 Submit all
               </button>
             </div>
