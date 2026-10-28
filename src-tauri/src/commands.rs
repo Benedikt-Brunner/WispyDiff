@@ -397,6 +397,8 @@ pub struct SubmitPlan {
     /// The stack as it is on GitHub right now (drafts are planned against it).
     pub stack: OpenedStack,
     pub prs: Vec<PrPlan>,
+    /// The signed-in user: GitHub only lets them comment on their own PRs.
+    pub viewer: String,
 }
 
 #[derive(Serialize)]
@@ -412,6 +414,7 @@ pub async fn prepare_submit(stack_id: String, app: AppHandle, state: State<'_, A
     let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
     let pr = snapshot.pr_ref(snapshot.stack.focus);
     let stack = service.discover(&pr).await.map_err(|e| e.to_string())?;
+    let viewer = service.viewer().await.map_err(|e| e.to_string())?;
     let fresh = Arc::new(blocking({
         let service = service.clone();
         move || service.fetch(stack)
@@ -432,7 +435,7 @@ pub async fn prepare_submit(stack_id: String, app: AppHandle, state: State<'_, A
     .await?;
     let (fresh, view) = load_focus(&service, fresh).await?;
     let opened = open_stack(&app, &state, fresh, view, false);
-    Ok(SubmitPlan { stack: opened, prs: plans.into_iter().filter(|p| !p.planned.is_empty()).collect() })
+    Ok(SubmitPlan { stack: opened, prs: plans.into_iter().filter(|p| !p.planned.is_empty()).collect(), viewer })
 }
 
 /// Posts one review for a stack PR (after [`prepare_submit`]).

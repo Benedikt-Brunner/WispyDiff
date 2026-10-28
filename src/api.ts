@@ -60,6 +60,8 @@ export const locateAnchors = (viewId: string, anchors: Anchor[]) =>
 export interface SubmitPlan {
   stack: OpenedStack;
   prs: { prIndex: number; planned: Planned[] }[];
+  /** The signed-in user's login. */
+  viewer: string;
 }
 
 export const prepareSubmit = (stackId: string) => invoke<SubmitPlan>("prepare_submit", { stackId });

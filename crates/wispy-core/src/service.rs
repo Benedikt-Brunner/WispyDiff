@@ -34,6 +34,8 @@ pub struct PrService {
     highlighter: Highlighter,
     highlights: HighlightCache,
     coverage: Mutex<HashMap<String, Arc<Coverage>>>,
+    /// The signed-in user's login, once asked for.
+    viewer: Mutex<Option<String>>,
 }
 
 /// A pending draft of a stack PR, with its anchor moved to the PR's current head
@@ -137,7 +139,7 @@ impl PrService {
     pub fn new(github: GitHubClient, store: RepoStore, cache: Cache, highlighter: Highlighter) -> Self {
         let cache = Arc::new(cache);
         let highlights = HighlightCache::new(3_000_000, Some(cache.clone()));
-        PrService { github, store, cache, highlighter, highlights, coverage: Mutex::new(HashMap::new()) }
+        PrService { github, store, cache, highlighter, highlights, coverage: Mutex::new(HashMap::new()), viewer: Mutex::new(None) }
     }
 
     /// The stack `pr` was last seen in, without touching the network.
@@ -359,6 +361,16 @@ impl PrService {
     }
 
     // ---------- submitting ----------
+
+    /// The login of the signed-in user (asked GitHub once).
+    pub async fn viewer(&self) -> Result<String> {
+        if let Some(login) = self.viewer.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+            return Ok(login);
+        }
+        let login = self.github.viewer().await?;
+        *self.viewer.lock().unwrap_or_else(|p| p.into_inner()) = Some(login.clone());
+        Ok(login)
+    }
 
     /// Settles drafts of stack PR `index` whose previous submit had an unknown outcome.
     pub async fn reconcile(&self, snapshot: &StackSnapshot, index: usize) -> Result<()> {

@@ -1,4 +1,4 @@
-import { click, clickButton, clickChip, count, exists, gutterDrag, MOD, openViaPalette, pressShifted, selectedChips, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, clickChip, count, exists, gutterDrag, isFocused, MOD, openViaPalette, pressShifted, selectedChips, setTextarea, text, waitFor } from "./helpers";
 
 const draftCount = async () => {
   const label = (await text('[data-testid="review-button"]')) ?? "";
@@ -293,6 +293,39 @@ describe("comments", () => {
     await waitFor(async () => (await draftCount()) === 1);
 
     await clickButton(".card.draft", "Delete");
+    await waitFor(async () => (await draftCount()) === 0);
+  });
+
+  it("submits a review with the keyboard only, offering only Comment on your own PR", async () => {
+    // #2 is on screen (from the test above).
+    await gutterDrag(".row-add", 0);
+    await waitFor(() => exists(".composer-input"));
+    await setTextarea(".composer-input", "Sent from the keyboard");
+    await clickButton(".composer", "Save draft");
+    await waitFor(async () => (await draftCount()) === 1);
+
+    const verdict = (pr: number) => browser.execute((n: number) => document.querySelector<HTMLSelectElement>(`.sheet-pr[data-pr="${n}"] select`)!.value, pr);
+    await browser.keys("r");
+    await waitFor(async () => (await count('.sheet-pr[data-pr="2"] .sheet-items li')) === 1);
+    await waitFor(() => isFocused('.sheet-pr[data-pr="2"] .sheet-summary'));
+    await browser.keys([MOD, "3"]);
+    await waitFor(async () => (await verdict(2)) === "REQUEST_CHANGES");
+    await browser.keys([MOD, "2"]);
+    await waitFor(async () => (await verdict(2)) === "APPROVE");
+
+    // #1 is yours: Comment only, and ⌘2 leaves it so.
+    await pressShifted("Tab");
+    await waitFor(() => isFocused('.sheet-pr[data-pr="1"] .sheet-summary'));
+    expect(await count('.sheet-pr[data-pr="1"] select option')).toBe(1);
+    await browser.keys([MOD, "2"]);
+    expect(await verdict(1)).toBe("COMMENT");
+    expect(await verdict(2)).toBe("APPROVE");
+    await browser.keys("Tab");
+    await waitFor(() => isFocused('.sheet-pr[data-pr="2"] .sheet-summary'));
+
+    await browser.keys([MOD, "Enter"]);
+    await waitFor(async () => !(await exists(".sheet")), 60_000);
+    expect(await text(".toast")).toBe("Review submitted");
     await waitFor(async () => (await draftCount()) === 0);
   });
 
