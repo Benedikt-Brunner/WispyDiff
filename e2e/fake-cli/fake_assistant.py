@@ -153,7 +153,7 @@ def wait_for_go():
 
 def changed_files(prompt):
     """The changed files the prompt lists (`- path (modified, +3 −1)`)."""
-    listing = prompt.split("without their changes.", 1)[1].split("\n\n", 1)[0].splitlines()[1:]
+    listing = prompt.split("without their changes", 1)[1].split("\n\n", 1)[0].splitlines()[1:]
     return [l[2:].rsplit(" (", 1)[0] for l in listing if l.startswith("- ")]
 
 

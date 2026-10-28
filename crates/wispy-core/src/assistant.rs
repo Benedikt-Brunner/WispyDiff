@@ -407,9 +407,11 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
     }
     // Only the list: the CLI looks at the diffs the question needs, so the rest don't crowd its context.
     prompt.push_str(
-        "\nThe files changed in the range are listed below, without their changes. Call `file_diff` to see \
-         a file's diff (across the range, or in one of its PRs) before you answer about what changed, and read \
-         the checkout for the surrounding code.\n",
+        "\nThe files changed in the range are listed below, without their changes; files not listed are unchanged. \
+         The checkout shows code only as it is at the head, not what the PRs did to it. So before you call any code \
+         in a listed file new, added, changed, removed, moved or existing, look at that file's diff with `file_diff` \
+         (across the range, or in one of its PRs); if you haven't, say you haven't checked. Read the checkout for \
+         the surrounding code.\n",
     );
     for file in &context.files {
         prompt.push_str(&file.line());

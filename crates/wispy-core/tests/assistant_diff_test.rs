@@ -65,6 +65,7 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     // The prompt names the changed files without their changes; hidden ones apart.
     let prompt = last_prompt(log.path());
     assert!(!prompt.contains("diff --git"), "{prompt}");
+    assert!(prompt.contains("before you call any code in a listed file new, added, changed, removed, moved or existing, look at that file's diff with `file_diff`"), "{prompt}");
     assert!(prompt.contains("\n- src/New.php (renamed from src/Old.php, +0 −0)\n"), "{prompt}");
     assert!(prompt.contains("\n- src/Order.php (modified, +2 −2, in #1 #2)\n"), "{prompt}");
     assert!(prompt.contains("hid these changed files from their view; look at them only if the question needs them:\n- docs/notes.md\n"), "{prompt}");

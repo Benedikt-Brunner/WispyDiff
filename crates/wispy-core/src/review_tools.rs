@@ -201,7 +201,8 @@ impl crate::mcp::Tools for ReviewTools<'_> {
             Tool {
                 name: "file_diff",
                 description: "Shows the diff of a file changed in the PRs under review: across the whole range by default, \
-                    or only the changes one PR of the range made to it. Look at a file's diff before saying what changed in it.",
+                    or only the changes one PR of the range made to it. Call it before calling any code in a changed file new, \
+                    changed, removed or existing: the checkout alone can't tell.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
