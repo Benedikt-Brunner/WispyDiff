@@ -105,7 +105,7 @@ describe("assistant", () => {
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
     await browser.execute(() => window.getSelection()?.removeAllRanges());
-    // Files hidden by the file filter are named in the prompt, without their changes.
+    // The prompt lists the changed files without their diffs; ones hidden by the file filter apart.
     const files = await browser.execute(() => [...document.querySelectorAll(".file-list li")].map((li) => li.getAttribute("title")!));
     const ext = files.find((f) => !f.endsWith(".php"))!.replace(/^.*(?=\.)/, "");
     const hidden = files.filter((f) => f.endsWith(ext));
@@ -125,9 +125,10 @@ describe("assistant", () => {
     expect(call.prompt).toContain("Under review: wispy/fixture #2");
     for (const path of hidden) {
       expect(call.prompt).toContain(`\n- ${path}\n`);
-      expect(call.prompt).not.toContain(`diff --git a/${path}`);
+      expect(call.prompt).not.toContain(`\n- ${path} (`);
     }
-    expect(call.prompt).toContain("diff --git a/src/Module0/Service0.php");
+    expect(call.prompt).toContain("\n- src/Module0/Service0.php (");
+    expect(call.prompt).not.toContain("diff --git");
     await click('[data-testid="file-filter"]');
     await click('[data-testid="file-filter-reset"]');
     await browser.keys("Escape");

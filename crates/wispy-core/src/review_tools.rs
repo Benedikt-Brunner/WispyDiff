@@ -1,5 +1,6 @@
 //! The tools the assistant works on the review's drafts with, served to its CLI over MCP during
-//! a turn: add a draft comment on head lines, list the drafts by ref, edit or delete one.
+//! a turn: show a changed file's diff, add a draft comment on head lines, list the drafts by
+//! ref, edit or delete one.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -44,10 +45,37 @@ impl<'a> ReviewTools<'a> {
         self.state.into_inner().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// A file's diff across the range, or in one of its PRs (`pr`).
+    fn diff(&self, args: &Value) -> Result<String, String> {
+        let path = self.relative(string(args, "path")?);
+        let view = self.view()?;
+        let file = view.summary.files.iter().find(|f| f.path == path || f.old_path.as_deref() == Some(&path));
+        let file = file.ok_or_else(|| format!("{path} isn't changed in this range"))?;
+        let (lo, hi) = self.range;
+        let pr = args["pr"].as_u64();
+        let (from, to) = match pr {
+            None => (lo, hi),
+            Some(number) => {
+                let index = (lo..=hi).find(|&i| self.snapshot.stack.prs[i].number == number);
+                let index = index.ok_or_else(|| format!("#{number} isn't one of the PRs under review"))?;
+                (index, index)
+            }
+        };
+        // Every name the file has in the range, so renames show as such in any one PR too.
+        let mut paths: Vec<&str> = vec![&file.path];
+        paths.extend(file.old_path.as_deref());
+        paths.extend(file.pr_paths.iter().map(|(_, p)| p.as_str()));
+        paths.dedup();
+        let diff = self.service.file_diff(self.snapshot, from, to, &paths).map_err(|e| e.to_string())?;
+        match pr {
+            Some(number) if diff.is_empty() => Err(format!("#{number} doesn't change {path}")),
+            _ => Ok(diff),
+        }
+    }
+
     fn add(&self, args: &Value) -> Result<String, String> {
-        let path = string(args, "path")?;
+        let path = self.relative(string(args, "path")?);
         let body = string(args, "body")?;
-        let path = path.strip_prefix(&self.checkout).unwrap_or(&path).trim_start_matches("./").to_string();
         let line = |key| args[key].as_u64().map(|n| n as u32);
         let lines = match (line("start_line"), line("end_line")) {
             (Some(start), Some(end)) => Some((start, end)),
@@ -143,6 +171,11 @@ impl<'a> ReviewTools<'a> {
         Ok(done)
     }
 
+    /// `path` relative to the checkout.
+    fn relative(&self, path: String) -> String {
+        path.strip_prefix(&self.checkout).unwrap_or(&path).trim_start_matches("./").to_string()
+    }
+
     fn view(&self) -> Result<Arc<DiffView>, String> {
         if let Some(view) = self.view.get() {
             return Ok(view.clone());
@@ -166,10 +199,23 @@ impl crate::mcp::Tools for ReviewTools<'_> {
     fn list(&self) -> Vec<Tool> {
         vec![
             Tool {
+                name: "file_diff",
+                description: "Shows the diff of a file changed in the PRs under review: across the whole range by default, \
+                    or only the changes one PR of the range made to it. Look at a file's diff before saying what changed in it.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Repo-relative path, as the list of changed files names it." },
+                        "pr": { "type": "integer", "description": "A PR number of the range, for only that PR's changes to the file." },
+                    },
+                    "required": ["path"],
+                }),
+            },
+            Tool {
                 name: "add_draft_comment",
                 description: "Adds a draft review comment on lines of the checkout (the head of the PRs under review), \
                     or on a whole file. It goes to the PR that changed those lines, like the reviewer's own comments. \
-                    Only files changed in the diff under review can be commented on, and only lines that exist at the \
+                    Only files changed in the PRs under review can be commented on, and only lines that exist at the \
                     head (not removed ones). Returns the new draft's ref.",
                 input_schema: json!({
                     "type": "object",
@@ -214,6 +260,7 @@ impl crate::mcp::Tools for ReviewTools<'_> {
 
     fn call(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
+            "file_diff" => self.diff(args),
             "add_draft_comment" => self.add(args),
             "list_drafts" => self.list(),
             "edit_draft" => self.change(CommentAction::Edit, args),

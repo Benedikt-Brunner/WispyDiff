@@ -23,7 +23,7 @@ def main(provider):
     entries = sorted(e for e in os.listdir(cwd) if not e.startswith("."))
     answer = f"{'(follow-up) ' if resumed else ''}About “{question}”: I can see {', '.join(entries[:3])} in the **checkout**."
     if question == "refs":
-        answer = references(prompt, cwd)
+        answer = references(provider, args, prompt, cwd)
     if question.startswith("tools:"):
         answer = call_tools(provider, args, json.loads(question[len("tools:"):]))
     if question in ("comments", "comments:wait"):
@@ -74,11 +74,11 @@ def call_tools(provider, args, steps):
 
 
 def comments(provider, args, prompt, wait):
-    """Review comments as a CLI would add them: on two changed lines of the first file in the
-    diff (with a suggestion), on that whole file, and on a file outside the diff. `wait`: holds
-    after the first one until the test says go."""
-    path, start = first_change(prompt)
+    """Review comments as a CLI would add them: on two changed lines of the first changed file
+    (with a suggestion), on that whole file, and on a file outside the range. `wait`: holds after
+    the first one until the test says go."""
     tools = Tools(provider, args)
+    path, start = first_change(tools, prompt)
     tools.call("add_draft_comment", {"path": path, "start_line": start, "end_line": start + 1, "body": "This could be **simpler**:\n```suggestion\nsimpler();\n```"})
     if wait:
         wait_for_go()
@@ -151,34 +151,40 @@ def wait_for_go():
     os.remove(go)
 
 
-def first_change(prompt):
-    """The first file in the diff and the first head line of its first hunk with several lines."""
-    path = None
-    for line in prompt.splitlines():
-        if line.startswith("diff --git a/"):
-            path = line.split(" b/", 1)[1]
-        elif line.startswith("@@") and path:
-            new = line.split("+", 1)[1].split(" ", 1)[0].split(",")
-            if len(new) > 1 and int(new[1]) > 1:
-                return path, int(new[0])
+def changed_files(prompt):
+    """The changed files the prompt lists (`- path (modified, +3 −1)`)."""
+    listing = prompt.split("without their changes.", 1)[1].split("\n\n", 1)[0].splitlines()[1:]
+    return [l[2:].rsplit(" (", 1)[0] for l in listing if l.startswith("- ")]
 
 
-def references(prompt, cwd):
-    """An answer citing code the way the CLIs do: a changed line range of the first file in the
-    diff, its bare name, the same file by its absolute path in the checkout (as Codex does), a
-    file hidden by the filter, a checkout file outside the diff, and things that look like paths
-    or files but aren't (a glob, an identifier with slashes, code), and a list of lines."""
-    changed, path, covered = None, None, set()
-    for line in prompt.splitlines():
-        if line.startswith("diff --git a/"):
-            path = line.split(" b/", 1)[1]
-        elif line.startswith("@@") and path and (not changed or changed[0] == path):
+def hunks(diff):
+    """(head start, line count) of each hunk of a diff."""
+    for line in diff.splitlines():
+        if line.startswith("@@"):
             new = line.split("+", 1)[1].split(" ", 1)[0].split(",")
-            start, count = int(new[0]), int(new[1]) if len(new) > 1 else 1
-            covered.update(range(start, start + count))
-            if not changed and count > 1:
-                changed = (path, start)
-    diffed = {l.split(" b/", 1)[1] for l in prompt.splitlines() if l.startswith("diff --git a/")}
+            yield int(new[0]), int(new[1]) if len(new) > 1 else 1
+
+
+def first_change(tools, prompt):
+    """The first changed file with a hunk of several lines, and that hunk's first head line (from
+    its `file_diff`)."""
+    for path in changed_files(prompt):
+        _, diff = tools.call("file_diff", {"path": path})
+        for start, count in hunks(diff):
+            if count > 1:
+                return path, start
+
+
+def references(provider, args, prompt, cwd):
+    """An answer citing code the way the CLIs do: a changed line range of the first changed file,
+    its bare name, the same file by its absolute path in the checkout (as Codex does), a file
+    hidden by the filter, a checkout file outside the range, and things that look like paths or
+    files but aren't (a glob, an identifier with slashes, code), and a list of lines."""
+    tools = Tools(provider, args)
+    changed = first_change(tools, prompt)
+    _, diff = tools.call("file_diff", {"path": changed[0]})
+    covered = {n for start, count in hunks(diff) for n in range(start, start + count)}
+    diffed = set(changed_files(prompt))
     hidden = [l[2:] for l in prompt.split("hid these", 1)[1].split("\n\n", 1)[0].splitlines()[1:]] if "hid these" in prompt else []
     other = next(
         rel
