@@ -159,11 +159,13 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     let calls = asks(log.path());
     let prompt = calls[0]["prompt"].as_str().unwrap();
     assert!(prompt.contains("Under review: acme/shop #3"));
-    assert!(prompt.contains("+$state = 'picked';"), "the diff and the selection are in the first prompt");
+    assert!(prompt.contains("+$state = 'picked';"), "the selection is in the first prompt");
+    assert!(prompt.contains("\n- src/Order.php (modified, +1 −1)\n- src/composer.lock (modified, +1 −1, lockfile)\n"), "the changed files are: {prompt}");
+    assert!(!prompt.contains("diff --git"), "their diffs aren't: {prompt}");
     assert!(prompt.contains("lines of src/Order.php (in #3, lines 2–2)"), "the checkout's numbers are only added when they differ");
     assert!(prompt.contains("like `src/app.ts:42`"), "asks for clickable references");
     assert!(prompt.contains("add each one with `add_draft_comment`"), "says how to write review comments");
-    assert!(prompt.contains("lock-two") && prompt.contains("new-lock-line") && !prompt.contains("hid these"), "nothing hidden: {prompt}");
+    assert!(prompt.contains("\n- src/New.lock (renamed from src/Old.lock") && !prompt.contains("hid these"), "nothing hidden: {prompt}");
     let args: Vec<&str> = calls[0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert!(args.windows(2).any(|w| w == ["--model", "opus"]));
     let cwd = PathBuf::from(calls[0]["cwd"].as_str().unwrap());
@@ -199,8 +201,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(call["prompt"].as_str().unwrap().contains("Under review: acme/shop #3"));
     assert!(!call["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
     service.delete_assistant_thread(&first.id).unwrap();
-    // Files hidden by the file filter are named, but their changes stay out of the prompt (a
-    // hidden rename's old side too).
+    // Files hidden by the file filter are named apart, not in the list of changed files.
     let hidden = vec!["src/composer.lock".to_string(), "src/New.lock".to_string()];
     let new = NewThread { provider: Provider::Codex, model: None, effort: None, selection: None, anchor: None, hidden };
     let codex = service.ask(&snapshot, (0, 0), None, Some(new), "Summarize", |_| {}).unwrap();
@@ -209,10 +210,8 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     let calls = asks(log.path());
     let prompt = calls.last().unwrap()["prompt"].as_str().unwrap();
     assert!(prompt.contains("hid these changed files") && prompt.contains("- src/composer.lock\n- src/New.lock\n"), "{prompt}");
-    assert!(prompt.contains("+$state = 'picked';"), "the rest of the diff is still there");
-    for hidden in ["lock-one", "lock-two", "old-lock-line", "new-lock-line"] {
-        assert!(!prompt.contains(hidden), "{hidden} leaked into the prompt: {prompt}");
-    }
+    assert!(prompt.contains("\n- src/Order.php (modified, +1 −1)\n"), "the other files are still listed: {prompt}");
+    assert!(!prompt.contains("- src/composer.lock (") && !prompt.contains("Old.lock"), "{prompt}");
 
     assert_eq!(service.assistant_threads(&snapshot).unwrap().len(), 2);
     service.delete_assistant_thread(&thread.id).unwrap();
@@ -222,7 +221,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
 #[test]
 fn names_the_checkouts_line_numbers_when_a_higher_pr_moved_the_selection() {
     let selection = Selection { path: "src/Order.php".into(), pr_label: "#2".into(), start_line: 10, end_line: 12, text: "x".into(), head_start: Some(14), head_end: Some(16) };
-    let context = Context { range_label: "acme/shop #2–#3".into(), titles: vec![], diff: String::new(), selection: Some(selection), hidden: vec![] };
+    let context = Context { range_label: "acme/shop #2–#3".into(), titles: vec![], files: vec![], selection: Some(selection), hidden: vec![] };
     assert!(first_prompt(&context, "Why?").contains("lines of src/Order.php (in #2, lines 10–12; lines 14–16 in the checkout)"));
 }
 

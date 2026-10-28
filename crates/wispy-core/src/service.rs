@@ -109,13 +109,14 @@ pub struct NewThread {
     pub effort: Option<String>,
     pub selection: Option<crate::assistant::Selection>,
     pub anchor: Option<crate::assistant::ThreadAnchor>,
-    /// Paths hidden by the file filter: named in the prompt, left out of its diff.
+    /// Paths hidden by the file filter: named apart in the prompt.
     #[serde(default)]
     pub hidden: Vec<String>,
 }
 
-/// How much of the range's diff goes into the first prompt.
-const PROMPT_DIFF_LIMIT: usize = 120_000;
+/// How much of a file's diff the assistant's `file_diff` returns (the CLIs cap tool results
+/// at about 25k tokens).
+const TOOL_DIFF_LIMIT: usize = 80_000;
 
 /// What a new draft is attached to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -648,7 +649,7 @@ impl PrService {
         question: &str,
         on_event: impl FnMut(&crate::assistant::AssistantEvent) + Send,
     ) -> Result<crate::assistant::Thread> {
-        use crate::assistant::{diff_text, first_prompt, run, worktree, AssistantEvent, Ask, Context, Message, Thread};
+        use crate::assistant::{first_prompt, run, worktree, AssistantEvent, Ask, ChangedFile, Context, Message, Thread};
         let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
         let existing = match thread {
             Some(id) => Some(self.cache.assistant_thread(id)?.ok_or_else(|| crate::Error::Assistant("thread not found".into()))?),
@@ -664,10 +665,27 @@ impl PrService {
             Some(thread) => (thread, None),
             None => {
                 let new = new.ok_or_else(|| crate::Error::Assistant("no thread to continue".into()))?;
+                let view = self.range(snapshot, lo, hi)?;
+                let files = view
+                    .summary
+                    .files
+                    .iter()
+                    .filter(|f| !new.hidden.contains(&f.path))
+                    .map(|f| ChangedFile {
+                        path: f.path.clone(),
+                        old_path: f.old_path.clone(),
+                        status: f.status,
+                        additions: f.additions,
+                        deletions: f.deletions,
+                        binary: f.binary,
+                        noise: f.noise.clone(),
+                        prs: if lo == hi { Vec::new() } else { f.prs.iter().map(|&i| format!("#{}", snapshot.stack.prs[i as usize].number)).collect() },
+                    })
+                    .collect();
                 let context = Context {
                     range_label: range_label(snapshot, lo, hi),
                     titles: snapshot.stack.prs[lo..=hi].iter().map(|p| format!("#{} {}", p.number, p.title)).collect(),
-                    diff: diff_text(&git, &snapshot.bases[lo], head, &new.hidden, PROMPT_DIFF_LIMIT)?,
+                    files,
                     selection: new.selection,
                     hidden: new.hidden,
                 };
@@ -752,6 +770,13 @@ impl PrService {
                 by_assistant: s.draft.assistant,
             })
             .collect())
+    }
+
+    /// The diff of one file (all its `paths` in the range) between stack PRs `from`'s base and
+    /// `to`'s head, for the assistant.
+    pub(crate) fn file_diff(&self, snapshot: &StackSnapshot, from: usize, to: usize, paths: &[&str]) -> Result<String> {
+        let git = self.git(snapshot)?;
+        crate::assistant::diff_text(&git, &snapshot.bases[from], &snapshot.heads[to], paths, TOOL_DIFF_LIMIT)
     }
 
     pub(crate) fn draft(&self, id: &str) -> Result<Option<Draft>> {

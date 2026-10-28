@@ -303,13 +303,50 @@ pub struct Context {
     pub range_label: String,
     /// PR titles of the range, bottom first.
     pub titles: Vec<String>,
-    /// The range's diff (possibly truncated).
-    pub diff: String,
+    /// The range's changed files, without their diffs (the CLI asks for those with `file_diff`).
+    #[serde(default)]
+    pub files: Vec<ChangedFile>,
     /// Set when asking about selected lines.
     pub selection: Option<Selection>,
-    /// Paths hidden by the reviewer's file filter (left out of `diff`).
+    /// Paths hidden by the reviewer's file filter (left out of `files`).
     #[serde(default)]
     pub hidden: Vec<String>,
+}
+
+/// A changed file as the first prompt lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: crate::diff::FileStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    pub binary: bool,
+    /// Why the reviewer's view collapses it ("lockfile", "generated", ...), if it does.
+    pub noise: Option<String>,
+    /// The PRs of the range that changed it ("#12"), when the range has several.
+    pub prs: Vec<String>,
+}
+
+impl ChangedFile {
+    /// e.g. "- src/app.ts (renamed from src/old.ts, +3 −1, in #12 #13)".
+    fn line(&self) -> String {
+        use crate::diff::FileStatus;
+        let mut facts = vec![match (self.status, &self.old_path) {
+            (FileStatus::Renamed, Some(old)) => format!("renamed from {old}"),
+            (FileStatus::Copied, Some(old)) => format!("copied from {old}"),
+            (FileStatus::Added, _) => "added".into(),
+            (FileStatus::Deleted, _) => "deleted".into(),
+            _ => "modified".into(),
+        }];
+        facts.push(if self.binary { "binary".into() } else { format!("+{} −{}", self.additions, self.deletions) });
+        facts.extend(self.noise.clone());
+        if !self.prs.is_empty() {
+            facts.push(format!("in {}", self.prs.join(" ")));
+        }
+        format!("- {} ({})\n", self.path, facts.join(", "))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,14 +399,24 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
     }
     if !context.hidden.is_empty() {
         prompt.push_str(
-            "\nThe reviewer hid these changed files, so their changes are left out of the diff below \
-             (they're in the checkout; read them only if the question needs them):\n",
+            "\nThe reviewer hid these changed files from their view; look at them only if the question needs them:\n",
         );
         for path in &context.hidden {
             prompt.push_str(&format!("- {path}\n"));
         }
     }
-    prompt.push_str(&format!("\nThe diff under review:\n```diff\n{}\n```\n\n", context.diff));
+    // Only the list: the CLI looks at the diffs the question needs, so the rest don't crowd its context.
+    prompt.push_str(
+        "\nThe files changed in the range are listed below, without their changes; files not listed are unchanged. \
+         The checkout shows code only as it is at the head, not what the PRs did to it. So before you call any code \
+         in a listed file new, added, changed, removed, moved or existing, look at that file's diff with `file_diff` \
+         (across the range, or in one of its PRs); if you haven't, say you haven't checked. Read the checkout for \
+         the surrounding code.\n",
+    );
+    for file in &context.files {
+        prompt.push_str(&file.line());
+    }
+    prompt.push('\n');
     prompt.push_str(&format!("Question: {question}\n"));
     prompt
 }
@@ -443,32 +490,17 @@ pub fn draft_label(kind: crate::drafts::DraftKind, path: Option<&str>, lines: Op
     }
 }
 
-/// The combined diff of a range for the prompt without the `hidden` paths, cut at `limit` bytes.
-pub fn diff_text(git: &crate::git::Git, from: &str, to: &str, hidden: &[String], limit: usize) -> Result<String> {
-    let mut excluded: Vec<&str> = hidden.iter().map(String::as_str).collect();
-    // Pathspecs apply before rename detection: a hidden rename's old path has to go too, or it
-    // would show up as a deletion.
-    let renames = if hidden.is_empty() { Vec::new() } else { git.run(&["diff", "--name-status", "-z", "-M", from, to, "--"])? };
-    let renames = String::from_utf8_lossy(&renames);
-    let mut fields = renames.split('\0');
-    while let Some(status) = fields.next() {
-        let paths = if status.starts_with('R') || status.starts_with('C') { 2 } else { 1 };
-        let paths: Vec<&str> = fields.by_ref().take(paths).collect();
-        if let [old, new] = paths[..] {
-            if hidden.iter().any(|h| h == new) && status.starts_with('R') {
-                excluded.push(old);
-            }
-        }
-    }
-    let excludes: Vec<String> = excluded.iter().map(|p| format!(":(exclude,literal){p}")).collect();
+/// The diff of `paths` (all the names of one file) between two commits, cut at `limit` bytes.
+pub fn diff_text(git: &crate::git::Git, from: &str, to: &str, paths: &[&str], limit: usize) -> Result<String> {
+    let specs: Vec<String> = paths.iter().map(|p| format!(":(literal){p}")).collect();
     let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-M", from, to, "--"];
-    args.extend(excludes.iter().map(String::as_str));
+    args.extend(specs.iter().map(String::as_str));
     let out = git.run(&args)?;
     let mut text = String::from_utf8_lossy(&out).into_owned();
     if text.len() > limit {
         let cut = (0..=limit).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
         text.truncate(cut);
-        text.push_str("\n… (diff truncated; read the files in the checkout for the rest)");
+        text.push_str("\n… (diff cut here; read the file in the checkout for the rest)");
     }
     Ok(text)
 }
