@@ -671,20 +671,19 @@ impl PrService {
                     .files
                     .iter()
                     .filter(|f| !new.hidden.contains(&f.path))
-                    .map(|f| ChangedFile {
-                        path: f.path.clone(),
-                        old_path: f.old_path.clone(),
-                        status: f.status,
-                        additions: f.additions,
-                        deletions: f.deletions,
-                        binary: f.binary,
-                        noise: f.noise.clone(),
-                        prs: if lo == hi { Vec::new() } else { f.prs.iter().map(|&i| format!("#{}", snapshot.stack.prs[i as usize].number)).collect() },
+                    .map(|f| {
+                        let prs = if lo == hi { Vec::new() } else { f.prs.iter().map(|&i| format!("#{}", snapshot.stack.prs[i as usize].number)).collect() };
+                        ChangedFile::new(f, prs)
                     })
                     .collect();
+                let others = snapshot.stack.prs.iter().enumerate().filter(|&(i, _)| i < lo || i > hi).map(|(i, p)| {
+                    let place = if i < lo { "below; its changes are in the checkout" } else { "above; not in the checkout" };
+                    format!("#{} {} ({place})", p.number, p.title)
+                });
                 let context = Context {
                     range_label: range_label(snapshot, lo, hi),
                     titles: snapshot.stack.prs[lo..=hi].iter().map(|p| format!("#{} {}", p.number, p.title)).collect(),
+                    others: others.collect(),
                     files,
                     selection: new.selection,
                     hidden: new.hidden,

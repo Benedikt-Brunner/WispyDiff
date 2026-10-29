@@ -1,5 +1,5 @@
-//! The assistant's view of the changes: the first prompt lists the changed files, and the
-//! `file_diff` tool shows their diffs. Its own test binary: it points the CLI variables at the
+//! The assistant's view of the changes: the first prompt lists the changed files and the
+//! stack's other PRs, `file_diff` shows a file's diff and `pr_files` what another PR changed. Its own test binary: it points the CLI variables at the
 //! fakes without racing the other assistant tests' logs.
 
 mod support;
@@ -41,6 +41,11 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     origin.write("docs/notes.md", "hidden\n");
     origin.commit("two");
     origin.publish_pr(2, "s/2");
+    origin.checkout_new("s/3");
+    origin.write("src/Order.php", "<?php\nA1\nB2\nc3\n");
+    origin.write("src/Later.php", "<?php\nlater\n");
+    origin.commit("three");
+    origin.publish_pr(3, "s/3");
     let url = origin.url();
     let data = tempfile::tempdir().unwrap();
     let service = PrService::new(
@@ -49,7 +54,7 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
         Cache::open(&data.path().join("cache.sqlite")).unwrap(),
         Highlighter::new(),
     );
-    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 0 }).unwrap();
+    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url), pull_request(3, "s/2", "s/3", &url)], focus: 0 }).unwrap();
 
     let steps = json!([
         ["file_diff", { "path": "src/Order.php" }],
@@ -78,8 +83,35 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     assert!(calls[1].contains("-a\n+A1\n b") && !calls[1].contains("B2"), "only #1's changes: {answer}");
     assert!(calls[2].contains("rename from src/Old.php\nrename to src/New.php"), "{answer}");
     assert_eq!(calls[3], "error: #1 doesn't change src/New.php");
-    assert_eq!(calls[4], "error: #7 isn't one of the PRs under review");
+    assert_eq!(calls[4], "error: #7 isn't in this stack");
     assert_eq!(calls[5], "error: README.md isn't changed in this range");
+    assert!(prompt.contains("The stack's other PRs aren't under review.") && prompt.contains("\n- #3 PR 3 (above; not in the checkout)\n"), "{prompt}");
+
+    // About #2 alone: the PRs below and above it are a tool call away.
+    let steps = json!([
+        ["pr_files", { "pr": 1 }],
+        ["pr_files", { "pr": 3 }],
+        ["file_diff", { "path": "src/Order.php", "pr": 1 }],
+        ["file_diff", { "path": "src/Later.php", "pr": 3 }],
+        ["file_diff", { "path": "README.md", "pr": 3 }],
+        ["pr_files", { "pr": 9 }],
+    ]);
+    let new = NewThread { provider: Provider::Claude, model: None, effort: None, selection: None, anchor: None, hidden: vec![] };
+    let thread = service.ask(&snapshot, (1, 1), None, Some(new), &format!("tools:{steps}"), |_| {}).unwrap();
+    let prompt = last_prompt(log.path());
+    assert!(prompt.contains("\n- #1 PR 1 (below; its changes are in the checkout)\n- #3 PR 3 (above; not in the checkout)\n"), "{prompt}");
+    assert!(!prompt.contains("- src/Later.php"), "other PRs' files aren't listed up front: {prompt}");
+
+    let answer = &thread.messages.last().unwrap().text;
+    let results: Vec<String> = answer.split("\npr_files: ").flat_map(|c| c.split("\nfile_diff: ")).map(String::from).collect();
+    assert_eq!(results.len(), 6, "{answer}");
+    assert!(results[0].starts_with("pr_files: #1 PR 1 (below the PRs under review; its changes are in the checkout) changes:\n- src/Order.php (modified, +1 −1)"), "{answer}");
+    assert!(results[1].starts_with("#3 PR 3 (above the PRs under review; its changes aren't in the checkout) changes:\n"), "{answer}");
+    assert!(results[1].contains("\n- src/Later.php (added, +2 −0)") && results[1].contains("\n- src/Order.php (modified, +1 −0)"), "{answer}");
+    assert!(results[2].contains("-a\n+A1\n b") && !results[2].contains("B2"), "only #1's changes: {answer}");
+    assert!(results[3].contains("+later"), "{answer}");
+    assert_eq!(results[4], "error: #3 doesn't change README.md");
+    assert_eq!(results[5], "error: #9 isn't in this stack");
 }
 
 fn fake(name: &str) -> PathBuf {
