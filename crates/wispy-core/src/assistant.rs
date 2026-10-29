@@ -303,6 +303,9 @@ pub struct Context {
     pub range_label: String,
     /// PR titles of the range, bottom first.
     pub titles: Vec<String>,
+    /// The stack's other PRs, bottom first, e.g. "#11 Add orders (below; its changes are in the checkout)".
+    #[serde(default)]
+    pub others: Vec<String>,
     /// The range's changed files, without their diffs (the CLI asks for those with `file_diff`).
     #[serde(default)]
     pub files: Vec<ChangedFile>,
@@ -330,8 +333,22 @@ pub struct ChangedFile {
 }
 
 impl ChangedFile {
+    /// `prs`: how to name the PRs that changed it (none to leave them out).
+    pub(crate) fn new(file: &crate::model::FileSummary, prs: Vec<String>) -> Self {
+        ChangedFile {
+            path: file.path.clone(),
+            old_path: file.old_path.clone(),
+            status: file.status,
+            additions: file.additions,
+            deletions: file.deletions,
+            binary: file.binary,
+            noise: file.noise.clone(),
+            prs,
+        }
+    }
+
     /// e.g. "- src/app.ts (renamed from src/old.ts, +3 −1, in #12 #13)".
-    fn line(&self) -> String {
+    pub(crate) fn line(&self) -> String {
         use crate::diff::FileStatus;
         let mut facts = vec![match (self.status, &self.old_path) {
             (FileStatus::Renamed, Some(old)) => format!("renamed from {old}"),
@@ -383,6 +400,17 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
     prompt.push_str(&format!("Under review: {}\n", context.range_label));
     for title in &context.titles {
         prompt.push_str(&format!("- {title}\n"));
+    }
+    if !context.others.is_empty() {
+        // Not in the first prompt's list: the agent looks at them only when the question needs them.
+        prompt.push_str(
+            "\nThe stack's other PRs aren't under review. When the question needs them (what a lower PR set up, \
+             what a higher one changes later), `pr_files` lists the files one of them changed and `file_diff` with \
+             its number shows a file's diff in it:\n",
+        );
+        for other in &context.others {
+            prompt.push_str(&format!("- {other}\n"));
+        }
     }
     if let Some(selection) = &context.selection {
         // In a range, a higher PR may have moved the lines; the checkout's numbers are what to cite.

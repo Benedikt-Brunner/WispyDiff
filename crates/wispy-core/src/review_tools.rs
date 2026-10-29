@@ -1,12 +1,13 @@
 //! The tools the assistant works on the review's drafts with, served to its CLI over MCP during
-//! a turn: show a changed file's diff, add a draft comment on head lines, list the drafts by
-//! ref, edit or delete one.
+//! a turn: show a changed file's diff (in the range or any PR of the stack), list what a PR
+//! changed, add a draft comment on head lines, list the drafts by ref, edit or delete one.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
-use crate::assistant::{draft_label, draft_listing, draft_ref, CommentAction, CommentOutcome, DraftRef};
+use crate::assistant::{draft_label, draft_listing, draft_ref, ChangedFile, CommentAction, CommentOutcome, DraftRef};
 use crate::drafts::{DraftKind, DraftStatus};
 use crate::github::Side;
 use crate::mcp::Tool;
@@ -23,6 +24,8 @@ pub(crate) struct ReviewTools<'a> {
     /// The checkout's path with a trailing slash (Codex sometimes names files by absolute path).
     checkout: String,
     view: OnceLock<Arc<DiffView>>,
+    /// Single-PR views of the stack's PRs, as the agent asks about them.
+    pr_views: Mutex<HashMap<usize, Arc<DiffView>>>,
     state: Mutex<(Vec<DraftRef>, Vec<CommentOutcome>)>,
     on_outcome: &'a (dyn Fn(&CommentOutcome) + Sync),
 }
@@ -37,7 +40,7 @@ impl<'a> ReviewTools<'a> {
         on_outcome: &'a (dyn Fn(&CommentOutcome) + Sync),
     ) -> Self {
         let checkout = format!("{}/", checkout.to_string_lossy());
-        ReviewTools { service, snapshot, range, checkout, view: OnceLock::new(), state: Mutex::new((refs, Vec::new())), on_outcome }
+        ReviewTools { service, snapshot, range, checkout, view: OnceLock::new(), pr_views: Mutex::default(), state: Mutex::new((refs, Vec::new())), on_outcome }
     }
 
     /// The thread's refs and what the turn did.
@@ -45,23 +48,23 @@ impl<'a> ReviewTools<'a> {
         self.state.into_inner().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// A file's diff across the range, or in one of its PRs (`pr`).
+    /// A file's diff across the range, or in one PR of the stack (`pr`).
     fn diff(&self, args: &Value) -> Result<String, String> {
         let path = self.relative(string(args, "path")?);
-        let view = self.view()?;
-        let file = view.summary.files.iter().find(|f| f.path == path || f.old_path.as_deref() == Some(&path));
-        let file = file.ok_or_else(|| format!("{path} isn't changed in this range"))?;
         let (lo, hi) = self.range;
         let pr = args["pr"].as_u64();
-        let (from, to) = match pr {
-            None => (lo, hi),
-            Some(number) => {
-                let index = (lo..=hi).find(|&i| self.snapshot.stack.prs[i].number == number);
-                let index = index.ok_or_else(|| format!("#{number} isn't one of the PRs under review"))?;
-                (index, index)
-            }
+        let index = pr.map(|number| self.pr_index(number)).transpose()?;
+        let (from, to, view) = match index {
+            None => (lo, hi, self.view()?),
+            Some(i) if (lo..=hi).contains(&i) => (i, i, self.view()?),
+            Some(i) => (i, i, self.pr_view(i)?),
         };
-        // Every name the file has in the range, so renames show as such in any one PR too.
+        let file = view.summary.files.iter().find(|f| f.path == path || f.old_path.as_deref() == Some(&path));
+        let file = file.ok_or_else(|| match pr {
+            Some(number) if index.is_some_and(|i| !(lo..=hi).contains(&i)) => format!("#{number} doesn't change {path}"),
+            _ => format!("{path} isn't changed in this range"),
+        })?;
+        // Every name the file has in the view, so renames show as such in any one PR too.
         let mut paths: Vec<&str> = vec![&file.path];
         paths.extend(file.old_path.as_deref());
         paths.extend(file.pr_paths.iter().map(|(_, p)| p.as_str()));
@@ -71,6 +74,42 @@ impl<'a> ReviewTools<'a> {
             Some(number) if diff.is_empty() => Err(format!("#{number} doesn't change {path}")),
             _ => Ok(diff),
         }
+    }
+
+    /// The files one PR of the stack changed, as the first prompt lists the range's.
+    fn pr_files(&self, args: &Value) -> Result<String, String> {
+        let number = args["pr"].as_u64().ok_or("`pr` is missing")?;
+        let index = self.pr_index(number)?;
+        let view = self.pr_view(index)?;
+        let pr = &self.snapshot.stack.prs[index];
+        let (lo, hi) = self.range;
+        let place = match index {
+            i if i < lo => "below the PRs under review; its changes are in the checkout",
+            i if i > hi => "above the PRs under review; its changes aren't in the checkout",
+            _ => "under review",
+        };
+        let mut text = format!("#{number} {} ({place}) changes:\n", pr.title);
+        if view.summary.files.is_empty() {
+            text.push_str("(no files)\n");
+        }
+        for file in &view.summary.files {
+            text.push_str(&ChangedFile::new(file, Vec::new()).line());
+        }
+        Ok(text)
+    }
+
+    fn pr_index(&self, number: u64) -> Result<usize, String> {
+        let index = self.snapshot.stack.prs.iter().position(|p| p.number == number);
+        index.ok_or_else(|| format!("#{number} isn't in this stack"))
+    }
+
+    fn pr_view(&self, index: usize) -> Result<Arc<DiffView>, String> {
+        if let Some(view) = self.pr_views.lock().unwrap_or_else(|p| p.into_inner()).get(&index) {
+            return Ok(view.clone());
+        }
+        let view = self.service.range(self.snapshot, index, index).map_err(|e| e.to_string())?;
+        self.pr_views.lock().unwrap_or_else(|p| p.into_inner()).insert(index, view.clone());
+        Ok(view)
     }
 
     fn add(&self, args: &Value) -> Result<String, String> {
@@ -201,15 +240,27 @@ impl crate::mcp::Tools for ReviewTools<'_> {
             Tool {
                 name: "file_diff",
                 description: "Shows the diff of a file changed in the PRs under review: across the whole range by default, \
-                    or only the changes one PR of the range made to it. Call it before calling any code in a changed file new, \
-                    changed, removed or existing: the checkout alone can't tell.",
+                    or only the changes one PR made to it, which may also be one of the stack's other PRs (below or above \
+                    the range). Call it before calling any code in a changed file new, changed, removed or existing: the \
+                    checkout alone can't tell.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Repo-relative path, as the list of changed files names it." },
-                        "pr": { "type": "integer", "description": "A PR number of the range, for only that PR's changes to the file." },
+                        "pr": { "type": "integer", "description": "A PR number of the stack, for only that PR's changes to the file." },
                     },
                     "required": ["path"],
+                }),
+            },
+            Tool {
+                name: "pr_files",
+                description: "Lists the files one PR of the stack changed (status, rename source, +/− counts), without their \
+                    diffs. For the stack's other PRs, when the question needs what a lower PR set up or what a higher one \
+                    changes later; `file_diff` with the same PR number shows a file's diff in it.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "pr": { "type": "integer", "description": "A PR number of the stack." } },
+                    "required": ["pr"],
                 }),
             },
             Tool {
@@ -262,6 +313,7 @@ impl crate::mcp::Tools for ReviewTools<'_> {
     fn call(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
             "file_diff" => self.diff(args),
+            "pr_files" => self.pr_files(args),
             "add_draft_comment" => self.add(args),
             "list_drafts" => self.list(),
             "edit_draft" => self.change(CommentAction::Edit, args),
