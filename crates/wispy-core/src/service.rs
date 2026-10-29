@@ -756,12 +756,12 @@ impl PrService {
         Ok(thread)
     }
 
-    /// The pending drafts of stack PRs `lo..=hi` the assistant can see and change.
-    pub(crate) fn listed_drafts(&self, snapshot: &StackSnapshot, lo: usize, hi: usize) -> Result<Vec<crate::assistant::ListedDraft>> {
+    /// The stack's pending drafts, which the assistant can see and change.
+    pub(crate) fn listed_drafts(&self, snapshot: &StackSnapshot) -> Result<Vec<crate::assistant::ListedDraft>> {
         Ok(self
             .shown_drafts(snapshot)?
             .into_iter()
-            .filter(|s| (lo..=hi).contains(&(s.pr_index as usize)) && s.draft.kind != DraftKind::Resolve && s.draft.status != DraftStatus::Posting)
+            .filter(|s| s.draft.kind != DraftKind::Resolve && s.draft.status != DraftStatus::Posting)
             .map(|s| crate::assistant::ListedDraft {
                 label: crate::assistant::draft_label(s.draft.kind, s.path.as_deref(), s.line.map(|end| (s.start_line.unwrap_or(end), end)), s.draft.pr),
                 id: s.draft.id,

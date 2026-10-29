@@ -392,7 +392,7 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
          When you mention code, write its repo-relative path and line numbers in that checkout in inline code, \
          like `src/app.ts:42` or `src/app.ts:42-50`: the reviewer clicks them to jump there in the diff.\n\n\
          The review's draft comments live in the reviewer's app, and its `wispy` tools work on them: \
-         `add_draft_comment` adds one on lines of the checkout, `list_drafts` shows the pending drafts (the reviewer's \
+         `add_draft_comment` adds one on lines of the checkout (or of another PR of the stack), `list_drafts` shows the pending drafts (the reviewer's \
          and yours) by ref, `edit_draft` and `delete_draft` change them. When the reviewer asks you to write review \
          comments, add each one with `add_draft_comment` instead of writing it into your answer. Nothing reaches \
          GitHub until the reviewer submits the review.\n\n",
