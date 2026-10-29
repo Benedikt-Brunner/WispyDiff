@@ -121,10 +121,21 @@ impl<'a> ReviewTools<'a> {
             (Some(line), None) | (None, Some(line)) => Some((line, line)),
             (None, None) => None,
         };
-        let mut outcome = CommentOutcome { action: CommentAction::Add, path: Some(path.clone()), lines, target: None, label: None, body: Some(body.clone()), draft: None, error: None };
-        let placed = match lines {
-            Some((start, end)) if start == 0 || start > end => Err(format!("{start}–{end} isn't a line range")),
-            _ => self.view().and_then(|view| crate::anchors::head_target(&view, &path, lines)),
+        let pr = args["pr"].as_u64();
+        // Lines of another PR's head aren't the checkout's, so the card doesn't link them.
+        let shown = if pr.is_some() { None } else { lines };
+        let mut outcome = CommentOutcome { action: CommentAction::Add, path: Some(path.clone()), lines: shown, target: None, label: None, body: Some(body.clone()), draft: None, error: None };
+        let placed = match (lines, pr) {
+            (Some((start, end)), _) if start == 0 || start > end => Err(format!("{start}–{end} isn't a line range")),
+            (_, None) => self.view().and_then(|view| crate::anchors::head_target(&view, &path, lines)),
+            (_, Some(number)) => self.pr_index(number).and_then(|index| {
+                let view = self.pr_view(index)?;
+                let changed = view.summary.files.iter().any(|f| f.path == path);
+                if !changed {
+                    return Err(format!("#{number} doesn't change {path}"));
+                }
+                crate::anchors::head_target(&view, &path, lines).map_err(|why| why.replace(" at the head", &format!(" at #{number}'s head")))
+            }),
         };
         let draft = placed.and_then(|target| {
             let new = NewDraft {
@@ -159,9 +170,9 @@ impl<'a> ReviewTools<'a> {
         result
     }
 
+    /// The whole stack's drafts: the assistant may comment on any of its PRs.
     fn list(&self) -> Result<String, String> {
-        let (lo, hi) = self.range;
-        let drafts = self.service.listed_drafts(self.snapshot, lo, hi).map_err(|e| e.to_string())?;
+        let drafts = self.service.listed_drafts(self.snapshot).map_err(|e| e.to_string())?;
         Ok(draft_listing(&mut self.lock().0, &drafts))
     }
 
@@ -268,13 +279,16 @@ impl crate::mcp::Tools for ReviewTools<'_> {
                 description: "Adds a draft review comment on lines of the checkout (the head of the PRs under review), \
                     or on a whole file. It goes to the PR that changed those lines, like the reviewer's own comments. \
                     Only files changed in the PRs under review can be commented on, and only lines that exist at the \
-                    head (not removed ones). Returns the new draft's ref.",
+                    head (not removed ones). With `pr`, it goes to that PR of the stack instead (also one not under \
+                    review), on a file it changed, and the lines are lines at that PR's head, numbered as `file_diff` \
+                    with that PR shows them. Returns the new draft's ref.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Repo-relative path." },
-                        "start_line": { "type": "integer", "minimum": 1, "description": "First commented line in the checkout; leave out start_line and end_line to comment on the whole file." },
+                        "start_line": { "type": "integer", "minimum": 1, "description": "First commented line in the checkout (or at `pr`'s head); leave out start_line and end_line to comment on the whole file." },
                         "end_line": { "type": "integer", "minimum": 1, "description": "Last commented line (defaults to start_line)." },
+                        "pr": { "type": "integer", "description": "A PR number of the stack, to comment on lines of that PR's head instead of the checkout's." },
                         "body": { "type": "string", "description": "The comment, GitHub Markdown. A ```suggestion block replaces exactly the commented lines." },
                     },
                     "required": ["path", "body"],
@@ -282,8 +296,8 @@ impl crate::mcp::Tools for ReviewTools<'_> {
             },
             Tool {
                 name: "list_drafts",
-                description: "Lists the review's pending draft comments (the reviewer's and yours) by ref, with where they are \
-                    and their text. List them before changing drafts you didn't just write.",
+                description: "Lists the pending draft comments on the stack's PRs (the reviewer's and yours) by ref, with \
+                    where they are and their text. List them before changing drafts you didn't just write.",
                 input_schema: json!({ "type": "object", "properties": {} }),
             },
             Tool {

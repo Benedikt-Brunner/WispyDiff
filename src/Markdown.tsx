@@ -85,7 +85,8 @@ export function CommentCards({ comments, refs }: { comments: CommentOutcome[]; r
         .map((c) => {
           const [action, done, failed] = ACTIONS[c.action ?? "add"];
           const lines = c.lines ? `:${c.lines[0]}${c.lines[1] !== c.lines[0] ? `-${c.lines[1]}` : ""}` : "";
-          const where = [c.target, c.action === "add" ? null : c.label].filter(Boolean).join(" · ");
+          // An added comment's own lines say where it is, unless they're another PR's (not the checkout's).
+          const where = [c.target, c.action === "add" && c.lines ? null : c.label].filter(Boolean).join(" · ");
           const head = [
             `<span class="assistant-comment-action">${action}</span>`,
             c.path ? `<code>${escapeHtml(c.path + lines)}</code>` : "",

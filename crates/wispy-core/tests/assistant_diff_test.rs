@@ -1,5 +1,6 @@
-//! The assistant's view of the changes: the first prompt lists the changed files and the
-//! stack's other PRs, `file_diff` shows a file's diff and `pr_files` what another PR changed. Its own test binary: it points the CLI variables at the
+//! The assistant's view of the stack: the first prompt lists the changed files and the stack's
+//! other PRs, `file_diff` shows a file's diff and `pr_files` what another PR changed, and its
+//! comments can go on any PR of the stack. Its own test binary: it points the CLI variables at the
 //! fakes without racing the other assistant tests' logs.
 
 mod support;
@@ -112,6 +113,40 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     assert!(results[3].contains("+later"), "{answer}");
     assert_eq!(results[4], "error: #3 doesn't change README.md");
     assert_eq!(results[5], "error: #9 isn't in this stack");
+
+    // Comments go on any PR of the stack, at lines of its head; the drafts of all of them are listed.
+    let add = |path: &str, line: u32, pr: u64| json!(["add_draft_comment", { "path": path, "start_line": line, "pr": pr, "body": format!("on #{pr}") }]);
+    let steps = json!([
+        add("src/Later.php", 2, 3),
+        add("src/Order.php", 2, 1),
+        add("README.md", 1, 3),
+        add("src/Later.php", 9, 3),
+        add("src/Later.php", 1, 9),
+        ["list_drafts", {}],
+        ["edit_draft", { "ref": "d1", "body": "on #3, edited" }],
+    ]);
+    let new = NewThread { provider: Provider::Claude, model: None, effort: None, selection: None, anchor: None, hidden: vec![] };
+    let thread = service.ask(&snapshot, (1, 1), None, Some(new), &format!("tools:{steps}"), |_| {}).unwrap();
+    let answer = &thread.messages.last().unwrap().text;
+    let lines: Vec<&str> = answer.lines().collect();
+    assert_eq!(
+        lines[..5],
+        [
+            "add_draft_comment: Added draft d1 on src/Later.php L2 in #3.",
+            "add_draft_comment: Added draft d2 on src/Order.php L2 in #1.",
+            "add_draft_comment: error: #3 doesn't change README.md",
+            "add_draft_comment: error: src/Later.php has no line 9 at #3's head",
+            "add_draft_comment: error: #9 isn't in this stack",
+        ],
+        "{answer}"
+    );
+    assert!(answer.contains("\n[d2] src/Order.php L2 in #1 — by you:\n> on #1\n") && answer.contains("\n[d1] src/Later.php L2 in #3 — by you:\n> on #3\n"), "{answer}");
+    assert!(answer.ends_with("edit_draft: Updated d1."), "{answer}");
+    let placed: Vec<_> = service.shown_drafts(&snapshot).unwrap().into_iter().map(|d| (d.draft.pr, d.draft.line, d.draft.body)).collect();
+    assert_eq!(placed, [(3, Some(2), "on #3, edited".into()), (1, Some(2), "on #1".into())]);
+    // Another PR's lines aren't the checkout's: the card names the draft's place instead of linking them.
+    let card = &thread.messages.last().unwrap().comments[0];
+    assert_eq!((card.lines, card.label.as_deref()), (None, Some("src/Later.php L2 in #3")));
 }
 
 fn fake(name: &str) -> PathBuf {
