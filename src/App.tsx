@@ -499,6 +499,7 @@ export default function App() {
             isViewed={isViewed}
             onToggleViewed={toggleViewed}
             confirmViewed={confirmViewed}
+            onShowFullDiff={shown.since ? toggleSince : undefined}
           />
         ) : (
           <Inbox entries={inbox} online={online} keyboardEnabled={!paletteOpen && !overlay} onOpen={open} onRefresh={refreshInbox} />

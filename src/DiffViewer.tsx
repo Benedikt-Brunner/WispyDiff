@@ -102,12 +102,14 @@ interface Props {
   onToggleViewed: (key: string, viewed: boolean) => void;
   /** Before marking a file viewed: false holds the mark back, `mark` does it later. */
   confirmViewed: (path: string, key: string, mark: () => void) => boolean;
+  /** Set while showing the changes since a checkpoint: back to the full diff. */
+  onShowFullDiff?: () => void;
 }
 
 export function DiffViewer(props: Props) {
   const { viewId, summary, prs, showAttribution, multiPr, showFiles, keyboardEnabled, defaultMode, onDefaultModeChange, wrap, onWrapChange, isIgnored } = props;
   const { hiddenCommentPrs, onCommentsHiddenChange, onShowFiles } = props;
-  const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed, confirmViewed } = props;
+  const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed, confirmViewed, onShowFullDiff } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -457,6 +459,7 @@ export function DiffViewer(props: Props) {
     const { layout, summary } = latest.current;
     const row = layout.rowAt(el.scrollTop);
     const segment = layout.segmentAt(row);
+    if (!segment) return; // An empty diff.
     anchor.current = { path: summary.files[segment.file].path, offset: row - segment.start, mode: segment.mode, delta: el.scrollTop - layout.rowY(row) };
   }, []);
 
@@ -962,9 +965,9 @@ export function DiffViewer(props: Props) {
     canvasRef.current?.style.setProperty("--split-x", `${el.scrollLeft}px`);
   }, [recordAnchor]);
 
-  /** The file keys act on: the pinned one while the view hasn't moved, else the one at the top. */
+  /** The file keys act on: the pinned one while the view hasn't moved, else the one at the top (none in an empty diff). */
   const fileAt = useCallback(
-    (top: number) =>
+    (top: number): Segment | undefined =>
       pinned && Math.abs(pinned.top - top) < 1 && layout.segments[pinned.file]
         ? layout.segments[pinned.file]
         : // One row in, so a file header scrolled to the top counts.
@@ -1178,14 +1181,15 @@ export function DiffViewer(props: Props) {
       if (e.metaKey || e.ctrlKey || e.altKey || (isTyping(e.target) && e.key !== "Escape")) return;
       const el = scrollRef.current;
       if (!el) return;
-      // Every file filtered out: nothing for the file keys to act on.
+      // Every file filtered out, or no files at all: nothing for the file keys to act on.
       if (!layout.totalRows && ["s", "e", " ", "c", "v", "V", "u", "x"].includes(e.key)) return;
       // While gliding, j/k continue from where the glide is heading.
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
-      // Files: the header of the file being read sits at the top after n/p.
-      const here = fileAt(el.scrollTop);
-      const topRow = here === layout.segments[pinned?.file ?? -1] ? here.start : layout.rowAt(heading);
+      // Files: the header of the file being read sits at the top after n/p. Only missing in an
+      // empty diff, where the file keys returned above.
+      const here = fileAt(el.scrollTop)!;
+      const topRow = here && here === layout.segments[pinned?.file ?? -1] ? here.start : layout.rowAt(heading);
       const shown = layout.segments.filter((s) => s.mode !== "hidden");
       const starts = shown.map((s) => s.start);
       // n/p skip files already viewed.
@@ -1361,7 +1365,7 @@ export function DiffViewer(props: Props) {
           files={summary.files}
           isViewed={isViewed}
           segments={layout.segments}
-          current={current.file}
+          current={current?.file ?? -1}
           showPrs={multiPr}
           openThreads={(i) => tallies.get(i)?.get("open") ?? 0}
           mode={listMode}
@@ -1380,6 +1384,17 @@ export function DiffViewer(props: Props) {
           <div className="diff-all-filtered" data-testid="all-filtered">
             {filteredCount === 1 ? "The only file is" : `All ${filteredCount} files are`} hidden by the file filter.{" "}
             <button onClick={() => changeFilter(NO_FILTER)}>Show all files</button>
+          </div>
+        )}
+        {summary.files.length === 0 && (
+          <div className="diff-all-filtered" data-testid="diff-empty">
+            {onShowFullDiff ? (
+              <>
+                Nothing changed since this checkpoint. <button onClick={onShowFullDiff}>Show the full diff</button> (d)
+              </>
+            ) : (
+              "No changes."
+            )}
           </div>
         )}
         <div
@@ -1874,6 +1889,7 @@ function FileList(props: FileListProps) {
   return (
     <nav className="file-list" style={{ width: width.width }}>
       <ResizeHandle edge="right" {...width} />
+      {files.length === 0 && <div className="file-list-empty">No changed files</div>}
       <ul>
         {mode === "list"
           ? files.map((_, i) => !filtered[i] && fileRow(i))
