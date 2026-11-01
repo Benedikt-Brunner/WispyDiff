@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::github::PullRequest;
 
@@ -118,19 +118,29 @@ impl RepoStore {
     }
 
     /// Fetches every PR head of a stack plus the bottom PR's base branch in one `git fetch`.
+    /// GitHub occasionally lacks a PR's `refs/pull/<n>/head`; then the heads are fetched by the
+    /// SHAs the API reported instead.
     pub fn fetch_stack(&self, git: &Git, prs: &[PullRequest]) -> Result<StackPoints> {
         let bottom_base = &prs[0].base_ref;
         let base_local = format!("refs/wispy/heads/{bottom_base}");
         let head_local = |number: u64| format!("refs/wispy/pull/{number}/head");
-        let mut refspecs = vec![format!("+refs/heads/{bottom_base}:{base_local}")];
-        refspecs.extend(prs.iter().map(|pr| format!("+refs/pull/{}/head:{}", pr.number, head_local(pr.number))));
-
-        let mut args = vec!["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--filter=blob:none", "origin"];
-        args.extend(refspecs.iter().map(String::as_str));
+        let fetch = |by_sha: bool| {
+            let mut refspecs = vec![format!("+refs/heads/{bottom_base}:{base_local}")];
+            refspecs.extend(prs.iter().map(|pr| match by_sha && !pr.head_sha.is_empty() {
+                true => format!("+{}:{}", pr.head_sha, head_local(pr.number)),
+                false => format!("+refs/pull/{}/head:{}", pr.number, head_local(pr.number)),
+            }));
+            let mut args = vec!["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--filter=blob:none", "origin"];
+            args.extend(refspecs.iter().map(String::as_str));
+            git.run(&args)
+        };
         {
             let lock = self.write_lock(git);
             let _writing = lock.hold();
-            git.run(&args)?;
+            match fetch(false) {
+                Err(Error::Git { stderr, .. }) if stderr.contains("couldn't find remote ref refs/pull/") => fetch(true)?,
+                other => other?,
+            };
         }
 
         let base_tip = git.run_string(&["rev-parse", &base_local])?;
