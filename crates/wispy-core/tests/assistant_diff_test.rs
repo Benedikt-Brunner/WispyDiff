@@ -86,7 +86,8 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     assert_eq!(calls[3], "error: #1 doesn't change src/New.php");
     assert_eq!(calls[4], "error: #7 isn't in this stack");
     assert_eq!(calls[5], "error: README.md isn't changed in this range");
-    assert!(prompt.contains("The stack's other PRs aren't under review.") && prompt.contains("\n- #3 PR 3 (above; not in the checkout)\n"), "{prompt}");
+    assert!(prompt.contains("The stack's other PRs are part of the same review.") && prompt.contains("\n- #3 PR 3 (above; not in the checkout)\n"), "{prompt}");
+    assert!(prompt.contains("the whole stack is yours to explore") && prompt.contains("on the PR where it fits best"), "{prompt}");
 
     // About #2 alone: the PRs below and above it are a tool call away.
     let steps = json!([
@@ -106,8 +107,8 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     let answer = &thread.messages.last().unwrap().text;
     let results: Vec<String> = answer.split("\npr_files: ").flat_map(|c| c.split("\nfile_diff: ")).map(String::from).collect();
     assert_eq!(results.len(), 6, "{answer}");
-    assert!(results[0].starts_with("pr_files: #1 PR 1 (below the PRs under review; its changes are in the checkout) changes:\n- src/Order.php (modified, +1 −1)"), "{answer}");
-    assert!(results[1].starts_with("#3 PR 3 (above the PRs under review; its changes aren't in the checkout) changes:\n"), "{answer}");
+    assert!(results[0].starts_with("pr_files: #1 PR 1 (below the PRs in view; its changes are in the checkout) changes:\n- src/Order.php (modified, +1 −1)"), "{answer}");
+    assert!(results[1].starts_with("#3 PR 3 (above the PRs in view; its changes aren't in the checkout) changes:\n"), "{answer}");
     assert!(results[1].contains("\n- src/Later.php (added, +2 −0)") && results[1].contains("\n- src/Order.php (modified, +1 −0)"), "{answer}");
     assert!(results[2].contains("-a\n+A1\n b") && !results[2].contains("B2"), "only #1's changes: {answer}");
     assert!(results[3].contains("+later"), "{answer}");
