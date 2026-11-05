@@ -387,26 +387,28 @@ pub struct Selection {
 /// CLI session and send just the question.
 pub fn first_prompt(context: &Context, question: &str) -> String {
     let mut prompt = String::from(
-        "You are helping review a GitHub pull request stack. The current directory is a read-only \
-         checkout of the head of the PRs under review; read any file you need, but don't try to change anything. \
+        "You are helping review a GitHub pull request stack. The reviewer is looking at some of its PRs, but the \
+         whole stack is yours to explore: they're reviewed together. The current directory is a read-only \
+         checkout of the head of the PRs in view; read any file you need, but don't try to change anything. \
          When you mention code, write its repo-relative path and line numbers in that checkout in inline code, \
          like `src/app.ts:42` or `src/app.ts:42-50`: the reviewer clicks them to jump there in the diff.\n\n\
          The review's draft comments live in the reviewer's app, and its `wispy` tools work on them: \
-         `add_draft_comment` adds one on lines of the checkout (or of another PR of the stack), `list_drafts` shows the pending drafts (the reviewer's \
+         `add_draft_comment` adds one on lines of the checkout or of any PR of the stack, `list_drafts` shows the pending drafts (the reviewer's \
          and yours) by ref, `edit_draft` and `delete_draft` change them. When the reviewer asks you to write review \
-         comments, add each one with `add_draft_comment` instead of writing it into your answer. Nothing reaches \
-         GitHub until the reviewer submits the review.\n\n",
+         comments, add each one with `add_draft_comment` instead of writing it into your answer, on the PR where it \
+         fits best: the one that introduced the code it's about, even when that's another PR of the stack than the \
+         ones in view. Nothing reaches GitHub until the reviewer submits the review.\n\n",
     );
-    prompt.push_str(&format!("Under review: {}\n", context.range_label));
+    prompt.push_str(&format!("In view: {}\n", context.range_label));
     for title in &context.titles {
         prompt.push_str(&format!("- {title}\n"));
     }
     if !context.others.is_empty() {
-        // Not in the first prompt's list: the agent looks at them only when the question needs them.
+        // Only a line each: the agent asks for what it needs of them.
         prompt.push_str(
-            "\nThe stack's other PRs aren't under review. When the question needs them (what a lower PR set up, \
-             what a higher one changes later), `pr_files` lists the files one of them changed and `file_diff` with \
-             its number shows a file's diff in it:\n",
+            "\nThe stack's other PRs are part of the same review. Look at them whenever it helps: what a lower PR \
+             set up, whether a higher one changes, fixes or builds on what you see. `pr_files` lists the files one \
+             of them changed and `file_diff` with its number shows a file's diff in it:\n",
         );
         for other in &context.others {
             prompt.push_str(&format!("- {other}\n"));

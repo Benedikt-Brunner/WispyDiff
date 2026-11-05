@@ -30,6 +30,19 @@ describe("review progress", () => {
     await waitFor(async () => (await text(".toast"))?.includes("Marked #5 as reviewed") ?? false);
   });
 
+  it("says so when nothing changed since the checkpoint (d)", async () => {
+    await browser.keys("d");
+    await waitFor(async () => (await text(".pr-meta"))?.includes("changes since") ?? false, 60_000);
+    expect(await text('[data-testid="diff-empty"]')).toContain("Nothing changed since this checkpoint");
+    expect(await text(".file-list-empty")).toBe("No changed files");
+    // The view keeps working: keys still reach it.
+    await browser.keys("j");
+    await browser.keys("n");
+    await browser.keys("d");
+    await waitFor(async () => !((await text(".pr-meta"))?.includes("changes since") ?? true));
+    expect(await exists('[data-testid="diff-empty"]')).toBe(false);
+  });
+
   it("keeps the file viewed across a rebase that doesn't change it", async () => {
     // main moves on; the author rebases #5 onto it without touching their change.
     originGit("checkout", "--quiet", "main");

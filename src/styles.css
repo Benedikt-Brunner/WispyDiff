@@ -443,6 +443,11 @@ body.resizing {
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
 }
+.file-list-empty {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
 .file-list ul {
   list-style: none;
   margin: 0;

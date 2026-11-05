@@ -158,7 +158,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
 
     let calls = asks(log.path());
     let prompt = calls[0]["prompt"].as_str().unwrap();
-    assert!(prompt.contains("Under review: acme/shop #3"));
+    assert!(prompt.contains("In view: acme/shop #3"));
     assert!(prompt.contains("+$state = 'picked';"), "the selection is in the first prompt");
     assert!(prompt.contains("\n- src/Order.php (modified, +1 −1)\n- src/composer.lock (modified, +1 −1, lockfile)\n"), "the changed files are: {prompt}");
     assert!(!prompt.contains("diff --git"), "their diffs aren't: {prompt}");
@@ -198,7 +198,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     assert!(retried.unsent_context.is_none());
     let calls = asks(log.path());
     let call = calls.last().unwrap();
-    assert!(call["prompt"].as_str().unwrap().contains("Under review: acme/shop #3"));
+    assert!(call["prompt"].as_str().unwrap().contains("In view: acme/shop #3"));
     assert!(!call["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
     service.delete_assistant_thread(&first.id).unwrap();
     // Files hidden by the file filter are named apart, not in the list of changed files.

@@ -168,3 +168,23 @@ fn reads_of_a_set_up_repo_do_not_wait_for_a_running_fetch_but_fetches_do() {
         assert_eq!(fetch_rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap(), head);
     });
 }
+
+#[test]
+fn a_stack_pr_missing_its_pull_ref_is_fetched_by_head_sha() {
+    let (origin, head) = origin_with_pr();
+    origin.checkout("feature");
+    origin.checkout_new("feature-2");
+    origin.write("src/Bin.ts", "export const bin = 'A-2';\n");
+    let top = origin.commit("more feature work");
+    // GitHub occasionally lacks a PR's `refs/pull/<n>/head` although its branch exists.
+    let root = tempfile::tempdir().unwrap();
+    let store = RepoStore::new(root.path(), None);
+    let git = store.ensure_repo("acme", "shop", &origin.url()).unwrap();
+    let mut prs = vec![support::pull_request(7, "main", "feature", &origin.url()), support::pull_request(8, "feature", "feature-2", &origin.url())];
+    prs[1].head_sha = top.clone();
+
+    let points = store.fetch_stack(&git, &prs).unwrap();
+
+    assert_eq!(points.heads, vec![head.clone(), top]);
+    assert_eq!(points.bases[1], head);
+}

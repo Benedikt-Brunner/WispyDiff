@@ -84,9 +84,9 @@ impl<'a> ReviewTools<'a> {
         let pr = &self.snapshot.stack.prs[index];
         let (lo, hi) = self.range;
         let place = match index {
-            i if i < lo => "below the PRs under review; its changes are in the checkout",
-            i if i > hi => "above the PRs under review; its changes aren't in the checkout",
-            _ => "under review",
+            i if i < lo => "below the PRs in view; its changes are in the checkout",
+            i if i > hi => "above the PRs in view; its changes aren't in the checkout",
+            _ => "in view",
         };
         let mut text = format!("#{number} {} ({place}) changes:\n", pr.title);
         if view.summary.files.is_empty() {
@@ -250,8 +250,8 @@ impl crate::mcp::Tools for ReviewTools<'_> {
         vec![
             Tool {
                 name: "file_diff",
-                description: "Shows the diff of a file changed in the PRs under review: across the whole range by default, \
-                    or only the changes one PR made to it, which may also be one of the stack's other PRs (below or above \
+                description: "Shows the diff of a file changed in the PRs in view: across the whole range by default, \
+                    or only the changes one PR made to it, which may be any PR of the stack (also one below or above \
                     the range). Call it before calling any code in a changed file new, changed, removed or existing: the \
                     checkout alone can't tell.",
                 input_schema: json!({
@@ -266,8 +266,8 @@ impl crate::mcp::Tools for ReviewTools<'_> {
             Tool {
                 name: "pr_files",
                 description: "Lists the files one PR of the stack changed (status, rename source, +/− counts), without their \
-                    diffs. For the stack's other PRs, when the question needs what a lower PR set up or what a higher one \
-                    changes later; `file_diff` with the same PR number shows a file's diff in it.",
+                    diffs. Use it to explore the stack's other PRs: what a lower PR set up, what a higher one changes, \
+                    fixes or builds on; `file_diff` with the same PR number shows a file's diff in it.",
                 input_schema: json!({
                     "type": "object",
                     "properties": { "pr": { "type": "integer", "description": "A PR number of the stack." } },
@@ -276,12 +276,13 @@ impl crate::mcp::Tools for ReviewTools<'_> {
             },
             Tool {
                 name: "add_draft_comment",
-                description: "Adds a draft review comment on lines of the checkout (the head of the PRs under review), \
+                description: "Adds a draft review comment on lines of the checkout (the head of the PRs in view), \
                     or on a whole file. It goes to the PR that changed those lines, like the reviewer's own comments. \
-                    Only files changed in the PRs under review can be commented on, and only lines that exist at the \
-                    head (not removed ones). With `pr`, it goes to that PR of the stack instead (also one not under \
-                    review), on a file it changed, and the lines are lines at that PR's head, numbered as `file_diff` \
-                    with that PR shows them. Returns the new draft's ref.",
+                    Only files changed in the PRs in view can be commented on, and only lines that exist at the \
+                    head (not removed ones). With `pr`, it goes to that PR of the stack instead, in view or not, on a \
+                    file it changed, and the lines are lines at that PR's head, numbered as `file_diff` with that PR \
+                    shows them: use it to put a comment on the PR it's really about, such as the lower PR that \
+                    introduced the code. Returns the new draft's ref.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {

@@ -96,7 +96,7 @@ describe("assistant", () => {
     // Asking again sends the question with the review context (the failed turn left no session).
     await clickButton('[data-testid="assistant-sign-in"]', "Ask again");
     await waitFor(async () => fakeCalls().at(-1)!.prompt?.includes("Question: expired") ?? false, 60_000);
-    expect(fakeCalls().at(-1)!.prompt).toContain("Under review: wispy/fixture #2");
+    expect(fakeCalls().at(-1)!.prompt).toContain("In view: wispy/fixture #2");
     expect(fakeCalls().at(-1)!.args).not.toContain("--resume");
     await waitFor(async () => (await count(".assistant-message.error")) === 2, 60_000);
   });
@@ -122,7 +122,7 @@ describe("assistant", () => {
     const call = fakeCalls().at(-1)!;
     expect(call.provider).toBe("codex");
     expect(call.args).toContain('sandbox_mode="read-only"');
-    expect(call.prompt).toContain("Under review: wispy/fixture #2");
+    expect(call.prompt).toContain("In view: wispy/fixture #2");
     for (const path of hidden) {
       expect(call.prompt).toContain(`\n- ${path}\n`);
       expect(call.prompt).not.toContain(`\n- ${path} (`);
