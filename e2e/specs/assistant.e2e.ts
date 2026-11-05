@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { click, clickButton, count, exists, openViaPalette, setTextarea, text, waitFor } from "./helpers";
+import { click, clickButton, count, exists, goHome, openViaPalette, setTextarea, text, waitFor } from "./helpers";
 
 /** Selects the code of the `from`-th to `to`-th unified change rows, like dragging the mouse. */
 const selectRows = (from: number, to: number) =>
@@ -312,6 +312,30 @@ describe("assistant", () => {
     });
     expect(shown).toBe(true);
     for (let i = 0; i < 2; i++) await clickButton('[data-testid="assistant-panel"]', "delete");
+    await browser.keys("Escape");
+    await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
+  });
+
+  it("keeps the panel and a question being answered when the diff reloads", async () => {
+    await browser.keys("a");
+    await waitFor(() => exists('[data-testid="assistant-panel"]'));
+    await chooseProvider("claude");
+    await ask('tools:[["wait"]]');
+    await waitFor(() => exists('[data-testid="assistant-streaming"]'));
+    await setTextarea('[data-testid="assistant-input"]', "unsent");
+
+    // Away and back rebuilds the diff, as loading newer commits does.
+    await goHome();
+    await openViaPalette("wispy/fixture#2");
+    await waitFor(() => exists('[data-testid="assistant-streaming"]'));
+    expect(await text(".assistant-message.user .card-body")).toBe('tools:[["wait"]]');
+    expect(await browser.execute(() => document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-input"]')!.value)).toBe("unsent");
+
+    writeFileSync(`${process.env.WISPY_FAKE_LOG}.go`, "");
+    await waitFor(async () => !(await exists('[data-testid="assistant-streaming"]')), 60_000);
+    expect(await text(".assistant-message.user .card-body")).toBe('tools:[["wait"]]');
+    await clickButton('[data-testid="assistant-panel"]', "delete");
+    await setTextarea('[data-testid="assistant-input"]', "");
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="assistant-panel"]')));
   });

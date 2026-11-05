@@ -23,6 +23,7 @@ import {
   type Usages,
 } from "./api";
 import { AssistantPanel, type AskContext, type PendingAnswer } from "./AssistantPanel";
+import { useLasting } from "./lasting";
 import type { CodeRef } from "./Markdown";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileSearch } from "./FileSearch";
@@ -191,14 +192,21 @@ export function DiffViewer(props: Props) {
   const pendingJump = useRef<{ file: number; line: number; end: number } | null>(null);
 
   // ---------- assistant ----------
-  const [assistant, setAssistant] = useState<{ context: AskContext; activeId: string | null; note: string | null } | null>(null);
-  const [assistantThreads, setAssistantThreads] = useState<AssistantThread[]>([]);
-  const [pendingAnswer, setPendingAnswer] = useState<PendingAnswer | null>(null);
+  // Kept per repo across remounts (a new version of the stack, a trip to the inbox): the panel stays
+  // open on the stack it was opened on, and an answer still streaming lands in its thread.
+  const repo = prs[0].base_repo;
+  const [openAssistantPanel, setAssistant] = useLasting<AssistantState | null>(`assistant.panel.${repo}`, null);
+  const [assistantThreads, setAssistantThreads] = useLasting<AssistantThread[]>(`assistant.threads.${repo}`, NO_THREADS);
+  const [pendingAnswer, setPendingAnswer] = useLasting<PendingAnswer | null>(`assistant.pending.${repo}`, null);
+  const [answered, setAnswered] = useLasting(`assistant.answered.${repo}`, 0);
+  const assistant = openAssistantPanel && prs.some((p) => openAssistantPanel.prs.includes(p.number)) ? openAssistantPanel : null;
   useEffect(() => {
+    let current = true;
     listAssistantThreads(stackId)
-      .then(setAssistantThreads)
+      .then((threads) => current && setAssistantThreads(threads))
       .catch(() => undefined);
-  }, [stackId]);
+    return () => void (current = false);
+  }, [stackId, answered, setAssistantThreads]);
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
   const grepRun = useRef(0);
 
@@ -791,9 +799,9 @@ export function DiffViewer(props: Props) {
     (threadId: string | null = null) => {
       setPanel(null);
       const context = threadId ? { selection: null, anchor: null, rangeLabel } : selectionContext();
-      setAssistant({ context, activeId: threadId, note: null });
+      setAssistant({ context, activeId: threadId, note: null, prs: prs.map((p) => p.number) });
     },
-    [selectionContext, rangeLabel],
+    [selectionContext, rangeLabel, prs, setAssistant],
   );
 
   const ask = useCallback(
@@ -820,9 +828,13 @@ export function DiffViewer(props: Props) {
           setAssistant((a) => a && { ...a, activeId: thread.id, note });
         })
         .catch((e) => setAssistant((a) => a && { ...a, note: String(e) }))
-        .finally(() => setPendingAnswer(null));
+        .finally(() => {
+          setPendingAnswer(null);
+          // A list read while the answer was streaming lacks it.
+          setAnswered((n) => n + 1);
+        });
     },
-    [assistant, stackId, lo, hi, summary, filtered, onDraftsChanged],
+    [assistant, stackId, lo, hi, summary, filtered, onDraftsChanged, setAssistant, setAssistantThreads, setPendingAnswer, setAnswered],
   );
 
   /** Head lines of the files in view that assistant threads were asked about (gutter markers). */
@@ -2068,6 +2080,15 @@ const TreeIcon = () => (
     <path d="M2 2.5h6M5 6h7M5 9.5h7M3 3v6.5h2M3 6h2" />
   </svg>
 );
+
+/** The open assistant panel, and the PR numbers of the stack it was opened on. */
+interface AssistantState {
+  context: AskContext;
+  activeId: string | null;
+  note: string | null;
+  prs: number[];
+}
+const NO_THREADS: AssistantThread[] = [];
 
 function AssistantMark({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
   return (

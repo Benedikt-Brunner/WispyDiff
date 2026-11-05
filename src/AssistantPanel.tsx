@@ -4,6 +4,7 @@ import { CommentCards, Markdown, type CodeRefs } from "./Markdown";
 import { loadPref, savePref } from "./prefs";
 import { isSubmitKey, mod } from "./platform";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
+import { useLasting } from "./lasting";
 
 const MODELS: Record<Provider, string[]> = {
   claude: ["", "opus", "sonnet", "haiku", "fable"],
@@ -53,7 +54,7 @@ export function AssistantPanel({ threads, activeId, context, pending, note, onSe
   const [provider, setProvider] = useState<Provider>(() => loadPref("assistant.provider", ["claude", "codex"] as const, "claude"));
   const [model, setModel] = useState(() => localValue(`assistant.model.${provider}`));
   const [effort, setEffort] = useState(() => localValue(`assistant.effort.${provider}`));
-  const [question, setQuestion] = useState("");
+  const [question, setQuestion] = useLasting("assistant.question", "");
   const [signIn, setSignIn] = useState<{ state: "waiting" | "done" | "failed"; url?: string; message?: string } | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const body = useRef<HTMLDivElement>(null);
