@@ -6,6 +6,60 @@ use base64::Engine;
 
 use crate::error::{Error, Result};
 
+/// Maps file types to git's built-in function-name patterns (`userdiff`), plus `wispy-ts`
+/// for JavaScript/TypeScript, which git has none for.
+const DIFF_ATTRIBUTES: &str = "\
+*.php diff=php
+*.phtml diff=php
+*.rs diff=rust
+*.py diff=python
+*.go diff=golang
+*.java diff=java
+*.kt diff=kotlin
+*.kts diff=kotlin
+*.rb diff=ruby
+*.cs diff=csharp
+*.c diff=cpp
+*.h diff=cpp
+*.cc diff=cpp
+*.cpp diff=cpp
+*.cxx diff=cpp
+*.hh diff=cpp
+*.hpp diff=cpp
+*.mm diff=objc
+*.css diff=css
+*.scss diff=css
+*.html diff=html
+*.md diff=markdown
+*.sh diff=bash
+*.bash diff=bash
+*.pl diff=perl
+*.pm diff=perl
+*.ex diff=elixir
+*.exs diff=elixir
+*.js diff=wispy-ts
+*.jsx diff=wispy-ts
+*.mjs diff=wispy-ts
+*.cjs diff=wispy-ts
+*.ts diff=wispy-ts
+*.tsx diff=wispy-ts
+*.mts diff=wispy-ts
+*.cts diff=wispy-ts
+*.vue diff=wispy-ts
+";
+
+/// One pattern per line, tried in order; a `!` line rejects matches (control-flow blocks).
+/// Matches classes, functions, arrow functions bound to a name, and methods.
+const TS_FUNCNAME: &str = concat!(
+    "!^[\t ]*(if|else|for|while|do|switch|catch|try|return|with)([^A-Za-z0-9_$]|$)\n",
+    "^[\t ]*((export[\t ]+)?(default[\t ]+)?(abstract[\t ]+)?(class|interface|enum|namespace)[\t ]+[A-Za-z_$].*)$\n",
+    "^[\t ]*((export[\t ]+)?(default[\t ]+)?(async[\t ]+)?function[\t *]*[A-Za-z_$]?.*)$\n",
+    "^[\t ]*((export[\t ]+)?(const|let|var)[\t ]+[A-Za-z_$][A-Za-z0-9_$]*[\t ]*(:[^=]*)?=[\t ]*(async[\t ]+)?",
+    "(function|\\(|[A-Za-z_$][A-Za-z0-9_$]*[\t ]*=>).*)$\n",
+    "^[\t ]*(((public|private|protected|static|readonly|override|abstract|async|get|set)[\t ]+)*",
+    "[A-Za-z_$#][A-Za-z0-9_$]*[\t ]*(<[^>]*>)?\\(.*\\)[^;=]*\\{[\t ]*)$",
+);
+
 /// Runs git against one bare repository, isolated from the user's global and system
 /// config (so `insteadOf` rewrites or credential helpers can't interfere).
 #[derive(Debug, Clone)]
@@ -21,6 +75,15 @@ impl Git {
 
     pub fn git_dir(&self) -> &Path {
         &self.git_dir
+    }
+
+    /// Makes hunk headers (`@@ … @@ <section>`) name the enclosing function or method rather
+    /// than git's default: the nearest unindented line, usually the class.
+    pub fn write_diff_attributes(&self) -> Result<()> {
+        let info = self.git_dir.join("info");
+        std::fs::create_dir_all(&info)?;
+        std::fs::write(info.join("attributes"), DIFF_ATTRIBUTES)?;
+        Ok(())
     }
 
     pub fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
@@ -88,6 +151,7 @@ impl Git {
         let mut config = vec![
             ("core.quotepath".to_string(), "false".to_string()),
             ("protocol.file.allow".to_string(), "always".to_string()),
+            ("diff.wispy-ts.xfuncname".to_string(), TS_FUNCNAME.to_string()),
         ];
         if let Some(token) = &self.github_token {
             let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
