@@ -86,6 +86,8 @@ impl RepoStore {
             git.run(&["config", "remote.origin.partialclonefilter", "blob:none"])?;
             git.run(&["config", "gc.auto", "0"])?;
         }
+        // Rewritten every time so clones made by older versions pick up new mappings.
+        git.write_diff_attributes()?;
         let (_, current) = git.run_status(&["config", "--get", "remote.origin.url"])?;
         if String::from_utf8_lossy(&current).trim() != clone_url {
             git.run(&["config", "remote.origin.url", clone_url])?;
