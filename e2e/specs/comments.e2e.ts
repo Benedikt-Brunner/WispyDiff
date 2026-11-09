@@ -39,6 +39,11 @@ describe("comments", () => {
     expect(await text(`${file} .file-open-threads`)).toBe("1");
     await click(file);
     await browser.keys("e");
+    // Collapsing moves on to the next file, which can scroll the notice out of the drawn rows: back to it.
+    await waitFor(() => browser.execute((f: string) => document.querySelector(f)?.classList.contains("muted") ?? false, file));
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop = 0;
+    });
     await waitFor(async () => (await text(notice))?.includes("1 open") ?? false);
     expect(await exists(".card.thread")).toBe(false);
     expect(await text(`${file} .file-open-threads`)).toBe("1");

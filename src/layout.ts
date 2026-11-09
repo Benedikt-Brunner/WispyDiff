@@ -1,3 +1,4 @@
+import type { UnifiedMap } from "./gaps";
 import type { DiffSummary, FileSummary } from "./types";
 
 export const ROW_HEIGHT = 20;
@@ -20,11 +21,14 @@ export interface Insert {
   height: number;
 }
 
-export function segmentRows(file: FileSummary, mode: Mode) {
+/** A file's unified rows as drawn (with its gaps, some shown). */
+export type UnifiedOf = (file: number) => UnifiedMap;
+
+export function segmentRows(file: FileSummary, mode: Mode, unified?: UnifiedMap) {
   if (mode === "hidden") return 0;
   if (mode === "collapsed") return 2; // header + "collapsed" notice
   if (mode === "split") return file.split_rows;
-  return file.row_count;
+  return unified?.rows ?? file.row_count;
 }
 
 /** `[offset, extra lines]` of a file's rows that wrap onto more than one line, by offset. */
@@ -45,11 +49,17 @@ export class Layout {
   private readonly wrapped: number[] = [];
   private readonly wrappedCumulative: number[] = [0];
 
-  constructor(summary: DiffSummary, modeOf: (index: number) => Mode, inserts: Insert[] = [], wrappedOf?: (file: number, mode: Mode) => WrappedRows) {
+  constructor(
+    summary: DiffSummary,
+    modeOf: (index: number) => Mode,
+    private readonly unifiedOf: UnifiedOf,
+    inserts: Insert[] = [],
+    wrappedOf?: (file: number, mode: Mode) => WrappedRows,
+  ) {
     let start = 0;
     this.segments = summary.files.map((file, index) => {
       const mode = modeOf(index);
-      const segment = { file: index, mode, start, rows: segmentRows(file, mode) };
+      const segment = { file: index, mode, start, rows: segmentRows(file, mode, mode === "unified" ? unifiedOf(index) : undefined) };
       for (const [offset, extra] of wrappedOf?.(index, mode) ?? []) {
         if (offset >= segment.rows) break;
         this.wrapped.push(start + offset);
@@ -121,7 +131,9 @@ export class Layout {
       const file = summary.files[s.file];
       if (s.mode === "hidden") return [];
       if (s.mode === "collapsed") return [s.start];
-      return (s.mode === "split" ? file.split_blocks : file.hunks).map((offset) => s.start + offset);
+      if (s.mode === "split") return file.split_blocks.map((offset) => s.start + offset);
+      const unified = this.unifiedOf(s.file);
+      return file.hunks.map((offset) => s.start + unified.fromBase(offset));
     });
   }
 

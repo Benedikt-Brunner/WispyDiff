@@ -151,6 +151,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [["S"], "Side by side for all files"],
       [["z"], "Wrap long lines"],
       [["Space", "e"], "Collapse / expand the file"],
+      [["E"], "Show / hide all unchanged lines between the hunks (unified)"],
       [["v"], "Mark viewed and go to the next file"],
       [["V"], "Undo the last viewed mark and go back to that file"],
     ],

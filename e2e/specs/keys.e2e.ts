@@ -439,6 +439,76 @@ describe("keyboard", () => {
     await waitFor(async () => !(await exists('[data-testid="file-filter-menu"]')));
   });
 
+  it("shows unchanged lines between hunks: a click shows 10 more on each side, an arrow 20 on one, a double click all, ⇧E every gap of the file", async () => {
+    const gap = (id: string) =>
+      browser.execute((g: string) => {
+        const row = document.querySelector<HTMLElement>(`[data-gap="${g}"]`);
+        return row ? { hidden: Number(row.dataset.hidden), top: row.getBoundingClientRect().top } : null;
+      }, id);
+    /** The first row fully in view: its file, line numbers and where it is on screen. */
+    const topRow = () =>
+      browser.execute(() => {
+        const view = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.getBoundingClientRect().top;
+        const rows = [...document.querySelectorAll<HTMLElement>(".row[data-file]")].filter((r) => r.getBoundingClientRect().top >= view);
+        const row = rows.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+        return { key: `${row.dataset.file}:${row.innerText.split("\n").slice(0, 2).join(":")}`, top: row.getBoundingClientRect().top };
+      });
+    const rowTop = (key: string) =>
+      browser.execute((k: string) => {
+        const row = [...document.querySelectorAll<HTMLElement>(".row[data-file]")].find((r) => `${r.dataset.file}:${r.innerText.split("\n").slice(0, 2).join(":")}` === k);
+        return row ? row.getBoundingClientRect().top : null;
+      }, key);
+
+    // A gap between two hunks with plenty of lines, a few rows down from the top, in the current file.
+    const id = await browser.executeAsync((done: (id: string | null) => void) => {
+      const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
+      const active = () => document.querySelector(".file-list li.active")?.getAttribute("title");
+      el.scrollTop = 0;
+      let tries = 0;
+      const seen = new Set<string>();
+      const look = () => {
+        const row = [...document.querySelectorAll<HTMLElement>('[data-testid="gap-row"]')].find(
+          (r) => Number(r.dataset.hidden) > 45 && r.querySelector('[data-testid="gap-up"]') && r.querySelector('[data-testid="gap-down"]') && !seen.has(r.dataset.gap!) && r.getBoundingClientRect().top > el.getBoundingClientRect().top,
+        );
+        if (++tries > 300) return done(null);
+        if (!row) {
+          el.scrollTop += el.clientHeight;
+          return setTimeout(look, 30);
+        }
+        const id = row.dataset.gap!;
+        seen.add(id);
+        el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - 100;
+        setTimeout(() => (active() === id.slice(0, id.lastIndexOf(":")) ? done(id) : look()), 100);
+      };
+      look();
+    });
+    expect(id).not.toBeNull();
+    await settled();
+    const before = (await gap(id!))!;
+
+    // A click shows 10 lines on each side; the gap row stays where it is.
+    await click(`[data-gap="${id}"]`);
+    await waitFor(async () => (await gap(id!))?.hidden === before.hidden - 20);
+    expect((await gap(id!))!.top).toBe(before.top);
+    // ↓ shows 20 below the hunk above it.
+    await click(`[data-gap="${id}"] [data-testid="gap-down"]`);
+    await waitFor(async () => (await gap(id!))?.hidden === before.hidden - 40);
+    // A double click shows the rest.
+    await browser.execute((g: string) => {
+      document.querySelector(`[data-gap="${g}"]`)!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+    }, id!);
+    await waitFor(async () => (await gap(id!)) === null);
+
+    // ⇧E shows every gap of the file, keeping the line at the top in place; again hides them all.
+    const file = id!.slice(0, id!.lastIndexOf(":"));
+    const top = await topRow();
+    await browser.keys("E");
+    await waitFor(async () => !(await exists(`[data-gap^="${file}:"]`)) && (await settled()));
+    expect(await rowTop(top.key)).toBe(top.top);
+    await browser.keys("E");
+    await waitFor(async () => (await gap(id!))?.hidden === before.hidden);
+  });
+
   it("lists the keyboard shortcuts with ?", async () => {
     await browser.keys("?");
     await waitFor(() => exists('[data-testid="shortcuts"]'));

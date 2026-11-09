@@ -1,5 +1,5 @@
-import { getRows, getSplitRows } from "./api";
-import type { Row, SplitRow } from "./types";
+import { getHeadLines, getRows, getSplitRows } from "./api";
+import { RowKind, type Row, type Seg, type SplitRow } from "./types";
 
 const PAGE_SIZE = 256;
 
@@ -12,6 +12,10 @@ type Loaded = { mode: "unified"; rows: Row[] } | { mode: "split"; rows: SplitRow
 export class RowStore {
   private pages = new Map<string, Loaded>();
   private pending = new Set<string>();
+  /** Head lines shown from gaps, per file. */
+  private lines = new Map<number, Map<number, Seg[]>>();
+  /** The rows made for them, so each stays the same object (rows are memoized). */
+  private contextRows = new Map<string, Row>();
 
   constructor(
     private readonly viewId: string,
@@ -29,6 +33,35 @@ export class RowStore {
     if (page?.mode !== "split") return undefined;
     // Page 0 starts at offset 1 (offset 0 is the header).
     return page.rows[offset - index * PAGE_SIZE - (index === 0 ? 1 : 0)];
+  }
+
+  /** Head line `n` of a file, if loaded (see `loadLines`). */
+  line(file: number, n: number): Seg[] | undefined {
+    return this.lines.get(file)?.get(n);
+  }
+
+  /** An unchanged line shown from a gap, as a context row (undefined until loaded). */
+  contextRow(file: number, o: number, n: number): Row | undefined {
+    const key = `${file}:${n}`;
+    let row = this.contextRows.get(key);
+    if (!row) {
+      const s = this.line(file, n);
+      if (!s) return undefined;
+      row = { k: RowKind.Context, f: file, o, n, s, a: null, h: [], l: null, w: [] };
+      this.contextRows.set(key, row);
+    }
+    return row;
+  }
+
+  /** Loads head lines `start..=end` of a file (resolves at once when they're there). */
+  async loadLines(file: number, start: number, end: number) {
+    const known = this.lines.get(file) ?? new Map<number, Seg[]>();
+    this.lines.set(file, known);
+    while (start <= end && known.has(start)) start++;
+    while (end >= start && known.has(end)) end--;
+    if (start > end) return;
+    const lines = await getHeadLines(this.viewId, file, start, end);
+    lines.forEach((segs, i) => known.set(start + i, segs));
   }
 
   /** Makes sure offsets [start, end) of a file are loaded or loading, plus one page of lookahead. */
