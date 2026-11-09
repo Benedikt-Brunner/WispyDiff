@@ -249,6 +249,18 @@ pub async fn get_split_rows(
     Ok(rows[start.min(end)..end].to_vec())
 }
 
+/// Highlighted head lines `start..=end` (1-based) of file `file`, for expanding a gap of
+/// unchanged lines in the unified diff.
+#[tauri::command]
+pub async fn get_head_lines(view_id: String, file: usize, start: u32, end: u32, state: State<'_, AppState>) -> Result<Vec<Vec<wispy_core::highlight::Seg>>, String> {
+    let (view, snapshot) = state.view_with_stack(&view_id).ok_or_else(|| format!("diff {view_id} is no longer open"))?;
+    if file >= view.summary.files.len() {
+        return Err("no such file".into());
+    }
+    let service = state.service()?;
+    blocking(move || service.head_lines(&snapshot, &view, file, start, end)).await
+}
+
 /// A file's side-by-side rows, computed once per view.
 async fn split_file(state: &AppState, view_id: &str, file: usize) -> Result<Arc<Vec<SplitRow>>, String> {
     let key = format!("{view_id}#{file}");

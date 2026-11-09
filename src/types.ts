@@ -40,6 +40,15 @@ export interface SplitRow {
   nw: Words;
 }
 
+/** A run of unchanged lines the unified diff leaves out. */
+export interface Gap {
+  /** Offset of the hunk header it sits above; the file's row count after the last hunk. */
+  offset: number;
+  old_start: number;
+  new_start: number;
+  len: number;
+}
+
 export type FileStatus = "added" | "deleted" | "modified" | "renamed" | "copied";
 
 export interface FileSummary {
@@ -58,6 +67,8 @@ export interface FileSummary {
   new_blob: string | null;
   /** Offsets of hunk headers within the file's unified rows (header = 0). */
   hunks: number[];
+  /** Unchanged head lines the unified rows leave out, which can be shown. */
+  gaps: Gap[];
   /** Side-by-side row count (header included); 0 = not available. */
   split_rows: number;
   split_blocks: number[];

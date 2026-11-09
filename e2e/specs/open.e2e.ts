@@ -117,15 +117,47 @@ describe("reading modes and noise", () => {
     await waitFor(async () => (await headerMode("composer.lock")) === "unified");
   });
 
-  it("toggles the current file to full-file side by side with s", async () => {
+  it("toggles the current file to full-file side by side with s, keeping the line in view where it is", async () => {
+    /** The first row fully in view with a head line: its file, head line number and top on screen. */
+    const firstLine = () =>
+      browser.execute(() => {
+        const view = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.getBoundingClientRect().top;
+        const line = (r: HTMLElement) => r.querySelector<HTMLElement>(r.dataset.mode === "split" ? ".half:not(.half-left) .ln" : ".gutter .ln:nth-of-type(2)")?.innerText ?? "";
+        const rows = [...document.querySelectorAll<HTMLElement>(".row[data-file]")]
+          .filter((r) => r.getBoundingClientRect().top >= view && line(r) !== "")
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        return rows[0] ? { file: rows[0].dataset.file!, line: line(rows[0]), top: rows[0].getBoundingClientRect().top } : null;
+      });
+    const lineTop = (file: string, line: string) =>
+      browser.execute(
+        (f: string, l: string) => {
+          const row = [...document.querySelectorAll<HTMLElement>(`.row[data-file="${f}"]`)].find(
+            (r) => r.querySelector<HTMLElement>(r.dataset.mode === "split" ? ".half:not(.half-left) .ln" : ".gutter .ln:nth-of-type(2)")?.innerText === l,
+          );
+          return row ? row.getBoundingClientRect().top : null;
+        },
+        file,
+        line,
+      );
     await click('.file-list li[title="src/Module0/Service0.php"]');
+    await settled();
+    // Into the file a bit, so its header isn't what's kept.
+    await browser.execute(() => {
+      document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop += 200;
+    });
+    await settled();
+    const before = (await firstLine())!;
     await browser.keys("s");
     await waitFor(async () => (await headerMode("src/Module0/Service0.php")) === "split");
+    await waitFor(async () => (await lineTop(before.file, before.line)) !== null);
+    expect(await lineTop(before.file, before.line)).toBe(before.top);
     await waitFor(async () => (await count(".row-split .half-add")) > 0);
     expect(await count(".row-split .half-filler, .row-split .half-ctx")).toBeGreaterThan(0);
     expect(await count(".row-split .half-add .wd")).toBeGreaterThan(0);
     await browser.keys("s");
     await waitFor(async () => (await headerMode("src/Module0/Service0.php")) === "unified");
+    await waitFor(async () => (await lineTop(before.file, before.line)) !== null);
+    expect(await lineTop(before.file, before.line)).toBe(before.top);
   });
 
   it("switches every file with S", async () => {

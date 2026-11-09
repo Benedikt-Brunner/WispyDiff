@@ -23,6 +23,10 @@ export const getRows = (viewId: string, file: number, start: number, end: number
 export const getSplitRows = (viewId: string, file: number, start: number, end: number) =>
   invoke<SplitRow[]>("get_split_rows", { viewId, file, start, end });
 
+/** Highlighted head lines `start..=end` (1-based) of one file, for showing a gap of unchanged lines. */
+export const getHeadLines = (viewId: string, file: number, start: number, end: number) =>
+  invoke<import("./types").Seg[][]>("get_head_lines", { viewId, file, start, end });
+
 /** For line wrapping: `[offset, width]` of the code rows wider than `minWidth` columns, per (file, side by side). */
 export const getRowWidths = (viewId: string, files: [number, boolean][], minWidth: number) =>
   invoke<[number, number][][]>("get_row_widths", { viewId, files, minWidth });

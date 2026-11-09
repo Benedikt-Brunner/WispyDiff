@@ -214,6 +214,17 @@ impl PrService {
         Ok(split_rows(rows, &alignment.pairs, &old, &new))
     }
 
+    /// Highlighted head lines `start..=end` (1-based) of file `index` in `view`, for expanding the
+    /// unchanged lines the unified diff leaves out (see [`crate::model::Gap`]).
+    pub fn head_lines(&self, snapshot: &StackSnapshot, view: &DiffView, index: usize, start: u32, end: u32) -> Result<Vec<Vec<crate::highlight::Seg>>> {
+        let file = &view.summary.files[index];
+        let Some(blob) = &file.new_blob else { return Ok(Vec::new()) };
+        let lines = blob_lines(&self.git(snapshot)?, blob, Language::from_path(&file.path), &self.highlighter, &self.highlights)?;
+        let from = (start.max(1) as usize - 1).min(lines.len());
+        let to = (end as usize).clamp(from, lines.len());
+        Ok(lines[from..to].to_vec())
+    }
+
     /// Glob patterns of files to collapse in this repo (set by the user).
     pub fn ignore_patterns(&self, repo_slug: &str) -> Result<Vec<String>> {
         let settings = self.cache.repo_settings(repo_slug)?.unwrap_or_default();

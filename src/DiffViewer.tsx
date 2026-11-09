@@ -45,6 +45,7 @@ import { Composer, DraftCard, InsertBox, settledReason, ThreadCard, threadPrevie
 import { Layout, ROW_HEIGHT, type Insert, type Mode, type Segment, type WrappedRows } from "./layout";
 import { mark } from "./perf";
 import { RowStore } from "./rowStore";
+import { allShown, GAP_STEP, hiddenLines, revealAll, revealMore, UnifiedMap, type Reveal } from "./gaps";
 import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow, type Words } from "./types";
 import { mod } from "./platform";
@@ -171,7 +172,40 @@ export function DiffViewer(props: Props) {
     },
     [summary, overrides, expanded, collapsed, temporary, defaultMode, isIgnored, isViewed, filtered],
   );
-  const baseLayout = useMemo(() => new Layout(summary, modeOf), [summary, modeOf]);
+  // ---------- gaps: unchanged lines shown between hunks (unified; per view) ----------
+  const [reveals, setReveals] = useState<{ viewId: string; files: Map<number, Reveal> }>({ viewId, files: new Map() });
+  const shownGaps = reveals.viewId === viewId ? reveals.files : NO_REVEALS;
+  const unifiedOf = useMemo(() => {
+    const maps = new Map<number, UnifiedMap>();
+    return (file: number) => {
+      let map = maps.get(file);
+      if (!map) maps.set(file, (map = new UnifiedMap(summary.files[file], shownGaps.get(file))));
+      return map;
+    };
+  }, [summary, shownGaps]);
+  /** The unified row drawn at `offset` of a file (a context row for a shown gap line, the hunk header or nothing for a gap row). */
+  const unifiedAt = useCallback(
+    (file: number, offset: number): Row | undefined => {
+      const at = unifiedOf(file).at(offset);
+      if (at.kind === "base") return store.unified(file, at.base);
+      if (at.kind === "line") return store.contextRow(file, at.o, at.n);
+      return at.base === null ? TRAILING_GAP : store.unified(file, at.base);
+    },
+    [unifiedOf, store],
+  );
+
+  /** Where a located line is drawn in a unified file: its row, or a gap line that's shown. */
+  const unifiedOffset = useCallback(
+    (file: number, location: Location, anchor?: Anchor, line?: number): number | null => {
+      const map = unifiedOf(file);
+      if (location.unified !== null) return map.fromBase(location.unified);
+      const head = line ?? (anchor && anchor.side === "RIGHT" && anchor.pr === hi ? anchor.line : null);
+      return head === null ? null : map.fromNewLine(head);
+    },
+    [unifiedOf, hi],
+  );
+
+  const baseLayout = useMemo(() => new Layout(summary, modeOf, unifiedOf), [summary, modeOf, unifiedOf]);
 
   // ---------- comments: what goes where ----------
   const [composer, setComposer] = useState<ComposerState | null>(null);
@@ -359,7 +393,7 @@ export function DiffViewer(props: Props) {
         if (!location) continue;
         file = location.file;
         const segment = baseLayout.segments[file];
-        offset = segment.mode === "split" ? location.split : segment.mode === "unified" ? location.unified : 1;
+        offset = segment.mode === "split" ? location.split : segment.mode === "unified" ? unifiedOffset(file, location, item.anchor) : 1;
       } else {
         file = fileIndexFor(summary.files, item.path);
         if (file < 0) continue;
@@ -385,7 +419,7 @@ export function DiffViewer(props: Props) {
       out.push({ key: item.key, after, height: heights.get(item.key) ?? 72, item });
     }
     return { placed: out, marks: [...marks.values()], tallies };
-  }, [items, located, viewId, baseLayout, summary, heights]);
+  }, [items, located, viewId, baseLayout, summary, heights, unifiedOffset]);
 
   // ---------- line wrap ----------
   const gutterChars = Math.max(3, String(summary.max_line_number).length);
@@ -444,17 +478,24 @@ export function DiffViewer(props: Props) {
       if (!columns || !known) return NO_ROWS;
       const cols = columns[mode as BaseMode];
       const out: [number, number][] = [];
-      for (const [offset, width] of known.rows) if (width > cols) out.push([offset, Math.ceil(width / cols) - 1]);
+      if (mode === "split") {
+        for (const [offset, width] of known.rows) if (width > cols) out.push([offset, Math.ceil(width / cols) - 1]);
+        return out;
+      }
+      const map = unifiedOf(file);
+      const rows = known.rows.map(([offset, width]) => [map.fromBase(offset), width] as const);
+      const all = map.reveal ? [...rows, ...map.lineWidths((n) => store.line(file, n))].sort((a, b) => a[0] - b[0]) : rows;
+      for (const [offset, width] of all) if (width > cols) out.push([offset, Math.ceil(width / cols) - 1]);
       return out;
     },
-    [columns, widths],
+    [columns, widths, unifiedOf, store],
   );
 
-  const layout = useMemo(() => new Layout(summary, modeOf, placed, wrappedOf), [summary, modeOf, placed, wrappedOf]);
+  const layout = useMemo(() => new Layout(summary, modeOf, unifiedOf, placed, wrappedOf), [summary, modeOf, unifiedOf, placed, wrappedOf]);
   const placedItems = useMemo(() => new Map(placed.map((p) => [p.key, p.item])), [placed]);
   /** The layout now, for code that continues after an await. */
-  const latest = useRef({ layout, summary });
-  latest.current = { layout, summary };
+  const latest = useRef({ layout, summary, unifiedOf, shownGaps });
+  latest.current = { layout, summary, unifiedOf, shownGaps };
 
   /**
    * Remembers the reader's place (the row at the top), which layout changes keep. A scroll made
@@ -495,23 +536,24 @@ export function DiffViewer(props: Props) {
       const { layout } = latest.current;
       const path = summary.files[file].path;
       const segment = layout.segments[file];
-      const needsSplit = segment.mode === "collapsed" || (segment.mode === "unified" && location.unified === null);
+      const shown = unifiedOffset(file, location, undefined, line);
+      const needsSplit = segment.mode === "collapsed" || (segment.mode === "unified" && shown === null);
       if (needsSplit) {
         pendingJump.current = { file, line, end };
         setExpanded((s) => new Set(s).add(path));
         setCollapsed((s) => withOut(s, path));
-        if (location.unified === null) setOverrides((m) => new Map(m).set(path, "split"));
+        if (shown === null) setOverrides((m) => new Map(m).set(path, "split"));
         return;
       }
-      const offset = (segment.mode === "split" ? location.split : location.unified) ?? 0;
-      const to = (last && (segment.mode === "split" ? last.split : last.unified)) ?? offset;
+      const offset = (segment.mode === "split" ? location.split : shown) ?? 0;
+      const to = (last && (segment.mode === "split" ? last.split : unifiedOffset(file, last, undefined, end))) ?? offset;
       const el = scrollRef.current;
       stopGlide();
       if (el) el.scrollTop = Math.max(0, layout.rowY(segment.start + offset) - el.clientHeight / 3);
       recordAnchor();
       setFlash({ file, from: offset, to: Math.max(offset, to) });
     },
-    [viewId, summary, stopGlide, recordAnchor],
+    [viewId, summary, stopGlide, recordAnchor, unifiedOffset],
   );
 
   useEffect(() => {
@@ -630,7 +672,7 @@ export function DiffViewer(props: Props) {
       const summaryFile = summary.files[file];
       let anchor: Anchor | null = null;
       if (mode === "unified") {
-        const row = store.unified(file, offset);
+        const row = unifiedAt(file, offset);
         if (row) anchor = unifiedAnchor(row, summaryFile, hi);
       } else {
         const row = store.split(file, offset);
@@ -638,7 +680,7 @@ export function DiffViewer(props: Props) {
       }
       return anchor ? { file, mode, offset, anchor } : null;
     },
-    [summary, store, hi],
+    [summary, store, hi, unifiedAt],
   );
 
   /** The new-side text of the rows from `start` to `end` (null unless that's exactly `count` loaded lines). */
@@ -648,7 +690,7 @@ export function DiffViewer(props: Props) {
       for (let offset = start.offset; offset <= end.offset; offset++) {
         let kind: number, segs: Seg[];
         if (start.mode === "unified") {
-          const row = store.unified(start.file, offset);
+          const row = unifiedAt(start.file, offset);
           if (!row) return null;
           [kind, segs] = [row.k, row.s];
         } else {
@@ -660,7 +702,7 @@ export function DiffViewer(props: Props) {
       }
       return lines.length === count ? lines.join("\n") : null;
     },
-    [store],
+    [store, unifiedAt],
   );
 
   /** A file opened for a look stays open once it's worked with (commented on, s, e). */
@@ -759,7 +801,7 @@ export function DiffViewer(props: Props) {
     const heads: number[] = [];
     for (let offset = from; offset <= to; offset++) {
       if (mode === "unified") {
-        const row = store.unified(file, offset);
+        const row = unifiedAt(file, offset);
         if (!row || row.k === RowKind.Hunk || row.k === RowKind.File) continue;
         const sign = row.k === RowKind.Added ? "+" : row.k === RowKind.Deleted ? "-" : " ";
         lines.push(sign + row.s.map((seg) => seg[1]).join(""));
@@ -796,7 +838,7 @@ export function DiffViewer(props: Props) {
         headEnd: heads.length ? Math.max(...heads) : null,
       },
     };
-  }, [rangeLabel, targetAt, store, summary, prs]);
+  }, [rangeLabel, targetAt, store, summary, prs, unifiedAt]);
 
   const openAssistant = useCallback(
     (threadId: string | null = null) => {
@@ -860,7 +902,12 @@ export function DiffViewer(props: Props) {
   for (let row = loadFirst; row < loadLast; ) {
     const segment = layout.segmentAt(row);
     const end = Math.min(loadLast, segment.start + segment.rows);
-    if (segment.mode === "unified" || segment.mode === "split") store.ensure(segment.file, segment.mode, row - segment.start, end - segment.start);
+    if (segment.mode === "split") store.ensure(segment.file, segment.mode, row - segment.start, end - segment.start);
+    else if (segment.mode === "unified") {
+      // Shown gap lines were loaded before they were shown.
+      const { base } = unifiedOf(segment.file).needs(row - segment.start, end - segment.start);
+      if (base) store.ensure(segment.file, "unified", base[0], base[1]);
+    }
     row = end;
   }
 
@@ -921,10 +968,29 @@ export function DiffViewer(props: Props) {
           onMarker={openAssistant}
         />,
       );
+    } else if (unifiedOf(segment.file).at(offset).kind === "gap") {
+      const at = unifiedOf(segment.file).at(offset) as { kind: "gap"; gap: number; base: number | null };
+      const header = at.base === null ? TRAILING_GAP : store.unified(segment.file, at.base);
+      if (!header) visibleLoaded = false;
+      const gap = file.gaps[at.gap];
+      const fileIndex = segment.file;
+      rendered.push(
+        <GapRow
+          key={key}
+          id={`${file.path}:${at.gap}`}
+          y={y}
+          height={height}
+          text={header?.s[0]?.[1] ?? ""}
+          hidden={hiddenLines(gap, shownGaps.get(fileIndex)?.[at.gap])}
+          up={at.base !== null}
+          down={gap.new_start > 1}
+          onExpand={(how) => void expandGap(fileIndex, at.gap, how)}
+        />,
+      );
     } else {
-      const unified = store.unified(segment.file, offset);
+      const unified = unifiedAt(segment.file, offset);
       if (!unified) visibleLoaded = false;
-      const tag = multiPr && unified !== undefined && startsRun(unified, store.unified(segment.file, offset - 1));
+      const tag = multiPr && unified !== undefined && startsRun(unified, unifiedAt(segment.file, offset - 1));
       rendered.push(
         <DiffRow
           key={key}
@@ -1112,21 +1178,160 @@ export function DiffViewer(props: Props) {
     [onScroll, stopGlide],
   );
 
-  const toggleFileMode = useCallback(
-    (segment: Segment) => {
-      const file = summary.files[segment.file];
+  /** Newest gap change per file: an older one still loading its lines is dropped. */
+  const gapRequests = useRef(new Map<number, number>());
+  /**
+   * Shows `next` of a file's gaps (undefined: none), once their lines are loaded. Keeps a line in
+   * view where it is on screen: the first one from the top that's there before and after.
+   */
+  const changeGaps = useCallback(
+    async (file: number, next: Reveal | undefined) => {
+      const request = (gapRequests.current.get(file) ?? 0) + 1;
+      gapRequests.current.set(file, request);
+      const info = summary.files[file];
+      await Promise.all(
+        info.gaps.map((gap, i) => {
+          const [down, up] = next?.[i] ?? [0, 0];
+          const end = gap.new_start + gap.len - 1;
+          if (down + up >= gap.len) return store.loadLines(file, gap.new_start, end);
+          return Promise.all([down && store.loadLines(file, gap.new_start, gap.new_start + down - 1), up && store.loadLines(file, end - up + 1, end)]);
+        }),
+      ).catch((e) => console.error("loading lines failed", e));
+      if (gapRequests.current.get(file) !== request) return;
       changeLayout(() => {
-        if (segment.mode === "collapsed") {
+        keepOpen(file);
+        const el = scrollRef.current;
+        const { layout, summary, unifiedOf } = latest.current;
+        if (el && layout.segments[file]?.mode === "unified") {
+          const before = unifiedOf(file);
+          const after = new UnifiedMap(summary.files[file], next);
+          const opening = after.rows >= before.rows;
+          const top = el.scrollTop;
+          const last = layout.rowAt(top + el.clientHeight);
+          let kept: { row: number; offset: number } | null = null;
+          const first = layout.rowAt(top) + (layout.rowY(layout.rowAt(top)) < top ? 1 : 0);
+          for (let row = first; row <= last && !kept; row++) {
+            const segment = layout.segmentAt(row);
+            if (segment.file !== file) kept = { row, offset: row - segment.start };
+            else {
+              const at = before.at(row - segment.start);
+              if (at.kind === "base") kept = { row, offset: after.fromBase(at.base) };
+              else if (at.kind === "line" && opening) {
+                const offset = after.fromNewLine(at.n);
+                if (offset !== null) kept = { row, offset };
+              }
+            }
+          }
+          if (!kept) {
+            // Inside a gap that's closing (or a gap row that goes): where the gap is now.
+            const row = layout.rowAt(top);
+            const at = before.at(row - layout.segments[file].start);
+            const gap = at.kind === "gap" ? info.gaps[at.gap] : at.kind === "line" ? info.gaps.find((g) => at.n >= g.new_start && at.n < g.new_start + g.len) : undefined;
+            if (gap) {
+              const offset = (at.kind === "line" ? after.fromNewLine(at.n) : after.fromNewLine(gap.new_start + (latest.current.shownGaps.get(file)?.[info.gaps.indexOf(gap)]?.[0] ?? 0))) ?? (gap.offset < info.row_count ? after.fromBase(gap.offset) : after.rows - 1);
+              kept = { row, offset };
+            }
+          }
+          if (kept) {
+            const segment = layout.segmentAt(kept.row);
+            anchor.current = { path: summary.files[segment.file].path, offset: kept.offset, mode: segment.mode, delta: top - layout.rowY(kept.row) };
+          }
+        }
+        setReveals((current) => {
+          const files = new Map(current.viewId === viewId ? current.files : []);
+          if (next) files.set(file, next);
+          else files.delete(file);
+          return { viewId, files };
+        });
+      });
+    },
+    [summary, store, changeLayout, keepOpen, viewId],
+  );
+
+  /** A click on a gap row: `up` shows lines above the hunk below it, `down` below the hunk above. */
+  const expandGap = useCallback(
+    (file: number, index: number, how: "up" | "down" | "all") => {
+      const info = summary.files[file];
+      const current = latest.current.shownGaps.get(file);
+      const all = how === "all" || hiddenLines(info.gaps[index], current?.[index]) <= GAP_STEP;
+      return changeGaps(file, revealMore(info, current, index, how === "down", all ? Infinity : GAP_STEP));
+    },
+    [summary, changeGaps],
+  );
+
+  /**
+   * Where the reader's place goes when files switch between unified and side by side (`modeAfter`:
+   * a file's mode afterwards, null if unchanged): the first line in view that's in both keeps its
+   * place on screen. Lines are matched by head line number (deleted lines have none).
+   */
+  const placeAcrossModes = useCallback(
+    async (modeAfter: (file: number) => BaseMode | null) => {
+      const el = scrollRef.current;
+      if (!el) return null;
+      const { layout, summary, unifiedOf } = latest.current;
+      const top = el.scrollTop;
+      const last = layout.rowAt(top + el.clientHeight);
+      const candidates: Promise<{ row: number; file: number; offset: number; mode: Mode } | null>[] = [];
+      // From the first row fully in view.
+      const first = layout.rowAt(top) + (layout.rowY(layout.rowAt(top)) < top ? 1 : 0);
+      for (let row = first; row <= last; row++) {
+        const segment = layout.segmentAt(row);
+        const offset = row - segment.start;
+        const mode = segment.mode === "unified" || segment.mode === "split" ? modeAfter(segment.file) : null;
+        if (mode === null || mode === segment.mode) {
+          candidates.push(Promise.resolve({ row, file: segment.file, offset, mode: segment.mode }));
+          break;
+        }
+        if (offset === 0) {
+          candidates.push(Promise.resolve({ row, file: segment.file, offset: 0, mode }));
+          break;
+        }
+        const line = segment.mode === "split" ? store.split(segment.file, offset)?.n : unifiedAt(segment.file, offset)?.n;
+        if (line === null || line === undefined) continue;
+        const file = segment.file;
+        candidates.push(
+          locateLine(viewId, file, line)
+            .then((location) => {
+              if (!location) return null;
+              const to = mode === "split" ? location.split : unifiedOffset(file, location, undefined, line);
+              if (to !== null) return { row, file, offset: to, mode };
+              // A line the unified diff leaves out: the row standing for its gap.
+              const info = summary.files[file];
+              const gap = info.gaps.find((g) => line >= g.new_start && line < g.new_start + g.len);
+              if (!gap) return null;
+              const map = unifiedOf(file);
+              return { row, file, offset: gap.offset < info.row_count ? map.fromBase(gap.offset) : map.rows - 1, mode };
+            })
+            .catch(() => null),
+        );
+      }
+      const kept = (await Promise.all(candidates)).find((c) => c !== null);
+      if (!kept) return null;
+      return { path: summary.files[kept.file].path, offset: kept.offset, mode: kept.mode, delta: top - layout.rowY(kept.row) };
+    },
+    [store, unifiedAt, unifiedOffset, viewId],
+  );
+
+  const toggleFileMode = useCallback(
+    async (segment: Segment) => {
+      const file = summary.files[segment.file];
+      if (segment.mode === "collapsed") {
+        keepFile.current = segment.file;
+        return changeLayout(() => {
           setExpanded((s) => new Set(s).add(file.path));
           setCollapsed((s) => withOut(s, file.path));
-          return;
-        }
+        });
+      }
+      const next: BaseMode = segment.mode === "split" ? "unified" : "split";
+      const place = await placeAcrossModes((f) => (f === segment.file ? next : null));
+      changeLayout(() => {
+        keepFile.current = segment.file;
+        if (place) anchor.current = place;
         keepOpen(segment.file);
-        const next: BaseMode = segment.mode === "split" ? "unified" : "split";
         setOverrides((m) => new Map(m).set(file.path, next));
       });
     },
-    [summary, changeLayout, keepOpen],
+    [summary, changeLayout, keepOpen, placeAcrossModes],
   );
 
   const toggleCollapsed = useCallback(
@@ -1194,7 +1399,7 @@ export function DiffViewer(props: Props) {
       const el = scrollRef.current;
       if (!el) return;
       // Every file filtered out, or no files at all: nothing for the file keys to act on.
-      if (!layout.totalRows && ["s", "e", " ", "c", "v", "V", "u", "x"].includes(e.key)) return;
+      if (!layout.totalRows && ["s", "e", "E", " ", "c", "v", "V", "u", "x"].includes(e.key)) return;
       // While gliding, j/k continue from where the glide is heading.
       const heading = glide.current?.target ?? el.scrollTop;
       const anchorRow = layout.rowAt(heading) + JUMP_MARGIN;
@@ -1238,8 +1443,7 @@ export function DiffViewer(props: Props) {
           fileTarget = findLast(unviewedStarts, (r) => r < topRow);
           break;
         case "s":
-          keepFile.current = here.file;
-          toggleFileMode(here);
+          void toggleFileMode(here);
           break;
         case "z":
           changeLayout(() => onWrapChange(!wrap));
@@ -1266,12 +1470,17 @@ export function DiffViewer(props: Props) {
           changeFilter({ exts });
           break;
         }
-        case "S":
-          changeLayout(() => {
-            setOverrides(new Map());
-            onDefaultModeChange(defaultMode === "split" ? "unified" : "split");
-          });
+        case "S": {
+          const next: BaseMode = defaultMode === "split" ? "unified" : "split";
+          void placeAcrossModes((f) => (next === "split" && summary.files[f].split_rows > 0 ? "split" : "unified")).then((place) =>
+            changeLayout(() => {
+              if (place) anchor.current = place;
+              setOverrides(new Map());
+              onDefaultModeChange(next);
+            }),
+          );
           break;
+        }
         case "e":
         case " ": {
           // A file opened for a look stays open instead.
@@ -1286,6 +1495,13 @@ export function DiffViewer(props: Props) {
           if (next >= 0) pendingFile.current = { from: here.file, next };
           else keepFile.current = here.file;
           toggleCollapsed(here);
+          break;
+        }
+        case "E": {
+          // Shows every gap of the file, or hides them all again once they're all shown.
+          const file = summary.files[here.file];
+          if (here.mode !== "unified" || !file.gaps.length) return;
+          void changeGaps(here.file, allShown(file, shownGaps.get(here.file)) ? undefined : revealAll(file));
           break;
         }
         case "c":
@@ -1368,7 +1584,7 @@ export function DiffViewer(props: Props) {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", resetShift);
     };
-  }, [keyboardEnabled, fileSearch, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, confirmViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId, temporary, keepOpen, goToFile]);
+  }, [keyboardEnabled, fileSearch, layout, summary, fileAt, pinned, scrollToRow, glideTo, glideToRow, selection, toggleFileMode, toggleCollapsed, changeLayout, defaultMode, onDefaultModeChange, wrap, onWrapChange, rangeKeys, rangeHidden, onCommentsHiddenChange, openComposer, openFileComposer, isViewed, onToggleViewed, confirmViewed, openUsages, panel, assistant, openAssistant, composer, toggleListMode, filtered, filter, changeFilter, onShowFiles, viewId, temporary, keepOpen, goToFile, changeGaps, shownGaps, placeAcrossModes]);
 
   return (
     <div className="diff-layout">
@@ -1514,6 +1730,9 @@ function wordAt(x: number, y: number): string | null {
 const at = (y: number, height = ROW_HEIGHT): React.CSSProperties =>
   height === ROW_HEIGHT ? { transform: `translateY(${y}px)` } : { transform: `translateY(${y}px)`, height };
 const NO_ROWS: WrappedRows = [];
+const NO_REVEALS = new Map<number, Reveal>();
+/** The row after a file's last hunk standing for the unchanged lines below it. */
+const TRAILING_GAP: Row = { k: RowKind.Hunk, f: -1, o: null, n: null, s: [], a: null, h: [], l: null, w: [] };
 /** Horizontal padding of a wrapped line's code. */
 const WRAP_PAD = 8 + 8;
 
@@ -1749,6 +1968,62 @@ const DiffRow = memo(function DiffRow({ y, height, row, prs, showAttribution, ta
       );
     }
   }
+});
+
+interface GapRowProps {
+  /** `path:gap index` (for tests). */
+  id: string;
+  y: number;
+  height: number;
+  /** The hunk header (empty after the last hunk). */
+  text: string;
+  /** How many lines are still hidden. */
+  hidden: number;
+  /** Lines can be shown above the hunk below / below the hunk above. */
+  up: boolean;
+  down: boolean;
+  onExpand: (how: "up" | "down" | "all") => void;
+}
+
+/** Unchanged lines left out between hunks: a click shows some more, a double click all of them. */
+const GapRow = memo(function GapRow({ id, y, height, text, hidden, up, down, onExpand }: GapRowProps) {
+  const few = hidden <= GAP_STEP;
+  const button = (how: "up" | "down" | "all", label: string, title: string) => (
+    <button
+      className="gap-arrow"
+      title={title}
+      data-testid={`gap-${how}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onExpand(e.detail >= 2 ? "all" : how);
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div
+      className="row row-hunk row-gap"
+      style={at(y, height)}
+      data-testid="gap-row"
+      data-gap={id}
+      data-hidden={hidden}
+      title={`${hidden} unchanged line${hidden === 1 ? "" : "s"} — click to show ${few ? "them" : `${GAP_STEP} more`}, double-click to show all`}
+      onClick={(e) => onExpand(e.detail >= 2 || few ? "all" : up ? "up" : "down")}
+    >
+      <span className="gutter gap-gutter">
+        {few
+          ? button("all", "↕", `Show ${hidden} line${hidden === 1 ? "" : "s"}`)
+          : (
+            <>
+              {down && button("down", "↓", `Show ${GAP_STEP} lines below the change above`)}
+              {up && button("up", "↑", `Show ${GAP_STEP} lines above the change below`)}
+            </>
+          )}
+      </span>
+      <span className="code">{text || `${hidden} unchanged line${hidden === 1 ? "" : "s"}`}</span>
+    </div>
+  );
 });
 
 const sideClass = (kind: number) =>

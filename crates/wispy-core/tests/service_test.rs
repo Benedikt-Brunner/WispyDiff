@@ -193,3 +193,40 @@ async fn drafts_follow_their_lines_to_the_current_head() {
     service.delete_draft(&draft.id).unwrap();
     assert!(service.shown_drafts(&fresh).unwrap().is_empty());
 }
+#[tokio::test]
+async fn lists_the_unchanged_lines_around_hunks_and_serves_them_highlighted() {
+    let origin = OriginRepo::init();
+    let lines = |changed: &str| (1..=30).map(|i| if i == 15 { changed.to_string() } else { format!("$v{i} = {i};") }).collect::<Vec<_>>().join("\n") + "\n";
+    origin.write("src/Order.php", &format!("<?php\n{}", lines("$v15 = 15;")));
+    origin.commit("base");
+    origin.checkout_new("stack/1");
+    origin.write("src/Order.php", &format!("<?php\n{}", lines("$v15 = 150;\n$extra = 1;")));
+    let head = origin.commit("change");
+    origin.publish_pr(7, "stack/1");
+
+    let url = origin.url();
+    let server = MockServer::start().await;
+    mount(&server, "/repos/acme/shop/pulls/7", None, support::pull_request_json(7, "main", "stack/1", &head, &url)).await;
+    mount(&server, "/repos/acme/shop/pulls", Some(("base", "stack/1")), serde_json::json!([])).await;
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new(server.uri(), "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let snapshot = service.fetch(service.discover(&PrRef::parse("acme/shop#7").unwrap()).await.unwrap()).unwrap();
+    let view = service.range(&snapshot, 0, 0).unwrap();
+    let file = &view.summary.files[0];
+
+    // Line 16 (`$v15`) changed and a line was added after it: the hunk shows lines 13..=20 of
+    // the head (three lines of context each side), leaving out 1..=12 and 21..=32.
+    let gaps: Vec<(u32, u32, u32, u32)> = file.gaps.iter().map(|g| (g.offset, g.old_start, g.new_start, g.len)).collect();
+    assert_eq!(gaps, vec![(1, 1, 1, 12), (file.row_count, 20, 21, 12)]);
+
+    let head_lines = service.head_lines(&snapshot, &view, 0, 11, 13).unwrap();
+    let texts: Vec<String> = head_lines.iter().map(|l| l.iter().map(|s| s.1.as_str()).collect()).collect();
+    assert_eq!(texts, vec!["$v10 = 10;", "$v11 = 11;", "$v12 = 12;"]);
+    assert!(head_lines[0].iter().any(|(class, _)| *class != 0), "highlighted");
+    assert_eq!(service.head_lines(&snapshot, &view, 0, 31, 99).unwrap().len(), 2, "cut at the end of the file");
+}
