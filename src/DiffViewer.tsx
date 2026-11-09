@@ -640,6 +640,9 @@ export function DiffViewer(props: Props) {
     }
     previousView.current = viewId;
     el.scrollTop = top;
+    // The place is where this put the view: another layout change can land before the scroll
+    // event would record it (WebKit on macOS), and must keep this place, not the one before.
+    recordAnchor();
     setScrollTop(el.scrollTop);
     // Near the end of the diff a file can't reach the top; pinning keeps it current anyway.
     setPinned(pin === null ? null : { file: pin, top: el.scrollTop });
