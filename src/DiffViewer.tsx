@@ -1182,10 +1182,11 @@ export function DiffViewer(props: Props) {
   const gapRequests = useRef(new Map<number, number>());
   /**
    * Shows `next` of a file's gaps (undefined: none), once their lines are loaded. Keeps a line in
-   * view where it is on screen: the first one from the top that's there before and after.
+   * view where it is on screen: the row of gap `pin` (a clicked one; where it was, its lines
+   * once it's all shown), else the first one from the top that's there before and after.
    */
   const changeGaps = useCallback(
-    async (file: number, next: Reveal | undefined) => {
+    async (file: number, next: Reveal | undefined, pin?: number) => {
       const request = (gapRequests.current.get(file) ?? 0) + 1;
       gapRequests.current.set(file, request);
       const info = summary.files[file];
@@ -1209,6 +1210,13 @@ export function DiffViewer(props: Props) {
           const top = el.scrollTop;
           const last = layout.rowAt(top + el.clientHeight);
           let kept: { row: number; offset: number } | null = null;
+          const pinned = pin === undefined ? null : before.gapRow(pin);
+          if (pin !== undefined && pinned !== null) {
+            const gap = info.gaps[pin];
+            const firstHidden = gap.new_start + (latest.current.shownGaps.get(file)?.[pin]?.[0] ?? 0);
+            const offset = after.gapRow(pin) ?? after.fromNewLine(firstHidden);
+            if (offset !== null) kept = { row: layout.segments[file].start + pinned, offset };
+          }
           const first = layout.rowAt(top) + (layout.rowY(layout.rowAt(top)) < top ? 1 : 0);
           for (let row = first; row <= last && !kept; row++) {
             const segment = layout.segmentAt(row);
@@ -1250,11 +1258,21 @@ export function DiffViewer(props: Props) {
 
   /** A click on a gap row: `up` shows lines above the hunk below it, `down` below the hunk above. */
   const expandGap = useCallback(
-    (file: number, index: number, how: "up" | "down" | "all") => {
+    (file: number, index: number, how: GapExpand) => {
       const info = summary.files[file];
+      const gap = info.gaps[index];
       const current = latest.current.shownGaps.get(file);
-      const all = how === "all" || hiddenLines(info.gaps[index], current?.[index]) <= GAP_STEP;
-      return changeGaps(file, revealMore(info, current, index, how === "down", all ? Infinity : GAP_STEP));
+      const hidden = hiddenLines(gap, current?.[index]);
+      const all = how === "all" || hidden <= GAP_STEP;
+      // The row: half below the hunk above, half above the hunk below (all of it where only one is there).
+      const up = gap.offset < info.row_count;
+      const down = gap.new_start > 1;
+      let next: Reveal;
+      if (all) next = revealMore(info, current, index, false, Infinity);
+      else if (how === "row" && up && down) next = revealMore(info, revealMore(info, current, index, true, GAP_STEP / 2), index, false, GAP_STEP / 2);
+      else next = revealMore(info, current, index, how === "down" || (how === "row" && !up), GAP_STEP);
+      // The clicked row stays under the pointer (a second click of a double click lands on it).
+      return changeGaps(file, next, how === "down" ? undefined : index);
     },
     [summary, changeGaps],
   );
@@ -1731,6 +1749,8 @@ const at = (y: number, height = ROW_HEIGHT): React.CSSProperties =>
   height === ROW_HEIGHT ? { transform: `translateY(${y}px)` } : { transform: `translateY(${y}px)`, height };
 const NO_ROWS: WrappedRows = [];
 const NO_REVEALS = new Map<number, Reveal>();
+/** What a click on a gap row shows: some above and below (the row), more of one side (its arrows), or all. */
+type GapExpand = "row" | "up" | "down" | "all";
 /** The row after a file's last hunk standing for the unchanged lines below it. */
 const TRAILING_GAP: Row = { k: RowKind.Hunk, f: -1, o: null, n: null, s: [], a: null, h: [], l: null, w: [] };
 /** Horizontal padding of a wrapped line's code. */
@@ -1982,13 +2002,13 @@ interface GapRowProps {
   /** Lines can be shown above the hunk below / below the hunk above. */
   up: boolean;
   down: boolean;
-  onExpand: (how: "up" | "down" | "all") => void;
+  onExpand: (how: GapExpand) => void;
 }
 
 /** Unchanged lines left out between hunks: a click shows some more, a double click all of them. */
 const GapRow = memo(function GapRow({ id, y, height, text, hidden, up, down, onExpand }: GapRowProps) {
   const few = hidden <= GAP_STEP;
-  const button = (how: "up" | "down" | "all", label: string, title: string) => (
+  const button = (how: GapExpand, label: string, title: string) => (
     <button
       className="gap-arrow"
       title={title}
@@ -2008,8 +2028,8 @@ const GapRow = memo(function GapRow({ id, y, height, text, hidden, up, down, onE
       data-testid="gap-row"
       data-gap={id}
       data-hidden={hidden}
-      title={`${hidden} unchanged line${hidden === 1 ? "" : "s"} — click to show ${few ? "them" : `${GAP_STEP} more`}, double-click to show all`}
-      onClick={(e) => onExpand(e.detail >= 2 || few ? "all" : up ? "up" : "down")}
+      title={`${hidden} unchanged line${hidden === 1 ? "" : "s"} — click to show ${few ? "them" : up && down ? `${GAP_STEP / 2} more above and below` : `${GAP_STEP} more`}${few ? "" : ", double-click to show all"}`}
+      onClick={(e) => onExpand(e.detail >= 2 || few ? "all" : "row")}
     >
       <span className="gutter gap-gutter">
         {few

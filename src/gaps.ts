@@ -78,6 +78,12 @@ export class UnifiedMap {
     return this.rows;
   }
 
+  /** Where the row standing for gap `index` is drawn, if the gap isn't all shown. */
+  gapRow(index: number): number | null {
+    for (const piece of this.pieces) if (piece.kind === "gap" && piece.gap === index) return piece.at;
+    return null;
+  }
+
   /** Where shown head line `line` of a gap is drawn, if it is. */
   fromNewLine(line: number): number | null {
     for (const piece of this.pieces) if (piece.kind === "lines" && line >= piece.newStart && line < piece.newStart + piece.n) return piece.at + line - piece.newStart;

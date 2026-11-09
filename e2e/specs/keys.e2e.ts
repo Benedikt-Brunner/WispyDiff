@@ -439,7 +439,7 @@ describe("keyboard", () => {
     await waitFor(async () => !(await exists('[data-testid="file-filter-menu"]')));
   });
 
-  it("shows unchanged lines between hunks: a click shows 20 more, a double click all, ⇧E every gap of the file", async () => {
+  it("shows unchanged lines between hunks: a click shows 10 more on each side, an arrow 20 on one, a double click all, ⇧E every gap of the file", async () => {
     const gap = (id: string) =>
       browser.execute((g: string) => {
         const row = document.querySelector<HTMLElement>(`[data-gap="${g}"]`);
@@ -459,7 +459,7 @@ describe("keyboard", () => {
         return row ? row.getBoundingClientRect().top : null;
       }, key);
 
-    // A gap with plenty of lines above a hunk, a few rows down from the top, in the current file.
+    // A gap between two hunks with plenty of lines, a few rows down from the top, in the current file.
     const id = await browser.executeAsync((done: (id: string | null) => void) => {
       const el = document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!;
       const active = () => document.querySelector(".file-list li.active")?.getAttribute("title");
@@ -468,7 +468,7 @@ describe("keyboard", () => {
       const seen = new Set<string>();
       const look = () => {
         const row = [...document.querySelectorAll<HTMLElement>('[data-testid="gap-row"]')].find(
-          (r) => Number(r.dataset.hidden) > 45 && r.querySelector('[data-testid="gap-up"]') && !seen.has(r.dataset.gap!) && r.getBoundingClientRect().top > el.getBoundingClientRect().top,
+          (r) => Number(r.dataset.hidden) > 45 && r.querySelector('[data-testid="gap-up"]') && r.querySelector('[data-testid="gap-down"]') && !seen.has(r.dataset.gap!) && r.getBoundingClientRect().top > el.getBoundingClientRect().top,
         );
         if (++tries > 300) return done(null);
         if (!row) {
@@ -486,11 +486,11 @@ describe("keyboard", () => {
     await settled();
     const before = (await gap(id!))!;
 
-    // A click shows 20 lines above the hunk; the gap row stays where it is.
+    // A click shows 10 lines on each side; the gap row stays where it is.
     await click(`[data-gap="${id}"]`);
     await waitFor(async () => (await gap(id!))?.hidden === before.hidden - 20);
     expect((await gap(id!))!.top).toBe(before.top);
-    // ↓ shows 20 below the hunk above it instead.
+    // ↓ shows 20 below the hunk above it.
     await click(`[data-gap="${id}"] [data-testid="gap-down"]`);
     await waitFor(async () => (await gap(id!))?.hidden === before.hidden - 40);
     // A double click shows the rest.
