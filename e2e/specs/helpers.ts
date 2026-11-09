@@ -33,6 +33,13 @@ export const pressShifted = (key: string) =>
     target.dispatchEvent(new KeyboardEvent("keydown", { key: k, shiftKey: true, bubbles: true, cancelable: true }));
   }, key);
 
+/** Presses the mouse's back (button 3) or forward (button 4) button. */
+export const mouseNav = (direction: "back" | "forward") =>
+  browser.execute((button: number) => {
+    const target = document.querySelector('[data-testid="diff-scroll"]') ?? document.body;
+    for (const type of ["mousedown", "mouseup"]) target.dispatchEvent(new MouseEvent(type, { button, bubbles: true, cancelable: true }));
+  }, direction === "back" ? 3 : 4);
+
 /** Whether the diff stays put over a few frames (a j/k glide has finished). */
 export const settled = () =>
   browser.executeAsync((done: (still: boolean) => void) => {

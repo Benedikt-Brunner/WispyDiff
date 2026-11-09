@@ -126,6 +126,7 @@ const SHORTCUTS: [string, [string[], string][]][] = [
       [["n", "p"], "Next / previous file"],
       [["⇧⇧"], "Find a file by name"],
       [["j", "k"], "Next / previous change (hold to scroll through them)"],
+      [[keyLabel("["), keyLabel("]")], "Back / forward to where a jump left (also Alt+← / Alt+→ and the mouse's back / forward buttons)"],
       [[keyLabel("B")], "Show / hide the file list"],
       [["t"], "File list as a directory tree / flat list"],
       [["f"], "Filter files by extension (↑/↓, Space to toggle)"],
