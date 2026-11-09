@@ -83,6 +83,9 @@ pub fn run() {
 /// ("back" | "forward"). wry handles them in `button-press-event` by re-dispatching them at
 /// `elementFromPoint` of the window position, which misses (and throws) when the window is zoomed;
 /// GTK emits the generic `event` signal first, so they're taken here before wry sees them.
+/// Fixed in https://github.com/tauri-apps/wry/pull/1915: drop this workaround once a wry release
+/// with it is in (the frontend handles wry's DOM buttons 3 / 4 too); see
+/// https://github.com/Benedikt-Brunner/WispyDiff/issues/54.
 #[cfg(target_os = "linux")]
 fn forward_mouse_nav_buttons(app: &tauri::AppHandle) {
     use gtk::gdk::EventType;
