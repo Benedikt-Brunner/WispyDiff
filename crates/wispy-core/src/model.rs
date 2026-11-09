@@ -16,7 +16,7 @@ use crate::split::align;
 use crate::words::{diff_words, Spans};
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 8;
+pub const MODEL_VERSION: u32 = 9;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -67,6 +67,8 @@ pub struct FileSummary {
     pub new_blob: Option<String>,
     /// Offsets (within this file's unified rows, header = 0) of each hunk header.
     pub hunks: Vec<u32>,
+    /// The unchanged head lines the unified diff leaves out, which the reader can expand.
+    pub gaps: Vec<Gap>,
     /// Row count of the full-file side-by-side (header included); 0 when unavailable
     /// (binary, rename-only, ...).
     pub split_rows: u32,
@@ -82,6 +84,20 @@ pub struct FileSummary {
     /// Identifies this file's change by content (paths and changed/context text, not line
     /// numbers or SHAs), so a "viewed" mark survives rebases that don't touch it.
     pub content_key: String,
+}
+
+/// A run of unchanged lines between hunks (or before the first, or after the last) that the
+/// unified diff leaves out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gap {
+    /// Offset of the hunk header row the gap sits above; the file's row count for the gap after
+    /// the last hunk.
+    pub offset: u32,
+    /// First old / new line number of the gap (1-based).
+    pub old_start: u32,
+    pub new_start: u32,
+    /// Number of lines.
+    pub len: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +184,7 @@ impl DiffView {
                 None => (0, Vec::new()),
             };
             let (old_lines, new_lines) = counts.unwrap_or((0, 0));
+            let gaps = gaps(file, &hunks, file_rows.len() as u32, new_lines);
             let noise = if generated.contains(file.path()) { Some("generated") } else { path_noise(file.path()) };
             summaries.push(FileSummary {
                 path: file.path().to_string(),
@@ -183,6 +200,7 @@ impl DiffView {
                 old_blob: file.old_blob.clone(),
                 new_blob: file.new_blob.clone(),
                 hunks,
+                gaps,
                 split_rows,
                 split_blocks,
                 noise: noise.map(str::to_string),
@@ -225,6 +243,32 @@ fn line_counts(file: &FileDiff, highlights: &HashMap<String, Lines>) -> Option<(
         (None, None) => return None,
     };
     Some((old.max(0) as u32, new.max(0) as u32))
+}
+
+/// The unchanged head lines around `file`'s hunks (whose header rows are at `hunk_rows`), for a
+/// file with `rows` unified rows and `new_lines` head lines. Only files with a head version have
+/// any.
+fn gaps(file: &FileDiff, hunk_rows: &[u32], rows: u32, new_lines: u32) -> Vec<Gap> {
+    if file.binary || file.new_blob.is_none() || file.old_blob.is_none() || file.hunks.is_empty() {
+        return Vec::new();
+    }
+    // A hunk side with no lines starts *after* its start line (`@@ -5,0 +6,2 @@`).
+    let first = |start: u32, count: u32| if count == 0 { start + 1 } else { start };
+    let last = |start: u32, count: u32| if count == 0 { start } else { start + count - 1 };
+    let (mut old_end, mut new_end) = (0, 0);
+    let mut gaps = Vec::new();
+    for (hunk, &offset) in file.hunks.iter().zip(hunk_rows) {
+        let new_first = first(hunk.new_start, hunk.new_count);
+        if new_first > new_end + 1 {
+            gaps.push(Gap { offset, old_start: old_end + 1, new_start: new_end + 1, len: new_first - new_end - 1 });
+        }
+        old_end = last(hunk.old_start, hunk.old_count);
+        new_end = last(hunk.new_start, hunk.new_count);
+    }
+    if new_lines > new_end {
+        gaps.push(Gap { offset: rows, old_start: old_end + 1, new_start: new_end + 1, len: new_lines - new_end });
+    }
+    gaps
 }
 
 /// FNV-1a over the file's paths and diff text: stable across Rust versions and processes.

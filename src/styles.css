@@ -1870,3 +1870,34 @@ kbd {
   border-bottom-width: 2px;
   border-radius: 4px;
 }
+
+/* Gaps of unchanged lines between hunks: click to show more. */
+.row-gap {
+  cursor: pointer;
+  user-select: none;
+}
+.row-gap:hover,
+.row-gap:hover .gutter {
+  filter: brightness(0.96);
+}
+.gap-gutter {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding-right: 6px;
+  box-sizing: border-box;
+}
+.gap-arrow {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.gap-arrow:hover {
+  background: var(--hunk-fg);
+  color: var(--hunk-bg);
+}
