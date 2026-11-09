@@ -1,5 +1,4 @@
 import { flushSync } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   acceptsLineComment,
@@ -1521,10 +1520,7 @@ export function DiffViewer(props: Props) {
     window.addEventListener("mousedown", onMouse);
     window.addEventListener("mouseup", onMouse);
     window.addEventListener("keydown", onKey);
-    // On Linux the buttons are caught natively (WebKitGTK doesn't tell them apart).
-    const unlisten = listen<"back" | "forward">("mouse-nav", ({ payload }) => navigate.current(payload));
     return () => {
-      void unlisten.then((f) => f());
       window.removeEventListener("mousedown", onMouse);
       window.removeEventListener("mouseup", onMouse);
       window.removeEventListener("keydown", onKey);

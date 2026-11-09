@@ -19,8 +19,6 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            #[cfg(target_os = "linux")]
-            forward_mouse_nav_buttons(app.handle());
             let data_dir = state::data_dir(app.handle())?;
             app.manage(state::AppState::new(data_dir));
             // Resolve the token and compile highlight queries now, not on the first open.
@@ -77,36 +75,6 @@ pub fn run() {
             commands::open_url])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
-}
-
-/// The mouse's back / forward buttons (X buttons 8 / 9) go to the frontend as "mouse-nav"
-/// ("back" | "forward"). wry handles them in `button-press-event` by re-dispatching them at
-/// `elementFromPoint` of the window position, which misses (and throws) when the window is zoomed;
-/// GTK emits the generic `event` signal first, so they're taken here before wry sees them.
-/// Fixed in https://github.com/tauri-apps/wry/pull/1915: drop this workaround once a wry release
-/// with it is in (the frontend handles wry's DOM buttons 3 / 4 too); see
-/// https://github.com/Benedikt-Brunner/WispyDiff/issues/54.
-#[cfg(target_os = "linux")]
-fn forward_mouse_nav_buttons(app: &tauri::AppHandle) {
-    use gtk::gdk::EventType;
-    use gtk::prelude::*;
-    use tauri::Emitter;
-    let Some(window) = app.get_webview_window("main") else { return };
-    let app = app.clone();
-    let _ = window.with_webview(move |webview| {
-        webview.inner().connect_event(move |_, event| {
-            let direction = match event.button() {
-                Some(8) => "back",
-                Some(9) => "forward",
-                _ => return gtk::glib::Propagation::Proceed,
-            };
-            if event.event_type() == EventType::ButtonPress {
-                let _ = app.emit("mouse-nav", direction);
-            }
-            // Releases (and double-click events) too, so nothing else acts on these buttons.
-            gtk::glib::Propagation::Stop
-        });
-    });
 }
 
 /// WebKitGTK's DMA-BUF renderer hangs Intel Raptor Lake GPUs (i915 with GuC), and because the
