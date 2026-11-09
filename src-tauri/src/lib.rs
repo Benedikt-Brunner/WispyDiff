@@ -19,6 +19,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            forward_mouse_nav_buttons(app.handle());
             let data_dir = state::data_dir(app.handle())?;
             app.manage(state::AppState::new(data_dir));
             // Resolve the token and compile highlight queries now, not on the first open.
@@ -75,6 +77,35 @@ pub fn run() {
             commands::open_url])
         .run(tauri::generate_context!())
         .expect("error while running WispyDiff");
+}
+
+/// The mouse's back / forward buttons (X buttons 8 / 9) reach the page as an indistinguishable
+/// button 0, so catch them in GTK and tell the frontend ("mouse-nav": "back" | "forward").
+#[cfg(target_os = "linux")]
+fn forward_mouse_nav_buttons(app: &tauri::AppHandle) {
+    use gtk::prelude::*;
+    use tauri::Emitter;
+    let Some(window) = app.get_webview_window("main") else { return };
+    let app = app.clone();
+    let _ = window.with_webview(move |webview| {
+        let view = webview.inner();
+        let direction = |button: u32| match button {
+            8 => Some("back"),
+            9 => Some("forward"),
+            _ => None,
+        };
+        view.connect_button_press_event(move |_, event| match direction(event.button()) {
+            Some(direction) => {
+                let _ = app.emit("mouse-nav", direction);
+                gtk::glib::Propagation::Stop
+            }
+            None => gtk::glib::Propagation::Proceed,
+        });
+        view.connect_button_release_event(move |_, event| match direction(event.button()) {
+            Some(_) => gtk::glib::Propagation::Stop,
+            None => gtk::glib::Propagation::Proceed,
+        });
+    });
 }
 
 /// WebKitGTK's DMA-BUF renderer hangs Intel Raptor Lake GPUs (i915 with GuC), and because the

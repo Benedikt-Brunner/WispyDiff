@@ -1,4 +1,4 @@
-import { click, cmdClickWord, count, exists, openViaPalette, submitInput, text, waitFor } from "./helpers";
+import { click, cmdClickWord, count, exists, MOD, mouseNav, openViaPalette, scrollTop, submitInput, text, waitFor } from "./helpers";
 
 const sectionCount = (id: string) => browser.execute((s: string) => document.querySelectorAll(`[data-testid="${s}"] .panel-hit`).length, id);
 
@@ -39,6 +39,33 @@ describe("code intelligence", () => {
     if (flashed.split) expect(await count('.row-file[data-mode="split"]')).toBeGreaterThan(0);
   });
 
+  it("goes back to where a jump left, and forward again (mouse buttons, keys)", async () => {
+    await browser.execute(() => (document.querySelector<HTMLElement>('[data-testid="diff-scroll"]')!.scrollTop = 0));
+    await waitFor(async () => (await scrollTop()) === 0);
+    const before = 0;
+    // The last unchanged use, far down the diff.
+    await browser.execute(() => {
+      const hits = document.querySelectorAll<HTMLElement>('[data-testid="usages-unchanged"] .panel-hit');
+      hits[hits.length - 1].click();
+    });
+    await waitFor(async () => Math.abs((await scrollTop()) - before) > 400);
+    const after = await scrollTop();
+
+    await mouseNav("back");
+    await waitFor(async () => Math.abs((await scrollTop()) - before) < 2);
+    await mouseNav("forward");
+    await waitFor(async () => Math.abs((await scrollTop()) - after) < 2);
+    // Nothing further forward.
+    await mouseNav("forward");
+    expect(Math.abs((await scrollTop()) - after)).toBeLessThan(2);
+
+    await browser.keys([MOD, "["]);
+    await waitFor(async () => Math.abs((await scrollTop()) - before) < 2);
+    // The driver drops modifiers on special keys.
+    await browser.execute(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true, cancelable: true })));
+    await waitFor(async () => Math.abs((await scrollTop()) - after) < 2);
+  });
+
   it("searches the whole repo and opens files outside the diff read-only", async () => {
     await submitInput(".panel-input", "endblock");
     await waitFor(async () => (await count('[data-testid="grep-results"] .panel-hit')) > 0, 60_000);
@@ -55,6 +82,11 @@ describe("code intelligence", () => {
     await waitFor(async () => (await count('[data-testid="file-view"] .row')) > 0);
     expect(await text('[data-testid="file-view"] .sheet-title')).toBe(outside!.replace(/:\d+$/, ""));
     expect(await count('[data-testid="file-view"] .flash-static')).toBe(1);
+    // Back closes the file view; forward opens it again.
+    await mouseNav("back");
+    await waitFor(async () => !(await exists('[data-testid="file-view"]')));
+    await mouseNav("forward");
+    await waitFor(async () => (await count('[data-testid="file-view"] .flash-static')) === 1);
     await browser.keys("Escape");
     await waitFor(async () => !(await exists('[data-testid="file-view"]')));
     await click('[data-testid="code-panel"] .link');

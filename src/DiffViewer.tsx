@@ -1,4 +1,5 @@
 import { flushSync } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   acceptsLineComment,
@@ -28,6 +29,7 @@ import type { CodeRef } from "./Markdown";
 import { CodePanel, type PanelState } from "./CodePanel";
 import { FileSearch } from "./FileSearch";
 import { FileView } from "./FileView";
+import { NavHistory } from "./history";
 import {
   prKey,
   anchorKey,
@@ -48,7 +50,7 @@ import { RowStore } from "./rowStore";
 import { allShown, GAP_STEP, hiddenLines, revealAll, revealMore, UnifiedMap, type Reveal } from "./gaps";
 import { instantJumps } from "./themes";
 import { prColor, RowKind, type DiffSummary, type FileSummary, type PullRequest, type Row, type Seg, type SplitRow, type Words } from "./types";
-import { mod } from "./platform";
+import { isMac, mod } from "./platform";
 import { loadList, loadRecord, saveList, saveRecord } from "./prefs";
 import { ResizeHandle, useSidebarWidth } from "./Resizable";
 import { loadPref, savePref } from "./prefs";
@@ -226,6 +228,8 @@ export function DiffViewer(props: Props) {
   const [fileView, setFileView] = useState<{ path: string; line: number; end: number; filtered: boolean; lines: Seg[][] | null; error: string | null } | null>(null);
   const [flash, setFlash] = useState<{ file: number; from: number; to: number } | null>(null);
   const pendingJump = useRef<{ file: number; line: number; end: number } | null>(null);
+  const fileViewRef = useRef(fileView);
+  fileViewRef.current = fileView;
 
   // ---------- assistant ----------
   // Kept per repo across remounts (a new version of the stack, a trip to the inbox): the panel stays
@@ -569,21 +573,55 @@ export function DiffViewer(props: Props) {
     return () => window.clearTimeout(timer);
   }, [flash]);
 
+  // ---------- back / forward (mouse buttons, Alt+←/→, ⌘[ / ⌘]) ----------
+  const navHistory = useMemo(() => new NavHistory<Place>(samePlace), [viewId]);
+  /** Where the reader is: the read-only file view, or the diff's top row (and the first head line in view, to find it again in the other mode). */
+  const here = useCallback((): Place | null => {
+    const view = fileViewRef.current;
+    if (view) return { kind: "file", path: view.path, line: view.line, end: view.end };
+    const el = scrollRef.current;
+    if (!el) return null;
+    const { layout, summary } = latest.current;
+    const row = layout.rowAt(el.scrollTop);
+    const segment = layout.segmentAt(row);
+    if (!segment) return null;
+    let line: { n: number; y: number } | null = null;
+    for (let r = row; r < Math.min(row + 40, segment.start + segment.rows) && !line; r++) {
+      const offset = r - segment.start;
+      const n = segment.mode === "split" ? store.split(segment.file, offset)?.n : segment.mode === "unified" ? unifiedAt(segment.file, offset)?.n : null;
+      if (n !== null && n !== undefined) line = { n, y: layout.rowY(r) - el.scrollTop };
+    }
+    return { kind: "diff", path: summary.files[segment.file].path, offset: row - segment.start, mode: segment.mode, delta: el.scrollTop - layout.rowY(row), line };
+  }, [store, unifiedAt]);
+  /** Before a jump: remember where the reader was, for going back. */
+  const remember = useCallback(() => {
+    const place = here();
+    if (place) navHistory.push(place);
+  }, [here, navHistory]);
+
+  /** Opens a head file read-only (files outside the diff, or hidden by the filter). */
+  const openFileView = useCallback(
+    (target: { path: string; line: number; end?: number }, filtered: boolean) => {
+      setFileView({ path: target.path, line: target.line, end: target.end ?? target.line, filtered, lines: null, error: null });
+      readFile(stackId, hi, target.path)
+        .then((lines) => setFileView((v) => (v?.path === target.path ? { ...v, lines } : v)))
+        .catch((e) => setFileView((v) => (v?.path === target.path ? { ...v, error: String(e) } : v)));
+    },
+    [stackId, hi],
+  );
+
   const jump = useCallback(
     (target: { path: string; line: number; end?: number; file?: number }) => {
+      remember();
       const file = target.file ?? summary.files.findIndex((f) => f.path === target.path);
       // Files left out by the filter open in the file view, like files outside the diff.
       if (file >= 0 && summary.files[file].new_blob && layout.segments[file].mode !== "hidden") {
         void jumpToLine(file, target.line, target.end);
         return;
       }
-      const filtered = file >= 0 && layout.segments[file].mode === "hidden";
-      setFileView({ path: target.path, line: target.line, end: target.end ?? target.line, filtered, lines: null, error: null });
-      readFile(stackId, hi, target.path)
-        .then((lines) => setFileView((v) => (v?.path === target.path ? { ...v, lines } : v)))
-        .catch((e) => setFileView((v) => (v?.path === target.path ? { ...v, error: String(e) } : v)));
+      openFileView(target, file >= 0 && layout.segments[file].mode === "hidden");
     },
-    [summary, layout, jumpToLine, stackId, hi],
+    [summary, layout, jumpToLine, remember, openFileView],
   );
   const reportHeight = useRef(new Map<string, (h: number) => void>());
   const heightReporter = useCallback((key: string) => {
@@ -1104,8 +1142,10 @@ export function DiffViewer(props: Props) {
   const openRef = useRef((_: CodeRef) => {});
   openRef.current = (ref) => {
     const file = summary.files.findIndex((f) => f.path === ref.path);
-    if (ref.line === null && file >= 0 && layout.segments[file].mode !== "hidden") scrollToRow(layout.segments[file].start, 0, file);
-    else jump({ path: ref.path, line: ref.line ?? 0, end: ref.end ?? undefined });
+    if (ref.line === null && file >= 0 && layout.segments[file].mode !== "hidden") {
+      remember();
+      scrollToRow(layout.segments[file].start, 0, file);
+    } else jump({ path: ref.path, line: ref.line ?? 0, end: ref.end ?? undefined });
   };
   const codeRefs = useMemo(() => {
     const paths = new Set(summary.files.map((f) => f.path));
@@ -1403,6 +1443,94 @@ export function DiffViewer(props: Props) {
   );
   const filteredCount = useMemo(() => filtered.filter(Boolean).length, [filtered]);
 
+  /** Whether a remembered place can still be shown (a diff file the filter hides now can't). */
+  const usable = useCallback(
+    (place: Place) => {
+      if (place.kind === "file") return true;
+      const segment = layout.segments[summary.files.findIndex((f) => f.path === place.path)];
+      return segment !== undefined && segment.mode !== "hidden";
+    },
+    [summary, layout],
+  );
+  /** Shows a remembered place again. */
+  const restore = useCallback(
+    async (place: Place) => {
+      if (place.kind === "file") {
+        const file = summary.files.findIndex((f) => f.path === place.path);
+        openFileView(place, file >= 0 && layout.segments[file].mode === "hidden");
+        return;
+      }
+      const index = summary.files.findIndex((f) => f.path === place.path);
+      const segment = layout.segments[index];
+      setFileView(null);
+      // A collapsed file opens for a look, as when it was reached.
+      if (segment.mode === "collapsed") return goToFile(index, true);
+      let top = layout.rowY(segment.start);
+      if (segment.mode === place.mode) top = layout.rowY(segment.start + Math.min(place.offset, segment.rows - 1)) + place.delta;
+      else if (place.line) {
+        // The file switched modes since (a jump outside its hunks): find the line again.
+        const location = await locateLine(viewId, index, place.line.n).catch(() => null);
+        const offset = location && (segment.mode === "split" ? location.split : unifiedOffset(index, location, undefined, place.line.n));
+        if (offset !== null && offset !== undefined) top = layout.rowY(segment.start + offset) - place.line.y;
+      }
+      const el = scrollRef.current;
+      if (!el) return;
+      if (temporary !== null && temporary !== place.path) {
+        // The file opened for a look collapses again, as when another file is shown.
+        const kept = { path: place.path, offset: layout.rowAt(top) - segment.start, mode: segment.mode, delta: top - layout.rowY(layout.rowAt(top)) };
+        changeLayout(() => {
+          anchor.current = kept;
+          setTemporary(null);
+        });
+        return;
+      }
+      stopGlide();
+      el.scrollTop = Math.max(0, top);
+      recordAnchor();
+    },
+    [summary, layout, openFileView, goToFile, viewId, unifiedOffset, temporary, changeLayout, stopGlide, recordAnchor],
+  );
+  const navigate = useRef((_: "back" | "forward") => {});
+  navigate.current = (direction) => {
+    const now = here();
+    if (!now) return;
+    const place = direction === "back" ? navHistory.goBack(now, usable) : navHistory.goForward(now, usable);
+    if (place) void restore(place);
+  };
+  useEffect(() => {
+    if (!keyboardEnabled || fileSearch) return;
+    // The mouse's back / forward buttons (3 / 4), like in a browser.
+    const onMouse = (e: MouseEvent) => {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      if (e.type === "mouseup") navigate.current(e.button === 3 ? "back" : "forward");
+    };
+    // Alt+← / Alt+→ (also ⌘← / ⌘→ on macOS), and ⌘[ / ⌘] (Ctrl elsewhere; Alt allowed, as some
+    // layouts type brackets with it).
+    const onKey = (e: KeyboardEvent) => {
+      if (isTyping(e.target) || e.shiftKey) return;
+      const arrows = (e.altKey && !e.metaKey && !e.ctrlKey) || (isMac && e.metaKey && !e.altKey && !e.ctrlKey);
+      const brackets = mod(e);
+      const back = (arrows && e.key === "ArrowLeft") || (brackets && e.key === "[");
+      const forward = (arrows && e.key === "ArrowRight") || (brackets && e.key === "]");
+      const direction = back ? "back" : forward ? "forward" : null;
+      if (!direction) return;
+      e.preventDefault();
+      navigate.current(direction);
+    };
+    window.addEventListener("mousedown", onMouse);
+    window.addEventListener("mouseup", onMouse);
+    window.addEventListener("keydown", onKey);
+    // On Linux the buttons are caught natively (WebKitGTK doesn't tell them apart).
+    const unlisten = listen<"back" | "forward">("mouse-nav", ({ payload }) => navigate.current(payload));
+    return () => {
+      void unlisten.then((f) => f());
+      window.removeEventListener("mousedown", onMouse);
+      window.removeEventListener("mouseup", onMouse);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [keyboardEnabled, fileSearch]);
+
   useEffect(() => {
     if (!keyboardEnabled || fileSearch) return;
     const resetShift = () => (lastShift.current = -Infinity);
@@ -1619,7 +1747,10 @@ export function DiffViewer(props: Props) {
           openThreads={(i) => tallies.get(i)?.get("open") ?? 0}
           mode={listMode}
           onToggleMode={toggleListMode}
-          onSelect={(index) => goToFile(index, true)}
+          onSelect={(index) => {
+            remember();
+            goToFile(index, true);
+          }}
           filtered={filtered}
           filteredCount={filteredCount}
           filter={filter}
@@ -1724,7 +1855,10 @@ export function DiffViewer(props: Props) {
             setFileSearch(false);
             // Files the filter hides open in the file view, like usages in them.
             if (filtered[index]) jump({ path: summary.files[index].path, line: 1 });
-            else goToFile(index, true);
+            else {
+              remember();
+              goToFile(index, true);
+            }
           }}
           onClose={() => setFileSearch(false)}
         />
@@ -2446,6 +2580,25 @@ function withOut<T>(set: Set<T>, value: T) {
 const statusLetter = (s?: string) => ({ added: "A", deleted: "D", renamed: "R", copied: "C" })[s ?? ""] ?? "M";
 const dirname = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "");
 const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+/** A place back / forward returns to: a spot in the diff, or a file open read-only. */
+type Place =
+  | {
+      kind: "diff";
+      path: string;
+      /** The top row: its offset in the file in `mode`, and how far it's scrolled past. */
+      offset: number;
+      mode: Mode;
+      delta: number;
+      /** The first head line in view and its distance from the top, for when the file switched modes since. */
+      line: { n: number; y: number } | null;
+    }
+  | { kind: "file"; path: string; line: number; end: number };
+/** Within this many rows counts as the same place (going back there would hardly move). */
+const SAME_PLACE_ROWS = 10;
+const samePlace = (a: Place, b: Place) =>
+  a.kind === "diff" && b.kind === "diff"
+    ? a.path === b.path && a.mode === b.mode && Math.abs(a.offset - b.offset) < SAME_PLACE_ROWS
+    : a.kind === "file" && b.kind === "file" && a.path === b.path && a.line === b.line;
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
