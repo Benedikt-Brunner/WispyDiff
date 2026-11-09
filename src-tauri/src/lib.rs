@@ -79,31 +79,29 @@ pub fn run() {
         .expect("error while running WispyDiff");
 }
 
-/// The mouse's back / forward buttons (X buttons 8 / 9) reach the page as an indistinguishable
-/// button 0, so catch them in GTK and tell the frontend ("mouse-nav": "back" | "forward").
+/// The mouse's back / forward buttons (X buttons 8 / 9) go to the frontend as "mouse-nav"
+/// ("back" | "forward"). wry handles them in `button-press-event` by re-dispatching them at
+/// `elementFromPoint` of the window position, which misses (and throws) when the window is zoomed;
+/// GTK emits the generic `event` signal first, so they're taken here before wry sees them.
 #[cfg(target_os = "linux")]
 fn forward_mouse_nav_buttons(app: &tauri::AppHandle) {
+    use gtk::gdk::EventType;
     use gtk::prelude::*;
     use tauri::Emitter;
     let Some(window) = app.get_webview_window("main") else { return };
     let app = app.clone();
     let _ = window.with_webview(move |webview| {
-        let view = webview.inner();
-        let direction = |button: u32| match button {
-            8 => Some("back"),
-            9 => Some("forward"),
-            _ => None,
-        };
-        view.connect_button_press_event(move |_, event| match direction(event.button()) {
-            Some(direction) => {
+        webview.inner().connect_event(move |_, event| {
+            let direction = match event.button() {
+                Some(8) => "back",
+                Some(9) => "forward",
+                _ => return gtk::glib::Propagation::Proceed,
+            };
+            if event.event_type() == EventType::ButtonPress {
                 let _ = app.emit("mouse-nav", direction);
-                gtk::glib::Propagation::Stop
             }
-            None => gtk::glib::Propagation::Proceed,
-        });
-        view.connect_button_release_event(move |_, event| match direction(event.button()) {
-            Some(_) => gtk::glib::Propagation::Stop,
-            None => gtk::glib::Propagation::Proceed,
+            // Releases (and double-click events) too, so nothing else acts on these buttons.
+            gtk::glib::Propagation::Stop
         });
     });
 }
