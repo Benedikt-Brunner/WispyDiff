@@ -55,6 +55,8 @@ pub fn run() {
             commands::locate_anchors,
             commands::prepare_submit,
             commands::submit_review,
+            commands::merge_info,
+            commands::merge_pr,
             commands::select_since,
             commands::list_checkpoints,
             commands::mark_reviewed,

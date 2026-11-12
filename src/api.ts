@@ -73,6 +73,31 @@ export const prepareSubmit = (stackId: string) => invoke<SubmitPlan>("prepare_su
 export const submitReview = (stackId: string, prIndex: number, verdict: Verdict, summary: string | null) =>
   invoke<Outcome>("submit_review", { stackId, prIndex, verdict, summary });
 
+export type MergeMethod = "SQUASH" | "MERGE" | "REBASE";
+
+export interface MergeInfo {
+  baseRef: string;
+  defaultBranch: string;
+  /** Allowed by the repository, the preferred one first. */
+  methods: MergeMethod[];
+  autoMergeAllowed: boolean;
+  autoMergeEnabled: boolean;
+  /** GitHub's mergeStateStatus: CLEAN / HAS_HOOKS merge at once. */
+  mergeState: string;
+  /** The head's combined check state ("" without checks). */
+  checks: string;
+  draft: boolean;
+  open: boolean;
+  title: string;
+  body: string;
+}
+
+export const mergeInfo = (stackId: string, prIndex: number) => invoke<MergeInfo>("merge_info", { stackId, prIndex });
+
+/** Merges at once when green, otherwise enables auto-merge. */
+export const mergePr = (stackId: string, prIndex: number, request: { method: MergeMethod; title: string; body: string }) =>
+  invoke<"merged" | "autoMergeEnabled">("merge_pr", { stackId, prIndex, request });
+
 export const selectSince = (stackId: string, lo: number, hi: number, checkpointId: string) =>
   invoke<OpenedRange>("select_since", { stackId, lo, hi, checkpointId });
 

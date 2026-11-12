@@ -380,4 +380,45 @@ describe("comments", () => {
       return false;
     });
   });
+
+  it("merges a green PR and enables auto-merge on one still waiting, with an editable commit message", async () => {
+    await click('[data-testid="review-button"]');
+    await waitFor(() => exists('[data-testid="merge-toggle-2"]'));
+    const field = (pr: number, kind: "title" | "body") =>
+      browser.execute((s: string) => document.querySelector<HTMLInputElement | HTMLTextAreaElement>(s)?.value ?? null, `.sheet-pr[data-pr="${pr}"] .sheet-merge-${kind}`);
+
+    // #2 goes into #1's branch, not main: flagged, and it waits for checks, so auto-merge.
+    await click('[data-testid="merge-toggle-2"]');
+    await waitFor(() => exists('[data-testid="merge-2"]'));
+    expect(await text('[data-testid="merge-base-2"]')).not.toBe("main");
+    expect(await text('[data-testid="merge-2"] .badge.warn')).toBe("not main");
+    expect(await text('[data-testid="merge-2"] .sheet-merge-status')).toBe("Enables auto-merge — checks running");
+    expect(await field(2, "title")).toBe("Add bin capacity checks (#2)");
+    expect(await field(2, "body")).toBe("Fixes #102\nRelated to #7");
+
+    // #1 goes into main and is green: merged at once, with the message as edited.
+    await click('[data-testid="merge-toggle-1"]');
+    await waitFor(() => exists('[data-testid="merge-1"]'));
+    expect(await text('[data-testid="merge-base-1"]')).toBe("main");
+    expect(await exists('[data-testid="merge-1"] .badge.warn')).toBe(false);
+    expect(await text('[data-testid="merge-1"] .sheet-merge-status')).toBe("Checks green — merges now");
+    expect(await field(1, "title")).toMatch(/ \(#1\)$/);
+    await setTextarea('.sheet-pr[data-pr="1"] .sheet-merge-body', "Fixes #101\n\nEdited in the sheet");
+    await browser.execute(() => {
+      const el = document.querySelector<HTMLInputElement>('.sheet-pr[data-pr="1"] .sheet-merge-title')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, "Ship the first module");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // Nothing to review: submitting only merges, then the sheet closes.
+    await click('[data-testid="submit-all"]');
+    await waitFor(async () => !(await exists(".sheet")), 60_000);
+    expect(await text(".toast")).toBe("#1 merged · Auto-merge enabled for #2");
+    const merges = (await (await fetch(`${process.env.WISPY_GITHUB_API}/__merges`)).json()) as Record<string, unknown>[];
+    expect(merges.map(({ number, auto, method, title, body }) => ({ number, auto, method, title, body }))).toEqual([
+      { number: 1, auto: false, method: "SQUASH", title: "Ship the first module", body: "Fixes #101\n\nEdited in the sheet" },
+      { number: 2, auto: true, method: "SQUASH", title: "Add bin capacity checks (#2)", body: "Fixes #102\nRelated to #7" },
+    ]);
+    expect(merges.every((m) => typeof m.head === "string" && (m.head as string).length === 40)).toBe(true);
+  });
 });

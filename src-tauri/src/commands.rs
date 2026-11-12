@@ -471,6 +471,28 @@ pub async fn submit_review(
     Ok(outcome)
 }
 
+/// What merging a stack PR would do: target branch, allowed methods, checks, prefilled message.
+#[tauri::command]
+pub async fn merge_info(stack_id: String, pr_index: usize, state: State<'_, AppState>) -> Result<wispy_core::merge::MergeInfo, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    service.merge_info(&snapshot, pr_index).await.map_err(|e| e.to_string())
+}
+
+/// Merges a stack PR at its reviewed head: at once when green, otherwise by enabling auto-merge.
+#[tauri::command]
+pub async fn merge_pr(
+    stack_id: String,
+    pr_index: usize,
+    request: wispy_core::merge::MergeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<wispy_core::merge::MergeOutcome, String> {
+    let (snapshot, service) = (snapshot_of(&state, &stack_id)?, state.service()?);
+    let outcome = service.merge(&snapshot, pr_index, &request).await.map_err(|e| e.to_string())?;
+    refresh_inbox(app);
+    Ok(outcome)
+}
+
 // ---------- code intelligence ----------
 
 /// Builds a view's symbol index in the background so the first usages lookup is instant.
