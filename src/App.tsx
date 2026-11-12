@@ -510,10 +510,10 @@ export default function App() {
           stackId={stack.stackId}
           shown={shown?.range ?? { lo: 0, hi: stack.prs.length - 1 }}
           onClose={() => setSheetOpen(false)}
-          onSubmitted={(fresh, done) => {
+          onSubmitted={(fresh, done, message) => {
             if (done) {
               setSheetOpen(false);
-              say("Review submitted");
+              say(message);
             }
             refreshDrafts();
             listThreads(stack.stackId, false)

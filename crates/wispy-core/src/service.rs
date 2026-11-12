@@ -384,6 +384,17 @@ impl PrService {
         Ok(login)
     }
 
+    /// What merging stack PR `index` would do (target branch, methods, checks, prefilled message).
+    pub async fn merge_info(&self, snapshot: &StackSnapshot, index: usize) -> Result<crate::merge::MergeInfo> {
+        crate::merge::info(&self.github, &snapshot.pr_ref(index)).await
+    }
+
+    /// Merges stack PR `index` at the head it was reviewed at — at once when green, else by
+    /// enabling auto-merge.
+    pub async fn merge(&self, snapshot: &StackSnapshot, index: usize, request: &crate::merge::MergeRequest) -> Result<crate::merge::MergeOutcome> {
+        crate::merge::merge(&self.github, &snapshot.pr_ref(index), &snapshot.heads[index], request).await
+    }
+
     /// Settles drafts of stack PR `index` whose previous submit had an unknown outcome.
     pub async fn reconcile(&self, snapshot: &StackSnapshot, index: usize) -> Result<()> {
         let pr = snapshot.pr_ref(index);

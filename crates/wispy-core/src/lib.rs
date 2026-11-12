@@ -14,6 +14,7 @@ pub mod highlight_cache;
 pub mod images;
 pub mod indent;
 pub mod mcp;
+pub mod merge;
 pub mod inbox;
 pub mod model;
 pub mod noise;

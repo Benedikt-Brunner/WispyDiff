@@ -306,7 +306,7 @@ impl GitHubClient {
         Ok(user["login"].as_str().unwrap_or_default().to_string())
     }
 
-    async fn graphql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
+    pub(crate) async fn graphql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
         let response: serde_json::Value =
             self.send(reqwest::Method::POST, "/graphql", &serde_json::json!({ "query": query, "variables": variables })).await?;
         if let Some(errors) = response["errors"].as_array().filter(|e| !e.is_empty()) {

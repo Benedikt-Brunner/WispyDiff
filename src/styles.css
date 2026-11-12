@@ -1390,6 +1390,62 @@ body.resizing {
   color: var(--fg-muted);
   margin-top: 6px;
 }
+.sheet-merge-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.sheet-merge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.sheet-merge-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.sheet-merge-base {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.sheet-merge-base.elsewhere {
+  background: color-mix(in srgb, var(--pr1) 25%, transparent);
+  color: var(--pr1);
+  font-weight: 600;
+}
+.sheet-merge-status {
+  color: var(--fg-muted);
+}
+.sheet-merge-field {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  outline: none;
+}
+.sheet-merge-field:focus {
+  border-color: var(--accent);
+}
+.sheet-merge-title {
+  font-weight: 600;
+}
 .sheet-done {
   font-size: 12px;
   color: var(--add-fg);

@@ -1,5 +1,5 @@
 //! Minimal, stateful fake of the GitHub endpoints WispyDiff calls: PRs, stack lookups, review
-//! threads (GraphQL), and posting reviews, file comments, replies and resolves.
+//! threads (GraphQL), posting reviews, file comments, replies and resolves, and merging.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20,6 +20,8 @@ struct State {
     comments: HashMap<u64, Vec<String>>,
     /// PR number → the user's latest review (`viewerLatestReview`).
     latest_review: HashMap<u64, Value>,
+    /// Merges asked for, in order: `{ number, auto, method, title, body, head }` (`GET /__merges`).
+    merges: Vec<Value>,
     next_id: u64,
     /// Simulated network outage: every request is dropped without a response.
     offline: bool,
@@ -115,6 +117,11 @@ fn handle(mut stream: TcpStream, fixture: &Fixture, state: &Mutex<State>) {
     let (method, target) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
     {
         let mut state = state.lock().unwrap();
+        if target == "/__merges" {
+            let response = Value::Array(state.merges.clone()).to_string();
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len());
+            return;
+        }
         match target {
             "/__offline" => state.offline = true,
             "/__online" => state.offline = false,
@@ -261,6 +268,38 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
             }
         }
         return ("200 OK", json!({ "data": { "resolveReviewThread": { "thread": { "id": id, "isResolved": true } } } }));
+    }
+    if query.contains("viewerDefaultMergeMethod") {
+        // #1 (yours, onto main) is green; the PRs above wait for checks.
+        let number = variables["number"].as_u64().unwrap_or_default();
+        let Some(pr) = fixture.prs.iter().find(|p| p.number == number) else {
+            return ("200 OK", json!({ "data": { "repository": { "pullRequest": null } } }));
+        };
+        let green = number == 1;
+        let auto = state.merges.iter().any(|m| m["number"] == json!(number) && m["auto"] == json!(true));
+        return (
+            "200 OK",
+            json!({ "data": { "repository": {
+                "squashMergeAllowed": true, "mergeCommitAllowed": true, "rebaseMergeAllowed": false, "autoMergeAllowed": true, "viewerDefaultMergeMethod": "SQUASH",
+                "defaultBranchRef": { "name": "main" },
+                "pullRequest": {
+                    "id": format!("PR_{number}"), "number": number, "title": pr.title, "state": "OPEN", "isDraft": false,
+                    "body": format!("Part of the fixture stack.\n\nFixes #{}\n- Related to #7", 100 + number),
+                    "baseRefName": pr.base_ref, "mergeStateStatus": if green { "CLEAN" } else { "BLOCKED" },
+                    "autoMergeRequest": if auto { json!({ "enabledAt": "2026-09-30T10:00:00Z" }) } else { Value::Null },
+                    "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": if green { "SUCCESS" } else { "PENDING" } } } }] }
+                }
+            } } }),
+        );
+    }
+    for (mutation, auto) in [("mergePullRequest(", false), ("enablePullRequestAutoMerge(", true)] {
+        if query.contains(mutation) {
+            let number = variables["id"].as_str().and_then(|id| id.strip_prefix("PR_")).and_then(|n| n.parse::<u64>().ok()).unwrap_or_default();
+            state.merges.push(json!({
+                "number": number, "auto": auto, "method": variables["method"], "title": variables["title"], "body": variables["body"], "head": variables["head"]
+            }));
+            return ("200 OK", json!({ "data": {} }));
+        }
     }
     if query.contains("search(") {
         // Review requested on the stack's upper PRs and the solo PR; the bottom PR is "mine".
