@@ -64,10 +64,10 @@ pub enum MergeOutcome {
 
 const INFO_QUERY: &str = "query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
-    squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed autoMergeAllowed
+    squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed autoMergeAllowed viewerDefaultMergeMethod
     defaultBranchRef { name }
     pullRequest(number: $number) {
-      id number title body state isDraft baseRefName mergeStateStatus viewerDefaultMergeMethod
+      id number title body state isDraft baseRefName mergeStateStatus
       autoMergeRequest { enabledAt }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
     }
@@ -107,7 +107,7 @@ pub async fn info(github: &GitHubClient, pr: &PrRef) -> Result<MergeInfo> {
     .map(|(method, _)| method)
     .collect();
     // The method GitHub's merge button would preselect for this user, if the repo allows it.
-    let preferred = serde_json::from_value::<MergeMethod>(node["viewerDefaultMergeMethod"].clone()).ok().filter(|m| allowed.contains(m));
+    let preferred = serde_json::from_value::<MergeMethod>(repo["viewerDefaultMergeMethod"].clone()).ok().filter(|m| allowed.contains(m));
     let methods = preferred.into_iter().chain(allowed.iter().copied().filter(|m| Some(*m) != preferred)).collect();
     let title = text(&node["title"]);
     Ok(MergeInfo {

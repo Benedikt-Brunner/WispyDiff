@@ -280,13 +280,12 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
         return (
             "200 OK",
             json!({ "data": { "repository": {
-                "squashMergeAllowed": true, "mergeCommitAllowed": true, "rebaseMergeAllowed": false, "autoMergeAllowed": true,
+                "squashMergeAllowed": true, "mergeCommitAllowed": true, "rebaseMergeAllowed": false, "autoMergeAllowed": true, "viewerDefaultMergeMethod": "SQUASH",
                 "defaultBranchRef": { "name": "main" },
                 "pullRequest": {
                     "id": format!("PR_{number}"), "number": number, "title": pr.title, "state": "OPEN", "isDraft": false,
                     "body": format!("Part of the fixture stack.\n\nFixes #{}\n- Related to #7", 100 + number),
                     "baseRefName": pr.base_ref, "mergeStateStatus": if green { "CLEAN" } else { "BLOCKED" },
-                    "viewerDefaultMergeMethod": "SQUASH",
                     "autoMergeRequest": if auto { json!({ "enabledAt": "2026-09-30T10:00:00Z" }) } else { Value::Null },
                     "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": if green { "SUCCESS" } else { "PENDING" } } } }] }
                 }

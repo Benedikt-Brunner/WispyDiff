@@ -10,12 +10,12 @@ fn pr_ref() -> PrRef {
 
 fn info_json(merge_state: &str, auto_merge_allowed: bool) -> serde_json::Value {
     serde_json::json!({ "data": { "repository": {
-        "squashMergeAllowed": true, "mergeCommitAllowed": true, "rebaseMergeAllowed": false, "autoMergeAllowed": auto_merge_allowed,
+        "squashMergeAllowed": true, "mergeCommitAllowed": true, "rebaseMergeAllowed": false, "autoMergeAllowed": auto_merge_allowed, "viewerDefaultMergeMethod": "MERGE",
         "defaultBranchRef": { "name": "main" },
         "pullRequest": {
             "id": "PR_node12", "number": 12, "title": "Add pick lists", "state": "OPEN", "isDraft": false,
             "body": "Adds pick lists.\n\nFixes #1234\n- Related to acme/other#7\nSee the design doc.\nCloses #9, #10",
-            "baseRefName": "stack/1", "mergeStateStatus": merge_state, "viewerDefaultMergeMethod": "MERGE",
+            "baseRefName": "stack/1", "mergeStateStatus": merge_state,
             "autoMergeRequest": null,
             "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "PENDING" } } }] }
         }
