@@ -257,12 +257,12 @@ impl Ui {
         }
     }
     pub async fn open(&self, cx: &mut TestAppContext, number: u64) {
-        self.keys(cx, "ctrl-k");
+        self.keys(cx, &secondary("k"));
         self.wait(cx, "palette", |cx| {
             self.app.read(cx).palette_view().is_some()
         })
         .await;
-        self.keys(cx, "ctrl-a");
+        self.keys(cx, &secondary("a"));
         self.input(cx, &format!("wispy/fixture#{number}"));
         self.keys(cx, "enter");
         self.wait(cx, "open real diff", |cx| {
@@ -445,4 +445,10 @@ fn spawn_fixture_server(mut command: Command) -> (Child, u16) {
             panic!("fixture server did not start: {line:?}")
         });
     (server, port)
+}
+
+/// `key` with the platform's shortcut modifier: ⌘ on macOS, Ctrl elsewhere (as the app binds
+/// `secondary-…`).
+pub fn secondary(key: &str) -> String {
+    format!("{}-{key}", if cfg!(target_os = "macos") { "cmd" } else { "ctrl" })
 }

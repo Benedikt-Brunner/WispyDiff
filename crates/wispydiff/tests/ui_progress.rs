@@ -171,7 +171,7 @@ async fn inbox_checkpoint_changed_flag_clears_after_marking_latest(cx: &mut Test
     f.push("docs/NOTES.md", "new work\n");
     ui.refresh(cx).await;
     ui.load_newer(cx).await;
-    ui.keys(cx, "ctrl-i");
+    ui.keys(cx, &secondary("i"));
     ui.wait(cx, "inbox marked changed", |cx| {
         ui.session
             .read(cx)
@@ -183,7 +183,7 @@ async fn inbox_checkpoint_changed_flag_clears_after_marking_latest(cx: &mut Test
     .await;
     ui.open(cx, 5).await;
     ui.mark(cx).await;
-    ui.keys(cx, "ctrl-i");
+    ui.keys(cx, &secondary("i"));
     ui.wait(cx, "inbox marked current", |cx| {
         ui.session
             .read(cx)
@@ -220,7 +220,7 @@ async fn since_view_excludes_unchanged_comment_file_and_restores_draft(cx: &mut 
     })
     .await;
     ui.input(cx, "Still needed?");
-    ui.keys(cx, "ctrl-enter");
+    ui.keys(cx, &secondary("enter"));
     ui.wait(cx, "saved draft", |cx| {
         ui.session
             .read(cx)

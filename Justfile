@@ -26,7 +26,7 @@ auto-update cmd="enable":
 
 # Core tests and the app's headless UI tests (the real app, a fake GitHub, fake assistant CLIs).
 test:
-    cargo test --workspace
+    cargo test --workspace --no-fail-fast
 
 # Performance budgets (SPEC.md) against a release build on this machine; keep the window visible.
 bench:

@@ -434,7 +434,7 @@ async fn reload_keeps_streaming_question_and_unsent_input(cx: &mut TestAppContex
     .await;
     ui.input(cx, "unsent");
     let old = panel(&ui, cx);
-    ui.keys(cx, "ctrl-i");
+    ui.keys(cx, &secondary("i"));
     ui.open(cx, 2).await;
     ui.wait(cx, "panel reopened", |cx| {
         ui.diff(cx).read(cx).assistant.is_some()

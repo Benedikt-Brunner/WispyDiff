@@ -10,11 +10,9 @@ use wispydiff::{
     diff::{layout::Mode, seg_text, UnifiedRow},
 };
 
-fn secondary() -> Modifiers {
-    Modifiers {
-        control: true,
-        ..Default::default()
-    }
+/// ⌘ on macOS, Ctrl elsewhere (⌘-click / Ctrl-click opens usages).
+fn secondary_click() -> Modifiers {
+    Modifiers::secondary_key()
 }
 fn click_word(ui: &Ui, cx: &mut TestAppContext, word: &str) {
     let (file, offset, column) = ui.diff(cx).read_with(cx, |d, _| {
@@ -38,8 +36,8 @@ fn click_word(ui: &Ui, cx: &mut TestAppContext, word: &str) {
     ui.reveal_row(cx, file, offset);
     let at = ui.code_position(cx, file, offset, column);
     let mut v = VisualTestContext::from_window(ui.window, cx);
-    v.simulate_mouse_move(at, None, secondary());
-    v.simulate_click(at, secondary());
+    v.simulate_mouse_move(at, None, secondary_click());
+    v.simulate_click(at, secondary_click());
     ui.frame(cx);
 }
 fn wheel(ui: &Ui, cx: &mut TestAppContext, delta: f32) {
@@ -200,7 +198,7 @@ async fn jump_history_mouse_and_keyboard_roundtrip(cx: &mut TestAppContext) {
         )),
         after
     );
-    ui.keys(cx, "ctrl-[");
+    ui.keys(cx, &secondary("["));
     assert_eq!(
         diff.read_with(cx, |d, _| (
             d.list.logical_scroll_top().item_ix,
