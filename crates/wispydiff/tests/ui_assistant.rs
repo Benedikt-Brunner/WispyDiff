@@ -104,7 +104,7 @@ async fn selection_context_followup_and_gutter_markers(cx: &mut TestAppContext) 
     assert_eq!(call["provider"], "claude");
     assert!(args(&call)
         .join(" ")
-        .contains("--tools Read,Grep,Glob --permission-mode bypassPermissions"));
+        .contains("--tools Read,Grep,Glob,ToolSearch --permission-mode bypassPermissions"));
     assert!(call["prompt"]
         .as_str()
         .unwrap()

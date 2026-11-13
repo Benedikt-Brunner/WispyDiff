@@ -62,8 +62,9 @@ pub fn command(ask: &Ask, cwd: &Path) -> Command {
             cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
             // Read-only files: the only built-in tools are ones that can't change anything. MCP
             // tools (the user's own servers and the app's review tools) run without asking, since
-            // nobody can be asked headless.
-            cmd.args(["--tools", "Read,Grep,Glob", "--permission-mode", "bypassPermissions"]);
+            // nobody can be asked headless. ToolSearch only loads tool definitions: without it the
+            // CLI sends every MCP tool's schema up front, which for many connectors fills the context.
+            cmd.args(["--tools", "Read,Grep,Glob,ToolSearch", "--permission-mode", "bypassPermissions"]);
             if let Some(tools) = &ask.tools {
                 let config = serde_json::json!({ "mcpServers": { crate::mcp::SERVER_NAME: {
                     "type": "http", "url": tools.url, "headers": { "Authorization": format!("Bearer {}", tools.token) },

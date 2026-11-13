@@ -36,7 +36,7 @@ fn builds_read_only_claude_invocations() {
     let first = args(&ask(Provider::Claude, None));
     let joined = first.join(" ");
     assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages"));
-    assert!(joined.contains("--tools Read,Grep,Glob --permission-mode bypassPermissions"), "{joined}");
+    assert!(joined.contains("--tools Read,Grep,Glob,ToolSearch --permission-mode bypassPermissions"), "{joined}");
     assert!(!joined.contains("--strict-mcp-config"), "the user's own MCP servers stay available");
     assert!(joined.contains("--model m1") && joined.contains("--effort high"));
     assert!(!joined.contains("--resume"));
