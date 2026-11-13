@@ -247,28 +247,44 @@ impl GitHubClient {
     pub async fn inbox(&self) -> Result<Vec<crate::inbox::InboxPr>> {
         let mut prs = Vec::new();
         for (query, requested) in [("is:pr is:open archived:false review-requested:@me", true), ("is:pr is:open archived:false author:@me", false)] {
-            let data = self.graphql(SEARCH_QUERY, serde_json::json!({ "q": query })).await?;
-            for node in data["search"]["nodes"].as_array().into_iter().flatten() {
-                let Some(number) = node["number"].as_u64() else { continue };
-                let text = |key: &str| node[key].as_str().unwrap_or_default().to_string();
-                prs.push(crate::inbox::InboxPr {
-                    repo: node["repository"]["nameWithOwner"].as_str().unwrap_or_default().to_string(),
-                    number,
-                    title: text("title"),
-                    url: text("url"),
-                    draft: node["isDraft"].as_bool().unwrap_or(false),
-                    author: node["author"]["login"].as_str().unwrap_or("ghost").to_string(),
-                    base_ref: text("baseRefName"),
-                    head_ref: text("headRefName"),
-                    head_sha: text("headRefOid"),
-                    updated_at: text("updatedAt"),
-                    requested,
-                    authored: !requested,
-                    my_review: parse_my_review(&node["viewerLatestReview"]),
-                });
-            }
+            prs.extend(self.search(query, requested).await?);
         }
         Ok(crate::inbox::merge(prs))
+    }
+
+    /// Open PRs matching `text` (title words, or a number), in `repos` when given (`owner/repo`),
+    /// most recently updated first: suggestions for opening a PR.
+    pub async fn search_prs(&self, text: &str, repos: &[String]) -> Result<Vec<crate::inbox::InboxPr>> {
+        let mut query = format!("is:pr is:open archived:false sort:updated-desc {}", text.trim());
+        for repo in repos {
+            query.push_str(&format!(" repo:{repo}"));
+        }
+        self.search(&query, false).await
+    }
+
+    async fn search(&self, query: &str, requested: bool) -> Result<Vec<crate::inbox::InboxPr>> {
+        let data = self.graphql(SEARCH_QUERY, serde_json::json!({ "q": query })).await?;
+        let mut prs = Vec::new();
+        for node in data["search"]["nodes"].as_array().into_iter().flatten() {
+            let Some(number) = node["number"].as_u64() else { continue };
+            let text = |key: &str| node[key].as_str().unwrap_or_default().to_string();
+            prs.push(crate::inbox::InboxPr {
+                repo: node["repository"]["nameWithOwner"].as_str().unwrap_or_default().to_string(),
+                number,
+                title: text("title"),
+                url: text("url"),
+                draft: node["isDraft"].as_bool().unwrap_or(false),
+                author: node["author"]["login"].as_str().unwrap_or("ghost").to_string(),
+                base_ref: text("baseRefName"),
+                head_ref: text("headRefName"),
+                head_sha: text("headRefOid"),
+                updated_at: text("updatedAt"),
+                requested,
+                authored: !requested,
+                my_review: parse_my_review(&node["viewerLatestReview"]),
+            });
+        }
+        Ok(prs)
     }
 
     /// The repository's numeric id (attachments are uploaded against it).

@@ -69,7 +69,15 @@ fn body_html(body: &str) -> String {
 
 pub fn serve(fixture: Fixture, port: u16) {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     eprintln!("fake GitHub API for {}/{} on http://127.0.0.1:{port}", fixture.owner, fixture.repo);
+    // `--port 0` picks a free port; callers read it from this line (the server is listening by now).
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = writeln!(out, "port {port}");
+        let _ = out.flush();
+    }
     let state = Arc::new(Mutex::new(seed(&fixture)));
     let fixture = Arc::new(fixture);
     for stream in listener.incoming().flatten() {
@@ -304,7 +312,23 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
     if query.contains("search(") {
         // Review requested on the stack's upper PRs and the solo PR; the bottom PR is "mine".
         let q = variables["q"].as_str().unwrap_or_default();
-        let numbers: &[u64] = if q.contains("review-requested:@me") { &[2, 3, 4, 5] } else { &[1] };
+        let found: Vec<u64>;
+        let numbers: &[u64] = if q.contains("review-requested:@me") {
+            &[2, 3, 4, 5]
+        } else if q.contains("author:@me") {
+            &[1]
+        } else {
+            // Any other search (palette suggestions): every word that isn't a qualifier must be
+            // in the title, or be the number.
+            let words: Vec<String> = q.split_whitespace().filter(|w| !w.contains(':')).map(str::to_lowercase).collect();
+            found = fixture
+                .prs
+                .iter()
+                .filter(|pr| words.iter().all(|w| pr.title.to_lowercase().contains(w.as_str()) || pr.number.to_string() == *w))
+                .map(|pr| pr.number)
+                .collect();
+            &found
+        };
         let nodes = search_nodes(fixture, state, numbers);
         return ("200 OK", json!({ "data": { "search": { "nodes": nodes } } }));
     }

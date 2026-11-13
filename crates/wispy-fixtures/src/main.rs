@@ -2,7 +2,8 @@
 //! four-PR stack (the bottom PR is the ~500 files / ~50k changed lines worst case, including
 //! one 20k-line file) and publishes the PRs as `refs/pull/<n>/head`.
 //!
-//! `wispy-fixtures serve --fixture DIR --port P` answers the GitHub REST calls WispyDiff
+//! `wispy-fixtures serve --fixture DIR --port P` (`0`: any free port, printed as `port N` on
+//! stdout once listening) answers the GitHub REST calls WispyDiff
 //! makes for that repository, with `clone_url` pointing at the local origin.
 
 mod content;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wispy-core", "crates/wispy-fixtures", "src-tauri"]
+members = ["crates/wispy-core", "crates/wispy-fixtures", "crates/wispydiff"]
 
 [workspace.package]
 edition = "2021"
@@ -15,15 +15,15 @@ opt-level = 3
 panic = "abort"
 strip = true
 
-# The functional e2e build: optimized, but without the slow LTO / single-codegen-unit link.
-# Performance budgets (`just bench`) still run against the real release build.
-[profile.e2e]
+# Optimized, but without the slow LTO / single-codegen-unit link: for trying the app as it really
+# feels without waiting for a release build. Performance budgets (`just bench`) use `release`.
+[profile.fast]
 inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
 
-# Keep the core fast in dev builds so `tauri dev` feels like the real thing.
+# Keep the core fast in dev builds so `just dev` feels like the real thing.
 [profile.dev.package.wispy-core]
 opt-level = 2
 [profile.dev.package."*"]

@@ -1,6 +1,6 @@
 //! Prints core timings for the synthetic worst case (a 4-PR stack whose bottom PR has ~500
 //! files / ~50k changed lines):
-//! `cargo run --release -p wispy-core --example core_timings -- e2e/.fixtures/stack/origin`
+//! `cargo run --release -p wispy-core --example core_timings -- target/bench-fixture/stack/origin`
 use std::time::Instant;
 
 use wispy_core::cache::Cache;
