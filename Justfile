@@ -3,13 +3,18 @@
 default:
     @just --list
 
-# Run the app with hot reload.
-dev:
-    pnpm tauri dev
+# Run the app (optimized core, quick builds).
+dev *args:
+    cargo run -p wispydiff -- {{args}}
 
-# Build the app bundle (macOS: bundle/macos/WispyDiff.app, Linux: bundle/{deb,appimage}).
+# The app as it really feels, without waiting for the full release link (fat LTO).
+fast *args:
+    cargo run --profile fast -p wispydiff -- {{args}}
+
+# Release build (macOS: also target/release/bundle/macos/WispyDiff.app).
 build:
-    pnpm tauri build
+    cargo build --release -p wispydiff
+    if [ "$(uname -s)" = Darwin ]; then scripts/bundle-macos.sh; fi
 
 # Build the latest `main` and install it (macOS: /Applications/WispyDiff.app, Linux: ~/.local/bin/wispydiff).
 install:
@@ -19,28 +24,11 @@ install:
 auto-update cmd="enable":
     scripts/auto-update.sh {{cmd}}
 
-# Core tests, frontend type-check, and functional e2e tests.
-test: test-core typecheck e2e-functional
+# Core tests and the app's headless UI tests (the real app, a fake GitHub, fake assistant CLIs).
+test:
+    cargo test --workspace --no-fail-fast
 
-test-core:
-    cargo test --workspace
-
-typecheck:
-    pnpm exec tsc --noEmit
-    pnpm exec tsc --noEmit -p e2e
-
-# Performance budgets (SPEC.md) against an optimized build on this machine.
-bench: (build-e2e "release")
-    cargo run --release -q -p wispy-core --example core_timings -- e2e/.fixtures/stack/origin
-    WISPY_E2E_PERF=1 WISPY_E2E_PROFILE=release pnpm exec wdio run e2e/wdio.conf.ts --spec e2e/specs/perf.e2e.ts
-
-# All functional specs (everything but the performance budgets).
-e2e-functional: (build-e2e "e2e")
-    pnpm exec wdio run e2e/wdio.conf.ts
-
-# App build with the embedded WebDriver server, plus the fixture generator (always `e2e`). Functional
-# specs use the quick-to-link `e2e` profile; the performance budgets need `release`.
-build-e2e profile="e2e":
-    cargo build --profile e2e -p wispy-fixtures
-    ./target/e2e/wispy-fixtures generate --out e2e/.fixtures/stack --seed 42 > /dev/null
-    pnpm tauri build --features e2e --no-bundle --config src-tauri/tauri.e2e.conf.json -- --profile {{profile}}
+# Performance budgets (SPEC.md) against a release build on this machine; keep the window visible.
+bench:
+    cargo build --release -p wispydiff -p wispy-fixtures
+    scripts/bench.sh release

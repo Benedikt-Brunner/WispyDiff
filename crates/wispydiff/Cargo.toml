@@ -1,0 +1,34 @@
+[package]
+name = "wispydiff"
+description = "Distraction-free review of stacked GitHub PRs"
+rust-version = "1.95"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+anyhow = "1"
+gpui-kit = "~0.6.6"
+wispy-core = { path = "../wispy-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
+futures = "0.3"
+# preserve_order: capped records drop their oldest entries.
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = "2"
+# Reads the Tauri app's WebKit localStorage once, to carry its preferences over.
+rusqlite = "0.40"
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+markdown = "1"
+
+[dev-dependencies]
+gpui-kit = { version = "~0.6.6", features = ["test-support"] }
+tempfile = "3"
+
+[features]
+# GPUI's frame profiler: `--perf` then also reports CPU draw times per frame.
+profiler = ["gpui-kit/profiler"]

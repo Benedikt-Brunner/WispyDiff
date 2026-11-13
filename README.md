@@ -19,14 +19,12 @@ performance budgets in detail. Shortcuts are written with ⌘; on Linux use Ctrl
 
 ## Requirements
 
-- macOS or Linux, [Rust](https://rustup.rs), [Node](https://nodejs.org) with
-  [pnpm](https://pnpm.io), and [just](https://github.com/casey/just)
+- macOS or Linux, [Rust](https://rustup.rs) 1.95 or newer, and [just](https://github.com/casey/just)
 - Git 2.44 or newer (older versions break repo search while offline)
-- Linux only: the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/#linux)
-  (WebKitGTK 4.1). On Debian/Ubuntu:
+- Linux only: the libraries GPUI links against, and a Vulkan driver. On Debian/Ubuntu:
   ```sh
-  sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
-    libssl-dev libayatana-appindicator3-dev librsvg2-dev
+  sudo apt install build-essential libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+    libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan1 mesa-vulkan-drivers
   ```
   Ubuntu 24.04 ships Git 2.43; get a newer one from the
   [git-core PPA](https://launchpad.net/~git-core/+archive/ubuntu/ppa).
@@ -37,10 +35,8 @@ performance budgets in detail. Shortcuts are written with ⌘; on Linux use Ctrl
 ## Getting started
 
 ```sh
-pnpm install
-just dev     # run with hot reload
-just build   # macOS: target/release/bundle/macos/WispyDiff.app
-             # Linux: target/release/bundle/{deb,appimage}/
+just dev     # run it (just fast: optimized, quick to link)
+just build   # target/release/wispydiff; macOS also target/release/bundle/macos/WispyDiff.app
 ```
 
 To keep an installed copy on the latest `main`, `just auto-update` sets up a background job
@@ -51,8 +47,8 @@ restart the app to use an update. `just auto-update status` shows what's install
 `just auto-update disable` stops it (and removes the Linux launcher entry), and `just install`
 builds and installs the latest `main` once.
 
-Switching from the `.deb` on Linux: remove it first (`sudo apt remove wispy-diff`), otherwise its
-`/usr/bin/wispydiff` and launcher entry take precedence over the auto-updated copy. Then run
+Switching from the old `.deb` on Linux: remove it first (`sudo apt remove wispy-diff`), otherwise
+its `/usr/bin/wispydiff` and launcher entry take precedence over the auto-updated copy. Then run
 `just auto-update enable`.
 
 WispyDiff keeps its own blobless clones under `~/Library/Application Support/WispyDiff` (macOS)
@@ -61,8 +57,8 @@ or `~/.local/share/WispyDiff` (Linux) and never touches your working copies.
 ## Development
 
 ```sh
-just test    # core tests, type-check, functional e2e suites
-just bench   # performance budgets from SPEC.md
+just test    # core tests and the app's headless UI tests
+just bench   # performance budgets from SPEC.md (release build, real window: keep it visible)
 ```
 
 CI runs `just test` on macOS and Linux for every push and PR. The performance budgets only run

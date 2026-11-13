@@ -151,7 +151,7 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
 }
 
 fn fake(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fake-cli").join(name).canonicalize().unwrap()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testing/fake-cli").join(name).canonicalize().unwrap()
 }
 
 fn last_prompt(log: &std::path::Path) -> String {

@@ -12,7 +12,7 @@ use wispy_core::service::{NewThread, PrService};
 use wispy_core::stack::Stack;
 
 fn fake(name: &str) -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fake-cli").join(name);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testing/fake-cli").join(name);
     root.canonicalize().unwrap().to_string_lossy().into_owned()
 }
 
@@ -179,6 +179,15 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
     let calls = asks(log.path());
     assert_eq!(calls[1]["prompt"], "And 'shipped'?");
     assert!(calls[1]["args"].as_array().unwrap().iter().any(|a| a == "--resume"));
+
+    // A follow-up can switch model and effort; the thread keeps the choice for later turns.
+    service.retune_assistant_thread(&thread.id, Some("sonnet".into()), Some("max".into())).unwrap();
+    let retuned = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "And 'packed'?", |_| {}).unwrap();
+    assert_eq!((retuned.model.as_deref(), retuned.effort.as_deref()), (Some("sonnet"), Some("max")));
+    let calls = asks(log.path());
+    let args: Vec<&str> = calls[2]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert!(args.windows(2).any(|w| w == ["--model", "sonnet"]) && args.windows(2).any(|w| w == ["--effort", "max"]), "{args:?}");
+    assert!(args.contains(&"--resume"));
 
     // Failures are kept in the thread; Codex works the same way.
     let failed = service.ask(&snapshot, (0, 0), Some(&thread.id), None, "fail", |_| {}).unwrap();
