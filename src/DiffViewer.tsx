@@ -115,7 +115,10 @@ export function DiffViewer(props: Props) {
   const { stackId, lo, hi, drafts, threads, onDraftsChanged, isViewed, onToggleViewed, confirmViewed, onShowFullDiff } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  /** The scroll position the rows were last drawn for (see `syncScroll`). */
   const [scrollTop, setScrollTop] = useState(0);
+  /** What the last render drew: its position, how far from it the drawn rows still cover the viewport, and its current file. */
+  const drawn = useRef({ top: 0, slack: 0, file: -1, fileAt: (_top: number): Segment | undefined => undefined });
   const [viewportHeight, setViewportHeight] = useState(800);
   const [viewportWidth, setViewportWidth] = useState(0);
   /** Width of one monospace column in the diff, in pixels. */
@@ -691,6 +694,8 @@ export function DiffViewer(props: Props) {
     const measure = () => {
       setViewportHeight(el.clientHeight);
       setViewportWidth(el.clientWidth);
+      // Rows are drawn for the last synced position; a smaller viewport draws fewer around it.
+      setScrollTop(el.scrollTop);
       const probe = canvasRef.current?.querySelector<HTMLElement>(".char-probe");
       if (probe) setCharWidth(probe.getBoundingClientRect().width / probe.textContent!.length);
       // Side-by-side rows always span exactly the viewport (see .row-split).
@@ -1072,16 +1077,36 @@ export function DiffViewer(props: Props) {
     }
   });
 
-  const onScroll = useCallback(() => {
+  /**
+   * Renders for the current scroll position, but only when it matters: the rows drawn (a screen
+   * beyond the viewport each way) would run short, or another file became the current one. In
+   * between, the browser just scrolls what's drawn — re-rendering the whole view (file list
+   * included) on every scroll event kept the main thread busy and made scrolling stutter.
+   * `force` renders regardless (before a layout change, which must start from the exact place).
+   */
+  const syncScroll = useCallback((force: boolean) => {
     const el = scrollRef.current;
     if (!el) return;
-    // First, as drawing the new rows can change the layout (threads measured), which keeps this place.
-    recordAnchor();
+    const top = el.scrollTop;
+    const d = drawn.current;
+    if (!force && Math.abs(top - d.top) < d.slack && (d.fileAt(top)?.file ?? -1) === d.file) return;
     // Draw the rows for the new position right away; a deferred render shows up as blank frames.
-    flushSync(() => setScrollTop(el.scrollTop));
-    // Horizontal scrolling moves side-by-side code within its halves (no re-render needed).
-    canvasRef.current?.style.setProperty("--split-x", `${el.scrollLeft}px`);
-  }, [recordAnchor]);
+    flushSync(() => setScrollTop(top));
+  }, []);
+
+  const followScroll = useCallback(
+    (force: boolean) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      // First, as drawing the new rows can change the layout (threads measured), which keeps this place.
+      recordAnchor();
+      syncScroll(force);
+      // Horizontal scrolling moves side-by-side code within its halves (no re-render needed).
+      canvasRef.current?.style.setProperty("--split-x", `${el.scrollLeft}px`);
+    },
+    [recordAnchor, syncScroll],
+  );
+  const onScroll = useCallback(() => followScroll(false), [followScroll]);
 
   /** The file keys act on: the pinned one while the view hasn't moved, else the one at the top (none in an empty diff). */
   const fileAt = useCallback(
@@ -1093,6 +1118,8 @@ export function DiffViewer(props: Props) {
     [pinned, layout],
   );
   const current = fileAt(scrollTop);
+  // Half the overscan: scrolling less than that from here still has drawn rows in view.
+  drawn.current = { top: scrollTop, slack: (overscan * ROW_HEIGHT) / 2, file: current?.file ?? -1, fileAt };
 
   /** Puts `row` near the top, with `margin` rows above it; `pin` makes that file the current one. */
   const scrollToRow = useCallback(
@@ -1193,15 +1220,15 @@ export function DiffViewer(props: Props) {
         const cap = el.clientHeight / (state.held ? 10 : 3);
         const move = Math.sign(distance) * Math.min(Math.abs(distance), cap, Math.max(Math.abs(distance) * 0.35, 6));
         el.scrollTop = before + move;
-        // Render the rows for the new position before this frame paints, not a frame later.
-        flushSync(() => setScrollTop(el.scrollTop));
+        // Render the rows for the new position (if needed) before this frame paints, not a frame later.
+        syncScroll(false);
         // Done when there, or when the browser won't scroll any further.
         if (Math.abs(distance) < 1 || el.scrollTop === before) glide.current = null;
         else state.frame = requestAnimationFrame(step);
       };
       state.frame = requestAnimationFrame(step);
     },
-    [],
+    [syncScroll],
   );
   const glideToRow = useCallback(
     (row: number, held: boolean) => glideTo(layout.rowY(Math.max(0, row - JUMP_MARGIN)), held),
@@ -1212,12 +1239,12 @@ export function DiffViewer(props: Props) {
   const changeLayout = useCallback(
     (apply: () => void) => {
       stopGlide();
-      onScroll();
+      followScroll(true);
       pendingMark.current = "layout";
       mark("toggle:start");
       apply();
     },
-    [onScroll, stopGlide],
+    [followScroll, stopGlide],
   );
 
   /** Newest gap change per file: an older one still loading its lines is dropped. */
