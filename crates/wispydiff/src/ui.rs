@@ -100,11 +100,15 @@ fn sync_kit(cx: &mut App) {
         (looks.palette.clone(), looks.zoom)
     };
     let font = ui_font(cx);
+    let mono = code_font(cx);
     let theme = Theme::global_mut(cx);
     theme.mode = if p.dark { ThemeMode::Dark } else { ThemeMode::Light };
     theme.font_size = px(16.0 * zoom);
     if let Some(family) = font {
         theme.font_family = family;
+    }
+    if let Some(family) = mono {
+        theme.mono_font_family = family;
     }
     theme.mono_font_size = px(12.0 * zoom);
     theme.shadow = p.shadows;
@@ -169,6 +173,20 @@ fn ui_font(cx: &App) -> Option<SharedString> {
     PICK.get_or_init(|| {
         let installed = cx.text_system().all_font_names();
         ["Inter", "Noto Sans", "DejaVu Sans"].into_iter().find(|f| installed.iter().any(|n| n == f)).map(SharedString::from)
+    })
+    .clone()
+}
+
+/// Prefer installed JetBrains Mono, including its patched Nerd Font families. Without it,
+/// keep gpui-kit's platform default. Resolve once, rather than on theme or zoom changes.
+fn code_font(cx: &App) -> Option<SharedString> {
+    static PICK: std::sync::OnceLock<Option<SharedString>> = std::sync::OnceLock::new();
+    PICK.get_or_init(|| {
+        let installed = cx.text_system().all_font_names();
+        ["JetBrains Mono", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font"]
+            .into_iter()
+            .find(|f| installed.iter().any(|n| n == f))
+            .map(SharedString::from)
     })
     .clone()
 }
