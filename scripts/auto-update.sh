@@ -71,12 +71,9 @@ lock() {
 }
 
 build() {
-  export CI=true # pnpm: never prompt
-  pnpm install --frozen-lockfile
+  cargo build --release --locked -p wispydiff
   if [ "$(uname -s)" = Darwin ]; then
-    pnpm tauri build
-  else
-    pnpm tauri build --no-bundle
+    scripts/bundle-macos.sh release
   fi
 }
 
@@ -97,7 +94,7 @@ install_build() {
   fi
 }
 
-# Linux: the app launcher entry and its icons, as the .deb bundle would install them system-wide.
+# Linux: the app launcher entry and its icons.
 APPS_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/applications
 ICONS_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor
 DESKTOP_FILE=$APPS_DIR/WispyDiff.desktop
@@ -108,7 +105,7 @@ install_launcher() {
   for size_file in $ICON_SIZES; do
     size=${size_file%%:*}
     mkdir -p "$ICONS_DIR/$size/apps"
-    cp "$SRC/src-tauri/icons/${size_file#*:}" "$ICONS_DIR/$size/apps/wispydiff.png"
+    cp "$SRC/assets/icons/${size_file#*:}" "$ICONS_DIR/$size/apps/wispydiff.png"
   done
   mkdir -p "$APPS_DIR"
   # Exec is absolute: ~/.local/bin is often not on the desktop session's PATH.
@@ -178,7 +175,7 @@ run() {
   fi
 
   git -C "$SRC" checkout --quiet --force --detach "$sha"
-  git -C "$SRC" clean -fdq # untracked files only; target/ and node_modules/ are ignored, so kept
+  git -C "$SRC" clean -fdq # untracked files only; target/ is ignored, so kept
   log "building ${sha:0:9} $subject"
   local started=$SECONDS
   if ! (cd "$SRC" && build) > "$DIR/build.log" 2>&1; then
@@ -208,7 +205,7 @@ run() {
 
 # Settings passed to `enable` stay with the job.
 job_env() {
-  echo "PATH=$PATH" # the job's default PATH has neither cargo nor pnpm
+  echo "PATH=$PATH" # the job's default PATH has no cargo
   local var
   for var in WISPY_UPDATER_REPO WISPY_UPDATER_BRANCH WISPY_UPDATER_DIR WISPY_INSTALL_DIR; do
     if [ -n "${!var:-}" ]; then echo "$var=${!var}"; fi

@@ -436,6 +436,11 @@ impl PrService {
         Ok(self.cache.app_value(INBOX_KEY)?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default())
     }
 
+    /// Open PRs matching `text` in `repos` (palette suggestions); see [`GitHubClient::search_prs`].
+    pub async fn search_prs(&self, text: &str, repos: &[String]) -> Result<Vec<crate::inbox::InboxPr>> {
+        self.github.search_prs(text, repos).await
+    }
+
     pub async fn refresh_inbox(&self) -> Result<Vec<InboxGroup>> {
         let groups = group(self.github.inbox().await?);
         self.cache.put_app_value(INBOX_KEY, &serde_json::to_value(&groups).map_err(crate::Error::codec)?)?;
@@ -662,6 +667,18 @@ impl PrService {
     /// about `lo..=hi` (and `new.selection`, if any). The CLI runs read-only in a checkout of
     /// the range head. `on_event` receives the streamed answer; the thread (with both messages)
     /// is stored either way. Blocking.
+    /// Sets the model and effort a conversation's next turns use (None: the CLI's default). The
+    /// CLI itself stays: only the one that started the session can resume it.
+    pub fn retune_assistant_thread(&self, id: &str, model: Option<String>, effort: Option<String>) -> Result<()> {
+        let mut thread = self.cache.assistant_thread(id)?.ok_or_else(|| crate::Error::Assistant("thread not found".into()))?;
+        if thread.model != model || thread.effort != effort {
+            thread.model = model;
+            thread.effort = effort;
+            self.cache.put_assistant_thread(&thread)?;
+        }
+        Ok(())
+    }
+
     pub fn ask(
         &self,
         snapshot: &StackSnapshot,

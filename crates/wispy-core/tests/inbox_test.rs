@@ -280,3 +280,30 @@ async fn prefetching_makes_a_group_ready_and_finished_prs_are_evicted() {
     assert!(service.cached_stack(&pr).unwrap().is_none());
     assert!(service.cached_range(&snapshot, 0, 0).unwrap().is_none());
 }
+
+#[tokio::test]
+async fn pr_search_scopes_to_known_repos_and_keeps_the_order() {
+    let server = MockServer::start().await;
+    let node = |number: u64| {
+        serde_json::json!({
+            "number": number, "title": format!("Pickable units {number}"), "url": "u", "isDraft": false, "updatedAt": "2026-09-30T00:00:00Z",
+            "headRefName": format!("h{number}"), "baseRefName": "main", "headRefOid": format!("sha{number}"),
+            "author": { "login": "someone" }, "repository": { "nameWithOwner": "acme/shop" }, "viewerLatestReview": null
+        })
+    };
+    // Only answers a search for open PRs with the words, in both repos.
+    Mock::given(path("/graphql"))
+        .and(body_string_contains("is:pr is:open"))
+        .and(body_string_contains("pickable units"))
+        .and(body_string_contains("repo:acme/shop"))
+        .and(body_string_contains("repo:acme/app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": { "search": { "nodes": [node(9), node(4)] } } })))
+        .mount(&server)
+        .await;
+
+    let github = GitHubClient::new(server.uri(), "t").unwrap();
+    let prs = github.search_prs(" pickable units ", &["acme/shop".into(), "acme/app".into()]).await.unwrap();
+    let found: Vec<(String, u64)> = prs.iter().map(|p| (p.repo.clone(), p.number)).collect();
+    assert_eq!(found, vec![("acme/shop".into(), 9), ("acme/shop".into(), 4)]);
+    assert_eq!(prs[0].title, "Pickable units 9");
+}

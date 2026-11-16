@@ -187,7 +187,7 @@ fn adds_the_assistants_comments_on_the_prs_their_lines_belong_to_then_edits_them
 }
 
 fn fake(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fake-cli").join(name).canonicalize().unwrap()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testing/fake-cli").join(name).canonicalize().unwrap()
 }
 
 fn last_prompt(log: &std::path::Path) -> String {
