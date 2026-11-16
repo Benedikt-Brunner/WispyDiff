@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::StreamExt;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     anchored, deferred, div, px, AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    KeyBinding, Render, ScrollHandle, SharedString, Subscription, Task, Window,
+    KeyBinding, Render, ScrollHandle, SharedString, Subscription, Task, TestSupportExt, Window,
 };
-use wispy_core::assistant::{AssistantEvent, CommentAction, CommentOutcome, Provider, Selection, Thread, ThreadAnchor};
+use wispy_core::assistant::{AssistantModel, AssistantEvent, CommentAction, CommentOutcome, Provider, Selection, Thread, ThreadAnchor};
 use wispy_core::github::PullRequest;
 use wispy_core::service::NewThread;
 
@@ -35,7 +35,6 @@ pub fn bind_keys(cx: &mut App) {
 
 const CLAUDE_MODELS: [&str; 5] = ["", "opus", "sonnet", "haiku", "fable"];
 const CLAUDE_EFFORTS: [&str; 6] = ["", "low", "medium", "high", "xhigh", "max"];
-const CODEX_EFFORTS: [&str; 5] = ["", "minimal", "low", "medium", "high"];
 
 fn provider_name(p: Provider) -> &'static str {
     match p {
@@ -118,7 +117,9 @@ pub struct AssistantPanel {
     effort: String,
     sign_in: Option<SignIn>,
     question: Entity<TextareaState>,
-    codex_model: Entity<InputState>,
+    codex_models: Vec<AssistantModel>,
+    models_loading: bool,
+    models_error: Option<String>,
     /// Model and effort chosen for the active conversation's next turns (its id first).
     turn: Option<(String, String, String)>,
     /// The agent / model / effort popup.
@@ -248,26 +249,11 @@ impl AssistantPanel {
         let model = settings::get::<String>(cx, &format!("assistant.model.{}", provider_id(provider))).unwrap_or_default();
         let effort = settings::get::<String>(cx, &format!("assistant.effort.{}", provider_id(provider))).unwrap_or_default();
         let question = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true).auto_grow(3, 12).placeholder("Ask… (↵ to send, ⇧↵ for a new line)"));
-        let codex_model = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder("default model");
-            s.set_value(if provider == Provider::Codex { model.clone() } else { String::new() }, window, cx);
-            s
-        });
         let subscriptions = vec![
             cx.subscribe_in(&question, window, |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = event {
                     this.send(window, cx);
                 }
-            }),
-            cx.subscribe_in(&codex_model, window, |this, input, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    let value = input.read(cx).value().trim().to_string();
-                    if value != this.choice().1 {
-                        this.set_model(value, cx);
-                    }
-                }
-                InputEvent::PressEnter { .. } => this.send(window, cx),
-                _ => {}
             }),
         ];
         AssistantPanel {
@@ -290,7 +276,9 @@ impl AssistantPanel {
             effort,
             sign_in: None,
             question,
-            codex_model,
+            codex_models: Vec::new(),
+            models_loading: false,
+            models_error: None,
             turn: None,
             picker_open: false,
             menus: Default::default(),
@@ -355,13 +343,12 @@ impl AssistantPanel {
         cx.notify();
     }
 
-    fn change_provider(&mut self, provider: Provider, window: &mut Window, cx: &mut Context<Self>) {
+    fn change_provider(&mut self, provider: Provider, _window: &mut Window, cx: &mut Context<Self>) {
         self.provider = provider;
         settings::set_pref(cx, "assistant.provider", provider_id(provider));
         self.model = settings::get::<String>(cx, &format!("assistant.model.{}", provider_id(provider))).unwrap_or_default();
         self.effort = settings::get::<String>(cx, &format!("assistant.effort.{}", provider_id(provider))).unwrap_or_default();
-        let model = self.model.clone();
-        self.codex_model.update(cx, |s, cx| s.set_value(model, window, cx));
+        if provider == Provider::Codex { self.load_codex_models(cx); }
         cx.notify();
     }
 
@@ -381,6 +368,9 @@ impl AssistantPanel {
     }
 
     fn set_model(&mut self, model: String, cx: &mut Context<Self>) {
+        if self.choice().0 == Provider::Codex && !self.codex_efforts(&model).contains(&self.choice().2) {
+            self.set_effort(String::new(), cx);
+        }
         match self.active.clone() {
             Some(id) => self.turn = Some((id, model, self.choice().2)),
             None => self.remember("model", model, cx),
@@ -399,11 +389,38 @@ impl AssistantPanel {
     fn toggle_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_open = !self.picker_open;
         if self.picker_open {
-            let model = self.choice().1;
-            self.codex_model.update(cx, |s, cx| s.set_value(model, window, cx));
+            if self.choice().0 == Provider::Codex { self.load_codex_models(cx); }
         }
         self.focus_question(window, cx);
         cx.notify();
+    }
+
+    fn load_codex_models(&mut self, cx: &mut Context<Self>) {
+        if self.models_loading || !self.codex_models.is_empty() { return; }
+        self.models_loading = true;
+        self.models_error = None;
+        let task = self.backend.codex_models();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.models_loading = false;
+                match result {
+                    Ok(models) => this.codex_models = models,
+                    Err(error) => this.models_error = Some(error),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn codex_efforts(&self, model: &str) -> Vec<String> {
+        let selected = self.codex_models.iter().find(|m| m.model == model)
+            .or_else(|| if model.is_empty() { self.codex_models.iter().find(|m| m.is_default) } else { None });
+        let mut efforts = vec![String::new()];
+        if let Some(selected) = selected {
+            efforts.extend(selected.supported_reasoning_efforts.iter().map(|e| e.reasoning_effort.clone()));
+        }
+        efforts
     }
 
     /// The agent / model / effort popup is open (tests).
@@ -952,7 +969,8 @@ impl AssistantPanel {
             .child(part(if model.is_empty() { "default model".into() } else { model.clone() }, !model.is_empty()))
             .child(div().text_color(p.fg_muted).child("·"))
             .child(part(if effort.is_empty() { "default effort".into() } else { effort.clone() }, !effort.is_empty()))
-            .child(div().text_color(p.fg_muted).child("▾"));
+            .child(div().text_color(p.fg_muted).child("▾"))
+            .test_support();
         let send = div()
             .id("assistant-send")
             .size(u(28.))
@@ -1036,12 +1054,32 @@ impl AssistantPanel {
                 })
                 .collect()
         } else {
-            vec![div().mx(u(8.)).child(Input::new(&self.codex_model)).into_any_element()]
+            let mut choices = vec![(String::new(), "Default".to_string())];
+            choices.extend(self.codex_models.iter().map(|m| (m.model.clone(), m.display_name.clone())));
+            // Keep saved choices visible so an unavailable model can be replaced with Default.
+            if !model.is_empty() && !choices.iter().any(|(value, _)| *value == model) {
+                choices.push((model.clone(), format!("{model} (unavailable)")));
+            }
+            let mut rows: Vec<AnyElement> = choices.into_iter().map(|(value, label)| {
+                row(SharedString::from(format!("model-{value}")), label, model == value, true)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_model(value.clone(), cx);
+                        this.focus_question(window, cx);
+                    })).test_support().into_any_element()
+            }).collect();
+            if self.models_loading {
+                rows.push(div().px(u(12.)).text_size(u(11.)).text_color(p.fg_muted).child("Loading models…").into_any_element());
+            } else if let Some(error) = &self.models_error {
+                rows.push(div().px(u(12.)).text_size(u(11.)).text_color(p.fg_muted).child(error.clone()).into_any_element());
+            } else if self.codex_models.is_empty() {
+                rows.push(div().px(u(12.)).text_size(u(11.)).text_color(p.fg_muted).child("No models available").into_any_element());
+            }
+            rows
         };
-        let efforts = if provider == Provider::Claude { CLAUDE_EFFORTS.to_vec() } else { CODEX_EFFORTS.to_vec() };
+        let efforts = if provider == Provider::Claude { CLAUDE_EFFORTS.iter().map(|e| e.to_string()).collect() } else { self.codex_efforts(&model) };
         let efforts = efforts.into_iter().map(|e| {
             let value = e.to_string();
-            let label = match e {
+            let label = match e.as_str() {
                 "" => "Default".to_string(),
                 "xhigh" => "Extra high".to_string(),
                 e => capitalize(e),
@@ -1049,7 +1087,7 @@ impl AssistantPanel {
             row(SharedString::from(format!("effort-{e}")), label, effort == e, true).on_click(cx.listener(move |this, _, window, cx| {
                 this.set_effort(value.clone(), cx);
                 this.focus_question(window, cx);
-            }))
+            })).test_support()
         });
         gpui_kit::deferred(
             div().absolute().right_0().bottom(gpui_kit::relative(1.)).mb(u(6.)).child(
@@ -1078,7 +1116,7 @@ impl AssistantPanel {
                             .children(agents)
                             .when(locked, |d| d.child(div().px(u(12.)).pt(u(2.)).text_size(u(11.)).text_color(p.fg_muted).child("Fixed for this conversation")))
                             .child(heading("Model"))
-                            .children(models),
+                            .child(div().id("assistant-models").max_h(u(280.)).overflow_y_scroll().children(models)),
                     )
                     .child(
                         div()

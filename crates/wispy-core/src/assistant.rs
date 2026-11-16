@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+mod models;
+pub use models::{codex_models, AssistantModel, ReasoningEffort};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
@@ -17,6 +20,16 @@ pub enum Provider {
 }
 
 impl Provider {
+    /// Resolve assistant CLIs as the user's terminal does, even if the desktop PATH
+    /// already contains an older system installation. Explicit test overrides win.
+    fn command(self) -> Command {
+        let binary = self.binary();
+        let path = if Path::new(&binary).is_absolute() { None } else { crate::shell_env::interactive_shell_path() };
+        let mut cmd = Command::new(&binary);
+        if let Some(path) = path { cmd.env("PATH", path); }
+        cmd
+    }
+
     /// The CLI binary; `WISPY_CLAUDE_BIN` / `WISPY_CODEX_BIN` override it (tests use fakes).
     pub fn binary(self) -> String {
         let (var, default) = match self {
@@ -48,14 +61,7 @@ const TOOLS_TOKEN_VAR: &str = "WISPY_MCP_TOKEN";
 /// The CLI invocation for `ask`, restricted to reading files (the review tools change only
 /// the app's local drafts; the user's own MCP servers stay available). The prompt goes on stdin.
 pub fn command(ask: &Ask, cwd: &Path) -> Command {
-    let binary = ask.provider.binary();
-    let mut cmd = Command::new(&binary);
-    // Not on the app's PATH: try the interactive shell's (Command looks the binary up there too).
-    if !on_path(&binary) {
-        if let Some(path) = crate::shell_env::interactive_shell_path() {
-            cmd.env("PATH", path);
-        }
-    }
+    let mut cmd = ask.provider.command();
     cmd.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     match ask.provider {
         Provider::Claude => {
@@ -109,12 +115,45 @@ pub fn command(ask: &Ask, cwd: &Path) -> Command {
     cmd
 }
 
-fn on_path(binary: &str) -> bool {
-    if binary.contains('/') {
-        return true;
+#[cfg(all(test, unix))]
+mod cli_resolution_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    // Re-enter this test with an isolated environment, so concurrent tests and
+    // real CLIs are untouched. Both the desktop and shell PATH contain Codex.
+    #[test]
+    fn shell_codex_wins_over_existing_desktop_installation() {
+        if std::env::var_os("WISPY_RESOLUTION_CHILD").is_some() {
+            let ask = Ask { provider: Provider::Codex, model: None, effort: None,
+                prompt: String::new(), resume: None, tools: None };
+            let cwd = std::env::temp_dir();
+            for mut cmd in [command(&ask, &cwd), sign_in_command(Provider::Codex)] {
+                let output = cmd.output().unwrap();
+                assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "current");
+            }
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for (name, answer) in [("desktop", "old"), ("terminal", "current")] {
+            let bin = dir.path().join(name);
+            std::fs::create_dir(&bin).unwrap();
+            let script = bin.join("codex");
+            std::fs::write(&script, format!("#!/bin/sh\nprintf '{answer}\\n'\n")).unwrap();
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let shell = dir.path().join("shell");
+        let path = dir.path().join("terminal");
+        std::fs::write(&shell, format!("#!/bin/sh\nprintf '__WISPY_PATH__{}__WISPY_PATH__'\n", path.display())).unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "assistant::cli_resolution_tests::shell_codex_wins_over_existing_desktop_installation", "--nocapture"])
+            .env("WISPY_RESOLUTION_CHILD", "1")
+            .env_remove("WISPY_CODEX_BIN")
+            .env("SHELL", shell).env("PATH", dir.path().join("desktop"))
+            .output().unwrap();
+        assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).any(|dir| dir.join(binary).is_file())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -237,7 +276,7 @@ pub fn needs_sign_in(provider: Provider, message: &str) -> bool {
 /// The CLI's sign-in command. Its own browser launch is suppressed (`BROWSER=true`); the app
 /// opens the sign-in page itself.
 pub fn sign_in_command(provider: Provider) -> Command {
-    let mut cmd = Command::new(provider.binary());
+    let mut cmd = provider.command();
     match provider {
         Provider::Claude => cmd.args(["auth", "login"]),
         Provider::Codex => cmd.arg("login"),
