@@ -59,6 +59,56 @@ fn args(call: &serde_json::Value) -> Vec<&str> {
         .collect()
 }
 
+fn click_element(ui: &Ui, cx: &mut TestAppContext, id: &str) {
+    let shown = ui.snapshots(cx);
+    let element = shown.iter()
+        .find(|s| s.visible() && s.path().last() == Some(&gpui_kit::ElementId::Name(id.to_string().into())))
+        .unwrap_or_else(|| panic!("element {id} is visible"));
+    ui.click(cx, element.bounds().center());
+}
+
+#[gpui_kit::test]
+async fn codex_picker_discovers_models_and_retunes_conversation(cx: &mut TestAppContext) {
+    let f = Fixture::new();
+    f.backend.prefs().set_str("assistant.provider", "codex");
+    let ui = Ui::mount(cx, &f);
+    ui.open(cx, 2).await;
+    open(&ui, cx).await;
+    click_element(&ui, cx, "assistant-agent");
+    let start = std::time::Instant::now();
+    loop {
+        ui.frame(cx);
+        if ui.snapshots(cx).iter().any(|s| s.visible() && s.path().last() == Some(&gpui_kit::ElementId::Name("model-fake-deep".into()))) { break; }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "Codex model catalog loaded");
+        cx.executor().timer(std::time::Duration::from_millis(10)).await;
+    }
+    click_element(&ui, cx, "model-fake-deep");
+    click_element(&ui, cx, "effort-xhigh");
+    // Close the picker without moving focus away from the question.
+    click_element(&ui, cx, "assistant-agent");
+    let first = ask(&ui, cx, "Explain the change").await;
+    assert_eq!(first.model.as_deref(), Some("fake-deep"));
+    assert_eq!(first.effort.as_deref(), Some("xhigh"));
+    assert!(args(&latest_call(&f)).windows(2).any(|w| w == ["-m", "fake-deep"]));
+
+    click_element(&ui, cx, "assistant-agent");
+    click_element(&ui, cx, "model-fake-fast");
+    click_element(&ui, cx, "assistant-agent");
+    let next = ask(&ui, cx, "And the caller?").await;
+    assert_eq!(next.id, first.id);
+    assert_eq!(next.model.as_deref(), Some("fake-fast"));
+    assert_eq!(next.effort, None, "unsupported xhigh resets to the model default");
+    assert!(args(&latest_call(&f)).contains(&"resume"));
+
+    click_element(&ui, cx, "assistant-agent");
+    click_element(&ui, cx, "model-");
+    click_element(&ui, cx, "assistant-agent");
+    let defaults = ask(&ui, cx, "Summarize").await;
+    assert_eq!(defaults.model, None);
+    assert!(!args(&latest_call(&f)).contains(&"-m"));
+    ui.close(cx).await;
+}
+
 // e2e: asks about selected lines ...; follows up in the same session;
 // marks the asked-about lines in the gutter
 #[gpui_kit::test]

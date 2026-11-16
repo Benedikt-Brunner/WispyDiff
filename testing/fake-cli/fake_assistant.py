@@ -13,6 +13,8 @@ def main(provider):
     args = sys.argv[1:]
     if args in (["auth", "login"], ["login"]):
         return sign_in(provider, args)
+    if provider == "codex" and args == ["app-server"]:
+        return model_server()
     prompt = sys.stdin.read()
     cwd = os.getcwd()
     write_log({"provider": provider, "args": args, "cwd": cwd, "prompt": prompt})
@@ -230,3 +232,32 @@ def sign_in(provider, args):
         print(f"If your browser did not open, navigate to this URL to authenticate:\n\n{url}", flush=True)
         time.sleep(0.5)
         print("Successfully logged in", flush=True)
+
+
+def model_server():
+    """Model discovery only; enforce initialization and exercise pagination/notifications."""
+    initialized = False
+    for line in sys.stdin:
+        message = json.loads(line)
+        method = message["method"]
+        mode = os.environ.get("WISPY_FAKE_MODELS", "ok")
+        if method == "initialized":
+            initialized = True
+            continue
+        if mode == "timeout":
+            time.sleep(60)
+        if method == "initialize":
+            result = {"userAgent": "fake-codex"}
+        else:
+            assert method == "model/list" and initialized
+            if mode == "error":
+                print(json.dumps({"id": message["id"], "error": {"code": -1, "message": "Sign in to Codex (fake)"}}), flush=True)
+                continue
+            cursor = message["params"].get("cursor")
+            model = "fake-fast" if cursor is None else "fake-deep"
+            result = {"data": [{"model": model, "displayName": model.title(), "isDefault": cursor is None,
+                "supportedReasoningEfforts": [{"reasoningEffort": effort} for effort in (["low", "high"] if cursor is None else ["high", "xhigh"])]}],
+                "nextCursor": "page2" if cursor is None else None}
+            result["data"].append({"model": "hidden", "displayName": "Hidden", "isDefault": False, "hidden": True, "supportedReasoningEfforts": []})
+        print(json.dumps({"method": "notification", "params": {}}), flush=True)
+        print(json.dumps({"id": message["id"], "result": result}), flush=True)
