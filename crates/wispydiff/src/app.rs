@@ -11,6 +11,7 @@ use gpui_kit::{
     KeyBinding, Render, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, Window,
 };
 
+use crate::description::{DescribedPr, DescriptionView};
 use crate::diff::DiffViewer;
 use crate::inbox::{Inbox, InboxEvent};
 use crate::overlays::{NewerChangesWarning, OverlayEvent, ShortcutsHelp, ThemePicker};
@@ -42,6 +43,7 @@ gpui_kit::actions!(
         RangeUp,
         ExtendDown,
         ExtendUp,
+        ShowDescription,
     ]
 );
 
@@ -75,6 +77,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("}", ExtendUp, stack),
         KeyBinding::new("shift-[", ExtendDown, stack),
         KeyBinding::new("shift-]", ExtendUp, stack),
+        KeyBinding::new("i", ShowDescription, stack),
     ]);
 }
 
@@ -93,6 +96,7 @@ enum Overlay {
     Theme(Entity<ThemePicker>),
     Shortcuts(Entity<ShortcutsHelp>),
     Newer(Entity<NewerChangesWarning>, Later),
+    Description(Entity<DescriptionView>),
 }
 
 pub struct WispyApp {
@@ -130,9 +134,23 @@ impl WispyApp {
                     cx.notify();
                 }
             }),
-            cx.subscribe_in(&inbox, window, |this, _, event: &InboxEvent, _, cx| match event {
+            cx.subscribe_in(&inbox, window, |this, _, event: &InboxEvent, window, cx| match event {
                 InboxEvent::Open(label) => this.session.update(cx, |s, cx| s.open(label.clone(), cx)),
                 InboxEvent::Refresh => this.session.update(cx, |s, _| s.refresh_inbox()),
+                InboxEvent::Describe(label) => {
+                    let pr = this.session.read(cx).inbox.iter().flat_map(|e| &e.group.prs).find(|pr| format!("{}#{}", pr.repo, pr.number) == *label).cloned();
+                    if let Some(pr) = pr {
+                        let described = DescribedPr {
+                            label: label.clone(),
+                            title: pr.title,
+                            author: pr.author,
+                            url: pr.url,
+                            body_html: pr.body_html,
+                            color: None,
+                        };
+                        this.show_description(vec![described], window, cx);
+                    }
+                }
             }),
             // Focusing the window refreshes the inbox and checks the open PR (at most once a minute).
             cx.observe_window_activation(window, |this, window, cx| {
@@ -252,12 +270,21 @@ impl WispyApp {
         self.palette.as_ref()
     }
 
-    /// "theme", "shortcuts" or "newer" while that overlay is open.
+    /// The PRs the description modal shows, while it is open.
+    pub fn described_prs(&self, cx: &App) -> Option<Vec<DescribedPr>> {
+        match &self.overlay {
+            Some(Overlay::Description(view)) => Some(view.read(cx).prs().to_vec()),
+            _ => None,
+        }
+    }
+
+    /// "theme", "shortcuts", "newer" or "description" while that overlay is open.
     pub fn overlay_kind(&self) -> Option<&'static str> {
         match &self.overlay {
             Some(Overlay::Theme(_)) => Some("theme"),
             Some(Overlay::Shortcuts(_)) => Some("shortcuts"),
             Some(Overlay::Newer(..)) => Some("newer"),
+            Some(Overlay::Description(_)) => Some("description"),
             None => None,
         }
     }
@@ -334,6 +361,48 @@ impl WispyApp {
         self.subscribe_overlay(&help, window, cx);
         self.overlay = Some(Overlay::Shortcuts(help));
         cx.notify();
+    }
+
+    /// Opens the description modal for these PRs.
+    pub fn show_description(&mut self, prs: Vec<DescribedPr>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay.is_some() || self.sheet.is_some() || prs.is_empty() {
+            return;
+        }
+        self.palette = None;
+        let opts = crate::ui::markdown_options(&self.session.read(cx).backend, cx);
+        let view = cx.new(|cx| DescriptionView::new(prs, opts, window, cx));
+        self.subscribe_overlay(&view, window, cx);
+        self.overlay = Some(Overlay::Description(view));
+        cx.notify();
+    }
+
+    /// The open stack's PRs `lo..=hi` as the description modal shows them.
+    fn stack_descriptions(&self, lo: usize, hi: usize, cx: &App) -> Vec<DescribedPr> {
+        let Some(stack) = &self.session.read(cx).stack else { return Vec::new() };
+        let colored = stack.prs.len() > 1;
+        (lo..=hi.min(stack.prs.len().saturating_sub(1)))
+            .map(|i| {
+                let pr = &stack.prs[i];
+                DescribedPr {
+                    label: pr_label(pr),
+                    title: pr.title.clone(),
+                    author: pr.author.clone(),
+                    url: pr.html_url.clone(),
+                    body_html: pr.body_html.clone(),
+                    color: colored.then_some(i as u8),
+                }
+            })
+            .collect()
+    }
+
+    /// `i`: the descriptions of the PRs in view.
+    fn describe_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.session.read(cx).showing_diff() {
+            return;
+        }
+        let Some((lo, hi)) = self.session.read(cx).shown.as_ref().map(|r| (r.range.lo, r.range.hi)) else { return };
+        let prs = self.stack_descriptions(lo, hi, cx);
+        self.show_description(prs, window, cx);
     }
 
     fn blocked(&self) -> bool {
@@ -436,6 +505,9 @@ impl WispyApp {
         list.push(Command::new("inbox", "Go to inbox", with(|s, cx| s.go_home(cx))));
         list.push(Command::new("theme", "Change theme…", |_, window, cx| window.dispatch_action(Box::new(OpenThemes), cx)));
         list.push(Command::new("shortcuts", "Keyboard shortcuts", |_, window, cx| window.dispatch_action(Box::new(ShowShortcuts), cx)));
+        if s.showing_diff() {
+            list.push(Command::new("description", "Show the PR description", |_, window, cx| window.dispatch_action(Box::new(ShowDescription), cx)));
+        }
         if s.stack.is_some() {
             list.push(Command::new("submit", "Submit review…", |_, window, cx| window.dispatch_action(Box::new(OpenSubmit), cx)));
         }
@@ -575,7 +647,24 @@ impl WispyApp {
             .min_w(px(0.))
             .flex_1()
             .overflow_hidden()
-            .child(div().flex_shrink(1.).min_w(px(0.)).text_size(u(13.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().overflow_hidden().text_ellipsis().child(title))
+            .child(
+                div()
+                    .id("range-title")
+                    .flex_shrink(1.)
+                    .min_w(px(0.))
+                    .text_size(u(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Double-click for the description (i)").build(window, cx))
+                    .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
+                        if event.click_count() >= 2 {
+                            this.describe_shown(window, cx);
+                        }
+                    }))
+                    .child(title),
+            )
             .child(
                 div()
                     .flex()
@@ -651,7 +740,7 @@ impl WispyApp {
             let warn = stack.needs_rebase.get(i).copied().unwrap_or(false);
             let ready = s.ready(i, i);
             let tip = format!(
-                "{}\n{} ← {}{}\nShift-click to select a range",
+                "{}\n{} ← {}{}\nShift-click to select a range · double-click for the description",
                 pr.title,
                 pr.base_ref,
                 pr.head_ref,
@@ -686,7 +775,12 @@ impl WispyApp {
                     }
                 })
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
-                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    if event.click_count() >= 2 {
+                        let prs = this.stack_descriptions(i, i, cx);
+                        this.show_description(prs, window, cx);
+                        return;
+                    }
                     let extend = event.modifiers().shift;
                     this.session.update(cx, |s, cx| s.click_chip(i, extend, cx));
                 }))
@@ -824,6 +918,11 @@ impl Render for WispyApp {
                         cx,
                     ))
                 }
+                Some(Overlay::Description(view)) => {
+                    let view_ = view.clone();
+                    let close = move |_: &mut Window, cx: &mut App| view_.update(cx, |_, cx| cx.emit(OverlayEvent::Closed(None)));
+                    Some(crate::ui::backdrop(view.clone(), close, cx))
+                }
                 Some(Overlay::Newer(warning, _)) => {
                     let warning_view = warning.clone();
                     let close = move |_: &mut Window, cx: &mut App| warning_view.update(cx, |_, cx| cx.emit(OverlayEvent::MarkAnyway));
@@ -862,6 +961,7 @@ impl Render for WispyApp {
             .on_action(cx.listener(|this, _: &RangeUp, _, cx| this.stack_action(cx, |s, cx| s.step_range(']', cx))))
             .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.stack_action(cx, |s, cx| s.step_range('{', cx))))
             .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.stack_action(cx, |s, cx| s.step_range('}', cx))))
+            .on_action(cx.listener(|this, _: &ShowDescription, window, cx| this.describe_shown(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSubmit, window, cx| {
                 if this.blocked() || this.palette.is_some() || this.sheet.is_some() {
                     return;

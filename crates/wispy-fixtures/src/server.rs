@@ -259,7 +259,8 @@ fn search_nodes(fixture: &Fixture, state: &State, numbers: &[u64]) -> Vec<Value>
                 "headRefOid": run_git(&fixture.origin, &["rev-parse", &format!("refs/pull/{}/head", pr.number)]),
                 "author": { "login": if pr.number == 1 { "you" } else { "fixture-bot" } },
                 "repository": { "nameWithOwner": format!("{}/{}", fixture.owner, fixture.repo) },
-                "viewerLatestReview": state.latest_review.get(&pr.number).cloned().unwrap_or(Value::Null)
+                "viewerLatestReview": state.latest_review.get(&pr.number).cloned().unwrap_or(Value::Null),
+                "bodyHTML": body_html(&description(pr.number)),
             })
         })
         .collect()
@@ -292,7 +293,7 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
                 "defaultBranchRef": { "name": "main" },
                 "pullRequest": {
                     "id": format!("PR_{number}"), "number": number, "title": pr.title, "state": "OPEN", "isDraft": false,
-                    "body": format!("Part of the fixture stack.\n\nFixes #{}\n- Related to #7", 100 + number),
+                    "body": description(number),
                     "baseRefName": pr.base_ref, "mergeStateStatus": if green { "CLEAN" } else { "BLOCKED" },
                     "autoMergeRequest": if auto { json!({ "enabledAt": "2026-09-30T10:00:00Z" }) } else { Value::Null },
                     "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": if green { "SUCCESS" } else { "PENDING" } } } }] }
@@ -365,7 +366,14 @@ fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
         "user": { "login": if pr.number == 1 { "you" } else { "fixture-bot" } },
         "base": { "ref": pr.base_ref, "sha": base_sha, "repo": repo },
         "head": { "ref": pr.head_ref, "sha": head_sha, "repo": repo },
+        "body": description(pr.number),
+        "body_html": body_html(&description(pr.number)),
     })
+}
+
+/// Every fixture PR's description (Markdown).
+fn description(number: u64) -> String {
+    format!("Part **{number}** of the fixture stack.\n\nFixes #{}\n- Related to #7", 100 + number)
 }
 
 /// Minimal percent-decoding for branch names in query strings (`stack%2F1` → `stack/1`).

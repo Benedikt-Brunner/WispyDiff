@@ -26,6 +26,7 @@ fn inbox_pr(repo: &str, number: u64, base: &str, head: &str, updated: &str) -> I
         requested: true,
         authored: false,
         my_review: None,
+        body_html: String::new(),
     }
 }
 
@@ -121,7 +122,7 @@ async fn search_results_carry_my_latest_submitted_review() {
             "number": number, "title": format!("PR {number}"), "url": "u", "isDraft": false, "updatedAt": "2026-09-30T00:00:00Z",
             "headRefName": format!("h{number}"), "baseRefName": "main", "headRefOid": format!("sha{number}"),
             "author": { "login": "someone" }, "repository": { "nameWithOwner": "acme/shop" },
-            "viewerLatestReview": review
+            "viewerLatestReview": review, "bodyHTML": format!("<p>About {number}</p>")
         })
     };
     let nodes = serde_json::json!([
@@ -143,6 +144,7 @@ async fn search_results_carry_my_latest_submitted_review() {
     let github = GitHubClient::new(server.uri(), "t").unwrap();
     let mut prs = github.inbox().await.unwrap();
     prs.sort_by_key(|p| p.number);
+    assert_eq!(prs[0].body_html, "<p>About 1</p>", "search results carry the rendered description");
     let reviews: Vec<Option<MyReview>> = prs.into_iter().map(|p| p.my_review).collect();
     assert_eq!(
         reviews,
