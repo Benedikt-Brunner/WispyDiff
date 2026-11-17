@@ -465,6 +465,53 @@ async fn new_conversation_starts_at_top_after_long_answer(cx: &mut TestAppContex
     ui.close(cx).await;
 }
 
+#[gpui_kit::test]
+async fn sending_scrolls_conversation_to_the_new_question(cx: &mut TestAppContext) {
+    let f = Fixture::new();
+    let ui = Ui::mount(cx, &f);
+    ui.open(cx, 2).await;
+    open(&ui, cx).await;
+    ask(&ui, cx, &format!("say:{}", "A long answer.\\n\\n".repeat(150))).await;
+    // Read back up the long answer.
+    cx.update_window(ui.window, |_, w, cx| {
+        use gpui_kit::InputEvent;
+        w.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position: point(px(1250.), px(400.)),
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(3000.))),
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    ui.frame(cx);
+    let pending_visible = |ui: &Ui, cx: &mut TestAppContext| {
+        ui.snapshots(cx).iter().any(|s| {
+            s.visible() && format!("{:?}", s.path()).contains("pending-question")
+        })
+    };
+    // The CLI waits, so the question stays pending without any answer text streaming in.
+    ui.click(cx, point(px(1200.), px(792.)));
+    ui.input(cx, "tools:[[\"wait\"]]");
+    ui.keys(cx, "enter");
+    ui.wait(cx, "CLI blocked", |_| {
+        f.log().iter().any(|l| {
+            l["prompt"].as_str().is_some_and(|p| p.contains("tools:[[\"wait\"]]"))
+        })
+    })
+    .await;
+    ui.frame(cx);
+    assert!(pending_visible(&ui, cx), "the sent question is scrolled into view");
+    f.go();
+    ui.wait(cx, "answer arrives", |cx| {
+        active(&ui, cx).is_some_and(|t| t.messages.len() == 4)
+    })
+    .await;
+    ui.close(cx).await;
+}
+
 // e2e: keeps the panel and a question being answered when the diff reloads
 #[gpui_kit::test]
 async fn reload_keeps_streaming_question_and_unsent_input(cx: &mut TestAppContext) {
