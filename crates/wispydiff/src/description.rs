@@ -128,16 +128,19 @@ impl Render for DescriptionView {
         if let Some(first) = self.pin_top {
             self.scroll.scroll_to_top_of_item(first);
         }
-        // Room below the last description, so that any PR's can scroll to the top (from the last
-        // frame's layout; the body's padding stays out of it).
+        // A stack's modal has a fixed height, with room below the last description so that any
+        // PR's can scroll to the top. The room comes from the last frame's layout; with the
+        // height fixed it doesn't feed back into the viewport, so it settles at once instead of
+        // growing the modal frame by frame. The body's padding stays out of it.
+        let stack = self.prs.len() > 1;
         let last = self.prs.len().saturating_sub(1);
         let room = match (self.scroll.bounds_for_item(last), self.scroll.bounds().size.height) {
-            (Some(item), viewport) if viewport > px(0.) => (viewport - item.size.height - crate::ui::upx(32., cx)).max(px(0.)),
+            (Some(item), viewport) if stack && viewport > px(0.) => (viewport - item.size.height - crate::ui::upx(32., cx)).max(px(0.)),
             _ => px(0.),
         };
         let pressed_inside = self.pressed_inside.clone();
         panel(820., cx)
-            .max_h(gpui_kit::relative(0.8))
+            .map(|d| if stack { d.h(gpui_kit::relative(0.8)) } else { d.max_h(gpui_kit::relative(0.8)) })
             .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| pressed_inside.set(true))
             .key_context("Overlay Description")
             .track_focus(&self.focus)
