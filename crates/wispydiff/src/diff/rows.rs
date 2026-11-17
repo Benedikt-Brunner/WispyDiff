@@ -354,7 +354,6 @@ impl DiffViewer {
         let attributed = self.prs.len() > 1 && row.a.is_some();
         let marker = self.assistant_marker(&summary.path, row.n, cx);
         let mark = self.marks.get(&(row_index, false)).cloned();
-        let history = attributed.then(|| line_history(row, &self.prs));
         let number = |n: Option<u32>| div().w(gutter).flex_none().pr(u(6.)).flex().justify_end().children(n.map(|n| n.to_string()));
         let weak = cx.entity().downgrade();
         let gutter_bg = if selected { blend(gutter_bg, p.accent, 0.12) } else { gutter_bg };
@@ -412,7 +411,6 @@ impl DiffViewer {
             .flex()
             .bg(bg)
             .when(selected, |d| d.bg(blend(bg, p.accent, 0.12)))
-            .when_some(history, |d, h| d.tooltip(tooltip(h)))
             .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
                 if this.hovered.as_ref().is_none_or(|t| t.file != file || t.offset != offset || t.mode != Mode::Unified) {
                     this.hovered = this.target_at(file, Mode::Unified, offset, true, cx);
@@ -850,18 +848,6 @@ fn starts_run(row: &Row, previous: Option<&Row>) -> bool {
     let Some(a) = row.a else { return false };
     let changed = |r: &Row| r.k == row_kind::ADDED || r.k == row_kind::DELETED;
     !matches!(previous, Some(p) if changed(p) && p.a == Some(a))
-}
-
-fn line_history(row: &Row, prs: &[wispy_core::github::PullRequest]) -> String {
-    let n = |i: u8| format!("#{}", prs.get(i as usize).map_or(0, |p| p.number));
-    let a = row.a.unwrap_or(0);
-    if row.k == row_kind::DELETED {
-        return format!("Deleted in {}", n(a));
-    }
-    if row.h.len() > 1 {
-        return format!("Added in {} · modified in {}", n(row.h[0]), row.h[1..].iter().map(|i| n(*i)).collect::<Vec<_>>().join(", "));
-    }
-    format!("Added in {}", n(a))
 }
 
 /// `over` mixed into `base` at `amount`.

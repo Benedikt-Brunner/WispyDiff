@@ -28,7 +28,7 @@ Diffs, highlighting and symbol indexes are **precomputed per SHA in Rust**, cach
 - **Stacks** are discovered via `baseRefName` chains. Only the bottom PR targets the default branch; stacks merge bottom-up. Forks never join a stack; if several PRs branch off one head, the oldest is followed. A PR not based on the latest head of the PR below is flagged ⚠.
 - **Contiguous range selection only.** Opening a PR shows that PR alone. In the stack bar, click selects one PR, shift-click extends to a range; `[`/`]` move the selection down/up the stack, `{`/`}` extend it. Combined diff = base of lowest selected PR → head of highest.
 - Every range of the open stack is **precomputed in the background** (focused PR, then whole stack, then the rest), so switching is a cache read.
-- **Per-PR color** used everywhere (gutter bar, file list, chips). Each line is attributed to the **last PR that touched it**; hover shows its history ("added in #2, modified in #3").
+- **Per-PR color** used everywhere (gutter bar, file list, chips). Each line is attributed to the **last PR that touched it**.
 
 ## Reading
 - **Code font**: JetBrains Mono when installed (including its Nerd Font variants), otherwise the platform's default monospace font. Used consistently in diffs, file views and rendered code.
