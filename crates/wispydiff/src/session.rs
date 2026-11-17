@@ -578,6 +578,12 @@ impl Session {
         Some((key, range, ws, newer.stack_id.clone()))
     }
 
+    /// Whether the waiting newer version's content keys for the shown range have loaded
+    /// (until then, marking a file viewed warns as if it changed).
+    pub fn newer_keys_loaded(&self) -> bool {
+        self.newer_range().is_some_and(|(key, ..)| self.newer_keys.as_ref().is_some_and(|(k, _)| *k == key))
+    }
+
     fn update_newer_keys(&mut self, cx: &mut Context<Self>) {
         let Some((key, range, ws, stack_id)) = self.newer_range() else { return };
         if self.newer_keys.as_ref().is_some_and(|(k, _)| *k == key) {

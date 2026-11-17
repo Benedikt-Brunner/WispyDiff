@@ -359,8 +359,10 @@ impl Ui {
     }
     pub async fn refresh(&self, cx: &mut TestAppContext) {
         self.session.update(cx, |s, _| s.refresh_inbox());
+        // Marking viewed compares against the newer version's keys, which load after the offer.
         self.wait(cx, "new commits offered", |cx| {
-            self.session.read(cx).newer.is_some()
+            let session = self.session.read(cx);
+            session.newer.is_some() && session.newer_keys_loaded()
         })
         .await;
     }
