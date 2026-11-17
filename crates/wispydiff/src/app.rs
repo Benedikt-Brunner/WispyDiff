@@ -138,17 +138,26 @@ impl WispyApp {
                 InboxEvent::Open(label) => this.session.update(cx, |s, cx| s.open(label.clone(), cx)),
                 InboxEvent::Refresh => this.session.update(cx, |s, _| s.refresh_inbox()),
                 InboxEvent::Describe(label) => {
-                    let pr = this.session.read(cx).inbox.iter().flat_map(|e| &e.group.prs).find(|pr| format!("{}#{}", pr.repo, pr.number) == *label).cloned();
-                    if let Some(pr) = pr {
-                        let described = DescribedPr {
-                            label: label.clone(),
-                            title: pr.title,
-                            author: pr.author,
-                            url: pr.url,
-                            body_html: pr.body_html,
-                            color: None,
-                        };
-                        this.show_description(vec![described], window, cx);
+                    // The PR's whole group, scrolled to that PR.
+                    let s = this.session.read(cx);
+                    let label_of = |pr: &wispy_core::inbox::InboxPr| format!("{}#{}", pr.repo, pr.number);
+                    let group = s.inbox.iter().map(|e| &e.group.prs).find(|prs| prs.iter().any(|pr| label_of(pr) == *label));
+                    if let Some(group) = group {
+                        let first = group.iter().position(|pr| label_of(pr) == *label).unwrap_or(0);
+                        let colored = group.len() > 1;
+                        let prs = group
+                            .iter()
+                            .enumerate()
+                            .map(|(i, pr)| DescribedPr {
+                                label: label_of(pr),
+                                title: pr.title.clone(),
+                                author: pr.author.clone(),
+                                url: pr.url.clone(),
+                                body_html: pr.body_html.clone(),
+                                color: colored.then_some(i as u8),
+                            })
+                            .collect();
+                        this.show_description(prs, first, window, cx);
                     }
                 }
             }),
@@ -270,6 +279,14 @@ impl WispyApp {
         self.palette.as_ref()
     }
 
+    /// The description modal's view, while it is open.
+    pub fn description_view(&self) -> Option<&Entity<DescriptionView>> {
+        match &self.overlay {
+            Some(Overlay::Description(view)) => Some(view),
+            _ => None,
+        }
+    }
+
     /// The PRs the description modal shows, while it is open.
     pub fn described_prs(&self, cx: &App) -> Option<Vec<DescribedPr>> {
         match &self.overlay {
@@ -363,24 +380,24 @@ impl WispyApp {
         cx.notify();
     }
 
-    /// Opens the description modal for these PRs.
-    pub fn show_description(&mut self, prs: Vec<DescribedPr>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the description modal for these PRs, scrolled to `prs[first]`.
+    pub fn show_description(&mut self, prs: Vec<DescribedPr>, first: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.overlay.is_some() || self.sheet.is_some() || prs.is_empty() {
             return;
         }
         self.palette = None;
         let opts = crate::ui::markdown_options(&self.session.read(cx).backend, cx);
-        let view = cx.new(|cx| DescriptionView::new(prs, opts, window, cx));
+        let view = cx.new(|cx| DescriptionView::new(prs, first, opts, window, cx));
         self.subscribe_overlay(&view, window, cx);
         self.overlay = Some(Overlay::Description(view));
         cx.notify();
     }
 
-    /// The open stack's PRs `lo..=hi` as the description modal shows them.
-    fn stack_descriptions(&self, lo: usize, hi: usize, cx: &App) -> Vec<DescribedPr> {
+    /// The open stack's PRs as the description modal shows them.
+    fn stack_descriptions(&self, cx: &App) -> Vec<DescribedPr> {
         let Some(stack) = &self.session.read(cx).stack else { return Vec::new() };
         let colored = stack.prs.len() > 1;
-        (lo..=hi.min(stack.prs.len().saturating_sub(1)))
+        (0..stack.prs.len())
             .map(|i| {
                 let pr = &stack.prs[i];
                 DescribedPr {
@@ -395,14 +412,14 @@ impl WispyApp {
             .collect()
     }
 
-    /// `i`: the descriptions of the PRs in view.
+    /// `i`: the stack's descriptions, scrolled to the PR in view (a range: its lowest).
     fn describe_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.session.read(cx).showing_diff() {
             return;
         }
-        let Some((lo, hi)) = self.session.read(cx).shown.as_ref().map(|r| (r.range.lo, r.range.hi)) else { return };
-        let prs = self.stack_descriptions(lo, hi, cx);
-        self.show_description(prs, window, cx);
+        let Some(lo) = self.session.read(cx).shown.as_ref().map(|r| r.range.lo) else { return };
+        let prs = self.stack_descriptions(cx);
+        self.show_description(prs, lo, window, cx);
     }
 
     fn blocked(&self) -> bool {
@@ -777,8 +794,8 @@ impl WispyApp {
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
                 .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     if event.click_count() >= 2 {
-                        let prs = this.stack_descriptions(i, i, cx);
-                        this.show_description(prs, window, cx);
+                        let prs = this.stack_descriptions(cx);
+                        this.show_description(prs, i, window, cx);
                         return;
                     }
                     let extend = event.modifiers().shift;

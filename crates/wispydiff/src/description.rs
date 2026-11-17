@@ -1,5 +1,5 @@
 //! `i` / double-click on a PR: its description as GitHub renders it (`bodyHTML`), in a modal.
-//! A range of PRs shows each one's description, bottom of the stack first.
+//! A stack shows every PR's description, bottom first, scrolled to the one asked for.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -34,15 +34,19 @@ pub struct DescriptionView {
     focus: FocusHandle,
     /// The current press started inside the panel (the backdrop leaves it open then).
     pressed_inside: Rc<Cell<bool>>,
+    /// The PR to keep at the top until the reader scrolls: the descriptions get their heights
+    /// over the first frames, so a single scroll would land short.
+    pin_top: Option<usize>,
 }
 
 impl EventEmitter<OverlayEvent> for DescriptionView {}
 
 impl DescriptionView {
-    pub fn new(prs: Vec<DescribedPr>, opts: RenderOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Opens scrolled so that `prs[first]` starts at the top (as far as the content allows).
+    pub fn new(prs: Vec<DescribedPr>, first: usize, opts: RenderOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        DescriptionView { prs, opts, scroll: ScrollHandle::new(), focus, pressed_inside: Rc::default() }
+        DescriptionView { prs, opts, scroll: ScrollHandle::new(), focus, pressed_inside: Rc::default(), pin_top: (first > 0).then_some(first) }
     }
 
     /// Whether the press the backdrop sees started inside the panel (and forgets it). The panel
@@ -51,11 +55,24 @@ impl DescriptionView {
         self.pressed_inside.take()
     }
 
+    /// The PR whose description is at the top of the modal's viewport.
+    pub fn top_pr(&self) -> Option<usize> {
+        // Child bounds are where the children are laid out before scrolling.
+        let top = self.scroll.bounds().top() - self.scroll.offset().y;
+        (0..self.prs.len()).find(|&i| self.scroll.bounds_for_item(i).is_some_and(|b| b.bottom() > top + px(1.)))
+    }
+
+    /// How far the modal is scrolled, and how far it could be.
+    pub fn scrolled(&self) -> (gpui_kit::Pixels, gpui_kit::Pixels) {
+        (-self.scroll.offset().y, self.scroll.max_offset().y)
+    }
+
     pub fn prs(&self) -> &[DescribedPr] {
         &self.prs
     }
 
     fn scroll_by(&mut self, dy: f32, cx: &mut Context<Self>) {
+        self.pin_top = None;
         let offset = self.scroll.offset();
         let max = self.scroll.max_offset().y;
         let y = (offset.y - px(dy) * crate::ui::zoom(cx)).clamp(-max, px(0.));
@@ -108,6 +125,16 @@ impl Render for DescriptionView {
                 .child(div().text_size(u(12.)).text_color(p.fg_muted).child(format!("by {}", pr.author)))
                 .child(div().text_size(u(13.)).line_height(u(20.)).child(body))
         });
+        if let Some(first) = self.pin_top {
+            self.scroll.scroll_to_top_of_item(first);
+        }
+        // Room below the last description, so that any PR's can scroll to the top (from the last
+        // frame's layout; the body's padding stays out of it).
+        let last = self.prs.len().saturating_sub(1);
+        let room = match (self.scroll.bounds_for_item(last), self.scroll.bounds().size.height) {
+            (Some(item), viewport) if viewport > px(0.) => (viewport - item.size.height - crate::ui::upx(32., cx)).max(px(0.)),
+            _ => px(0.),
+        };
         let pressed_inside = self.pressed_inside.clone();
         panel(820., cx)
             .max_h(gpui_kit::relative(0.8))
@@ -136,12 +163,14 @@ impl Render for DescriptionView {
                     .min_h(px(0.))
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
+                    .on_scroll_wheel(cx.listener(|this, _, _, _| this.pin_top = None))
                     .px(u(20.))
                     .py(u(16.))
                     .flex()
                     .flex_col()
                     .gap(u(16.))
-                    .children(sections),
+                    .children(sections)
+                    .child(div().flex_none().h(room)),
             )
     }
 }

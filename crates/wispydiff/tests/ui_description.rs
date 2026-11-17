@@ -12,6 +12,21 @@ fn labels(ui: &Ui, cx: &mut TestAppContext) -> Vec<String> {
     described(ui, cx).expect("the description is open").into_iter().map(|(label, _)| label).collect()
 }
 
+const STACK: [&str; 4] = ["wispy/fixture#1", "wispy/fixture#2", "wispy/fixture#3", "wispy/fixture#4"];
+
+/// The PR at the top of the modal's viewport, once it has laid out.
+fn top_pr(ui: &Ui, cx: &mut TestAppContext) -> usize {
+    ui.frame(cx);
+    ui.frame(cx);
+    ui.app.read_with(cx, |a, cx| {
+        let view = a.description_view().expect("the description is open").read(cx);
+        let (scrolled, max) = view.scrolled();
+        assert!(max > px(0.), "the stack's descriptions overflow the modal");
+        assert!(scrolled <= max);
+        view.top_pr().unwrap()
+    })
+}
+
 fn double_click(ui: &Ui, cx: &mut TestAppContext, at: gpui_kit::Point<gpui_kit::Pixels>) {
     ui.frame(cx);
     let mut v = VisualTestContext::from_window(ui.window, cx);
@@ -24,7 +39,7 @@ fn double_click(ui: &Ui, cx: &mut TestAppContext, at: gpui_kit::Point<gpui_kit::
 }
 
 #[gpui_kit::test]
-async fn i_shows_the_descriptions_of_the_prs_in_view(cx: &mut TestAppContext) {
+async fn i_shows_the_stacks_descriptions_scrolled_to_the_pr_in_view(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
     let ui = Ui::new(backend.clone(), cx);
@@ -32,9 +47,9 @@ async fn i_shows_the_descriptions_of_the_prs_in_view(cx: &mut TestAppContext) {
 
     ui.press(cx, "i");
     let shown = described(&ui, cx).expect("i opens the description");
-    assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].0, "wispy/fixture#2");
-    assert!(shown[0].1.contains("<strong>2</strong>"), "GitHub's rendering: {}", shown[0].1);
+    assert_eq!(shown.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), STACK, "every PR of the stack, bottom first");
+    assert!(shown[1].1.contains("<strong>2</strong>"), "GitHub's rendering: {}", shown[1].1);
+    assert_eq!(top_pr(&ui, cx), 1, "#2 starts at the top");
 
     // ↓ scrolls it rather than the diff; i (or Esc) closes it again.
     ui.press(cx, "down");
@@ -44,17 +59,21 @@ async fn i_shows_the_descriptions_of_the_prs_in_view(cx: &mut TestAppContext) {
     ui.press(cx, "escape");
     assert!(described(&ui, cx).is_none());
 
-    // A range shows each PR's, bottom first.
+    // A range scrolls to its lowest PR.
+    ui.press(cx, "]");
+    ui.wait(cx, |cx| ui.session.read(cx).shown.as_ref().is_some_and(|r| (r.range.lo, r.range.hi) == (2, 2))).await;
     ui.press(cx, "}");
-    ui.wait(cx, |cx| ui.session.read(cx).shown.as_ref().is_some_and(|r| (r.range.lo, r.range.hi) == (1, 2))).await;
+    ui.wait(cx, |cx| ui.session.read(cx).shown.as_ref().is_some_and(|r| (r.range.lo, r.range.hi) == (2, 3))).await;
     ui.press(cx, "i");
-    assert_eq!(labels(&ui, cx), ["wispy/fixture#2", "wispy/fixture#3"]);
+    assert_eq!(labels(&ui, cx), STACK);
+    assert_eq!(top_pr(&ui, cx), 2, "#3 starts at the top");
     ui.press(cx, "escape");
 
-    // Double-clicking a PR in the stack bar shows that PR's alone.
+    // Double-clicking a PR in the stack bar scrolls to that one.
     let y = ui.diff(cx).read_with(cx, |d, _| d.list.viewport_bounds().top()) - px(20.);
     double_click(&ui, cx, point(px(172.), y));
-    assert_eq!(labels(&ui, cx), ["wispy/fixture#1"]);
+    assert_eq!(labels(&ui, cx), STACK);
+    assert_eq!(top_pr(&ui, cx), 0, "#1 starts at the top");
     ui.press(cx, "escape");
 
     drop(backend);
@@ -103,11 +122,13 @@ async fn the_inbox_shows_a_description_on_i_or_a_right_click(cx: &mut TestAppCon
     let ui = Ui::new(backend.clone(), cx);
     ui.home(cx).await;
 
+    // A PR of a stack: the stack's descriptions, scrolled to that PR.
     inbox_select(&ui, cx, 3);
     ui.press(cx, "i");
     let shown = described(&ui, cx).expect("i opens the description");
-    assert_eq!(shown[0].0, "wispy/fixture#3");
-    assert!(shown[0].1.contains("Fixes #103"), "{}", shown[0].1);
+    assert_eq!(shown.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), STACK);
+    assert!(shown[2].1.contains("Fixes #103"), "{}", shown[2].1);
+    assert_eq!(top_pr(&ui, cx), 2);
     ui.press(cx, "escape");
     assert!(described(&ui, cx).is_none());
 

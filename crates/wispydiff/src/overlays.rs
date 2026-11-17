@@ -232,7 +232,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(Vec<String>, String)>)> {
                 (vec![s("↵")], s("Open (a collapsed stack: expand)")),
                 (vec![s("Space"), s("e")], s("Collapse / expand the stack")),
                 (vec![s("r")], s("Refresh")),
-                (vec![s("i")], s("The PR's description (or right-click it)")),
+                (vec![s("i")], s("The PR's description, with its stack's (or right-click it)")),
             ],
         ),
         (
@@ -262,7 +262,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(Vec<String>, String)>)> {
                 (vec![s("w")], s("Show / hide whitespace changes")),
                 (vec![s("M")], s("Mark as reviewed (local checkpoint)")),
                 (vec![s("d")], s("Changes since the last checkpoint")),
-                (vec![s("i")], s("Descriptions of the PRs in view (or double-click a PR)")),
+                (vec![s("i")], s("The stack's descriptions, at the PR in view (or double-click a PR)")),
             ],
         ),
         (

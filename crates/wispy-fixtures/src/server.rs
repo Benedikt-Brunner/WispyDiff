@@ -373,7 +373,10 @@ fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
 
 /// Every fixture PR's description (Markdown).
 fn description(number: u64) -> String {
-    format!("Part **{number}** of the fixture stack.\n\nFixes #{}\n- Related to #7", 100 + number)
+    format!(
+        "Part **{number}** of the fixture stack.\n\nFixes #{}\n- Related to #7\n\nChanges:\n- Adds the module's services\n- Wires them into the container\n- Updates the templates\n- Adjusts the styles\n- Covers it with unit tests\n- Covers it with integration tests\n\nNo migration needed.",
+        100 + number
+    )
 }
 
 /// Minimal percent-decoding for branch names in query strings (`stack%2F1` → `stack/1`).
