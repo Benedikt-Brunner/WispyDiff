@@ -1,12 +1,14 @@
 //! `i` / double-click on a PR: its description as GitHub renders it (`bodyHTML`), in a modal.
 //! A range of PRs shows each one's description, bottom of the stack first.
 
+use std::{cell::Cell, rc::Rc};
+
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Render, ScrollHandle, SharedString, Window};
 
 use crate::markdown::RenderOptions;
 use crate::overlays::{Cancel, Next, OverlayEvent, Prev};
-use crate::ui::{floating, link_button, palette, u};
+use crate::ui::{link_button, palette, panel, u};
 
 /// How far ↑/↓ scroll the description.
 const SCROLL_STEP: f32 = 60.;
@@ -30,6 +32,8 @@ pub struct DescriptionView {
     opts: RenderOptions,
     scroll: ScrollHandle,
     focus: FocusHandle,
+    /// The current press started inside the panel (the backdrop leaves it open then).
+    pressed_inside: Rc<Cell<bool>>,
 }
 
 impl EventEmitter<OverlayEvent> for DescriptionView {}
@@ -38,7 +42,13 @@ impl DescriptionView {
     pub fn new(prs: Vec<DescribedPr>, opts: RenderOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        DescriptionView { prs, opts, scroll: ScrollHandle::new(), focus }
+        DescriptionView { prs, opts, scroll: ScrollHandle::new(), focus, pressed_inside: Rc::default() }
+    }
+
+    /// Whether the press the backdrop sees started inside the panel (and forgets it). The panel
+    /// lets presses through, so its text can be selected.
+    pub fn take_pressed_inside(&self) -> bool {
+        self.pressed_inside.take()
     }
 
     pub fn prs(&self) -> &[DescribedPr] {
@@ -84,8 +94,7 @@ impl Render for DescriptionView {
                         .items_center()
                         .gap(u(8.))
                         .when_some(pr.color, |d, color| d.child(div().size(u(8.)).flex_none().rounded_full().bg(p.pr(color))))
-                        .child(div().flex_none().font_family(mono.clone()).text_size(u(12.)).text_color(p.fg_muted).child(pr.label.clone()))
-                        .child(div().flex_1().min_w(px(0.)).text_size(u(15.)).font_weight(FontWeight::SEMIBOLD).child(pr.title.clone()))
+                        .child(div().flex_1().min_w(px(0.)).font_family(mono.clone()).text_size(u(12.)).text_color(p.fg_muted).child(pr.label.clone()))
                         .when(!url.is_empty(), |d| {
                             d.child(
                                 link_button("open on GitHub", cx)
@@ -95,11 +104,14 @@ impl Render for DescriptionView {
                             )
                         }),
                 )
+                .child(div().text_size(u(15.)).font_weight(FontWeight::SEMIBOLD).child(pr.title.clone()))
                 .child(div().text_size(u(12.)).text_color(p.fg_muted).child(format!("by {}", pr.author)))
                 .child(div().text_size(u(13.)).line_height(u(20.)).child(body))
         });
-        floating(820., cx)
+        let pressed_inside = self.pressed_inside.clone();
+        panel(820., cx)
             .max_h(gpui_kit::relative(0.8))
+            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| pressed_inside.set(true))
             .key_context("Overlay Description")
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(OverlayEvent::Closed(None))))

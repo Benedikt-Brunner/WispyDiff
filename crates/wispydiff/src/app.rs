@@ -920,7 +920,13 @@ impl Render for WispyApp {
                 }
                 Some(Overlay::Description(view)) => {
                     let view_ = view.clone();
-                    let close = move |_: &mut Window, cx: &mut App| view_.update(cx, |_, cx| cx.emit(OverlayEvent::Closed(None)));
+                    let close = move |_: &mut Window, cx: &mut App| {
+                        view_.update(cx, |view, cx| {
+                            if !view.take_pressed_inside() {
+                                cx.emit(OverlayEvent::Closed(None));
+                            }
+                        })
+                    };
                     Some(crate::ui::backdrop(view.clone(), close, cx))
                 }
                 Some(Overlay::Newer(warning, _)) => {
