@@ -12,12 +12,15 @@ pub enum DisplayRow {
     Base { base: u32 },
     Line { o: u32, n: u32 },
     Gap { gap: usize, base: Option<u32> },
+    /// The row standing for folded mechanical change `fold` (its first unified row is `base`).
+    Fold { fold: usize, base: u32 },
 }
 #[derive(Debug, Clone)]
 enum Kind {
     Base(u32),
     Lines { new_start: u32, old_start: u32 },
     Gap { gap: usize, base: Option<u32> },
+    Fold { fold: usize, base: u32, len: u32 },
 }
 #[derive(Debug, Clone)]
 struct Piece {
@@ -43,14 +46,23 @@ pub struct UnifiedMap {
     pub reveal: Option<Reveal>,
     pub rows: u32,
     pieces: Vec<Piece>,
+    /// Indexes of `file.folds` drawn as one row each, sorted.
+    shut: Vec<usize>,
 }
 impl UnifiedMap {
     pub fn new(file: &FileSummary, reveal: Option<&[[u32; 2]]>) -> Self {
+        Self::with_folds(file, reveal, &[])
+    }
+    /// Like [`UnifiedMap::new`], with the folds `shut` (indexes of `file.folds`) drawn as one row.
+    pub fn with_folds(file: &FileSummary, reveal: Option<&[[u32; 2]]>, shut: &[usize]) -> Self {
+        let mut shut: Vec<usize> = shut.iter().copied().filter(|&i| i < file.folds.len()).collect();
+        shut.sort_unstable_by_key(|&i| file.folds[i].offset);
         let mut out = Self {
             file: file.clone(),
             reveal: reveal.map(<[_]>::to_vec),
             rows: 0,
             pieces: vec![],
+            shut,
         };
         let mut base = 0;
         for (index, gap) in file.gaps.iter().enumerate() {
@@ -102,6 +114,22 @@ impl UnifiedMap {
         out
     }
     fn push(&mut self, n: u32, kind: Kind) {
+        // Unified rows: folds inside them become one row each.
+        if let Kind::Base(base) = kind {
+            let (mut at, end) = (base, base + n);
+            let folds: Vec<(usize, u32, u32)> =
+                self.shut.iter().map(|&i| (i, self.file.folds[i].offset, self.file.folds[i].len)).filter(|&(_, o, l)| o >= base && o + l <= end).collect();
+            for (fold, offset, len) in folds {
+                self.push_piece(offset - at, Kind::Base(at));
+                self.push_piece(1, Kind::Fold { fold, base: offset, len });
+                at = offset + len;
+            }
+            self.push_piece(end - at, Kind::Base(at));
+            return;
+        }
+        self.push_piece(n, kind);
+    }
+    fn push_piece(&mut self, n: u32, kind: Kind) {
         if n > 0 {
             self.pieces.push(Piece {
                 at: self.rows,
@@ -131,6 +159,7 @@ impl UnifiedMap {
                 n: new_start + i,
             },
             Kind::Gap { gap, base } => DisplayRow::Gap { gap, base },
+            Kind::Fold { fold, base, .. } => DisplayRow::Fold { fold, base },
         }
     }
     /// Where unified row `base` is drawn (a hunk header shown away: where its hunk starts).
@@ -139,10 +168,15 @@ impl UnifiedMap {
             match p.kind {
                 Kind::Base(b) if base < b + p.n => return p.at + base.saturating_sub(b),
                 Kind::Gap { base: Some(b), .. } if b == base => return p.at,
+                Kind::Fold { base: b, len, .. } if base >= b && base < b + len => return p.at,
                 _ => (),
             }
         }
         self.rows
+    }
+    /// Where the row standing for fold `index` is drawn, if it is folded.
+    pub fn fold_row(&self, index: usize) -> Option<u32> {
+        self.pieces.iter().find_map(|p| matches!(p.kind, Kind::Fold { fold, .. } if fold == index).then_some(p.at))
     }
     /// Where the row standing for gap `index` is drawn, if the gap isn't all shown.
     pub fn gap_row(&self, index: usize) -> Option<u32> {
@@ -303,6 +337,25 @@ mod tests {
         assert_eq!(full.rows, 62);
         assert_eq!(full.from_base(1), 31);
         assert!(full.gap_row(2).is_none());
+    }
+    #[test]
+    fn shut_folds_are_one_row_each() {
+        let mut f = file();
+        f.folds = vec![
+            wispy_core::mechanical::Fold { offset: 2, len: 2, reason: "reformatted".into() },
+            wispy_core::mechanical::Fold { offset: 6, len: 2, reason: "renamed".into() },
+        ];
+        let open = UnifiedMap::new(&f, None);
+        let folded = UnifiedMap::with_folds(&f, None, &[0, 1]);
+        assert_eq!(folded.rows, open.rows - 2);
+        assert_eq!(folded.at(2), DisplayRow::Fold { fold: 0, base: 2 });
+        assert_eq!(folded.at(3), DisplayRow::Base { base: 4 });
+        assert_eq!(folded.fold_row(1), Some(5));
+        assert_eq!(folded.from_base(3), 2);
+        assert_eq!(folded.from_base(4), 3);
+        let one = UnifiedMap::with_folds(&f, None, &[1]);
+        assert_eq!(one.fold_row(0), None);
+        assert_eq!(one.at(2), DisplayRow::Base { base: 2 });
     }
     #[test]
     fn reveals_saturate_and_empty_files() {

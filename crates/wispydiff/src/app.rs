@@ -518,6 +518,8 @@ impl WispyApp {
         if let Some(shown) = &s.shown {
             let label = if shown.ignore_whitespace { "Show whitespace changes" } else { "Hide whitespace changes" };
             list.push(Command::new("whitespace", label, with(|s, cx| s.toggle_whitespace(cx))));
+            let label = if s.hide_mechanical { "Show mechanical changes (renames, reformatting)" } else { "Fold mechanical changes (renames, reformatting)" };
+            list.push(Command::new("mechanical", label, |_, window, cx| window.dispatch_action(Box::new(crate::diff::ToggleMechanical), cx)));
         }
         list.push(Command::new("inbox", "Go to inbox", with(|s, cx| s.go_home(cx))));
         list.push(Command::new("theme", "Change theme…", |_, window, cx| window.dispatch_action(Box::new(OpenThemes), cx)));
