@@ -16,14 +16,13 @@ async fn fetches_pull_request_metadata_with_the_token() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/shop/pulls/12"))
         .and(header("authorization", "Bearer secret-token"))
-        .and(header("accept", "application/vnd.github+json"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(support::pull_request_json(
-            12,
-            "main",
-            "feature/pick-lists",
-            "abc123",
-            "https://github.com/acme/shop.git",
-        )))
+        // The full media type adds the rendered description.
+        .and(header("accept", "application/vnd.github.full+json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut body = support::pull_request_json(12, "main", "feature/pick-lists", "abc123", "https://github.com/acme/shop.git");
+            body["body_html"] = "<p>Adds <strong>pick lists</strong>.</p>".into();
+            body
+        }))
         .expect(1)
         .mount(&server)
         .await;
@@ -39,6 +38,18 @@ async fn fetches_pull_request_metadata_with_the_token() {
     assert_eq!(pr.head_sha, "abc123");
     assert_eq!(pr.clone_url, "https://github.com/acme/shop.git");
     assert_eq!(pr.state, "open");
+    assert_eq!(pr.body_html, "<p>Adds <strong>pick lists</strong>.</p>");
+}
+
+#[tokio::test]
+async fn a_pull_request_without_a_description_has_an_empty_one() {
+    let server = MockServer::start().await;
+    let mut body = support::pull_request_json(4, "main", "x", "abc", "https://github.com/acme/shop.git");
+    body["body_html"] = serde_json::Value::Null;
+    Mock::given(path("/repos/acme/shop/pulls/4")).respond_with(ResponseTemplate::new(200).set_body_json(body)).mount(&server).await;
+
+    let client = GitHubClient::new(server.uri(), "t").unwrap();
+    assert_eq!(client.pull_request(&pr_ref(4)).await.unwrap().body_html, "");
 }
 
 #[tokio::test]

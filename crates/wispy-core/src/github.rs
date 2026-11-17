@@ -4,6 +4,9 @@ use crate::error::{Error, Result};
 use crate::pr_ref::PrRef;
 
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
+const DEFAULT_MEDIA_TYPE: &str = "application/vnd.github+json";
+/// Adds `body_html` (and `body_text`) to PRs.
+const FULL_MEDIA_TYPE: &str = "application/vnd.github.full+json";
 
 /// The subset of a pull request the app needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +28,10 @@ pub struct PullRequest {
     /// `owner/repo` the head branch lives in; `None` if that fork was deleted.
     pub head_repo: Option<String>,
     pub default_branch: String,
+    /// GitHub's rendering of the description (sanitized HTML; empty when there is none, or in
+    /// caches from before it was fetched).
+    #[serde(default)]
+    pub body_html: String,
 }
 
 impl PullRequest {
@@ -113,7 +120,7 @@ const SEARCH_QUERY: &str = "query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
-        number title url isDraft updatedAt headRefName baseRefName headRefOid
+        number title url isDraft updatedAt headRefName baseRefName headRefOid bodyHTML
         author { login }
         repository { nameWithOwner }
         viewerLatestReview { state submittedAt commit { oid } }
@@ -151,7 +158,7 @@ impl GitHubClient {
 
     pub async fn pull_request(&self, pr: &PrRef) -> Result<PullRequest> {
         let path = format!("/repos/{}/{}/pulls/{}", pr.owner, pr.repo, pr.number);
-        let raw: RawPullRequest = self.get(&path, &[]).await?;
+        let raw: RawPullRequest = self.get_as(&path, &[], FULL_MEDIA_TYPE).await?;
         Ok(raw.into())
     }
 
@@ -168,7 +175,7 @@ impl GitHubClient {
     async fn open_pulls(&self, owner: &str, repo: &str, filter: &[(&str, String)]) -> Result<Vec<PullRequest>> {
         let mut query: Vec<(&str, String)> = vec![("state", "open".into()), ("per_page", "100".into())];
         query.extend(filter.iter().cloned());
-        let raw: Vec<RawPullRequest> = self.get(&format!("/repos/{owner}/{repo}/pulls"), &query).await?;
+        let raw: Vec<RawPullRequest> = self.get_as(&format!("/repos/{owner}/{repo}/pulls"), &query, FULL_MEDIA_TYPE).await?;
         Ok(raw.into_iter().map(PullRequest::from).collect())
     }
 
@@ -282,6 +289,7 @@ impl GitHubClient {
                 requested,
                 authored: !requested,
                 my_review: parse_my_review(&node["viewerLatestReview"]),
+                body_html: text("bodyHTML"),
             });
         }
         Ok(prs)
@@ -333,22 +341,27 @@ impl GitHubClient {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str, query: &[(&str, String)]) -> Result<T> {
+        self.get_as(path, query, DEFAULT_MEDIA_TYPE).await
+    }
+
+    /// A GET asking for a media type (`full+json` adds rendered bodies to PRs and issues).
+    async fn get_as<T: serde::de::DeserializeOwned>(&self, path: &str, query: &[(&str, String)], accept: &str) -> Result<T> {
         let request = self.http.get(format!("{}{path}", self.api_base)).query(query);
-        self.execute(request, "GET", path).await
+        self.execute(request, "GET", path, accept).await
     }
 
     async fn send<T: serde::de::DeserializeOwned>(&self, method: reqwest::Method, path: &str, body: &serde_json::Value) -> Result<T> {
         let name = method.to_string();
         let request = self.http.request(method, format!("{}{path}", self.api_base)).json(body);
-        self.execute(request, &name, path).await
+        self.execute(request, &name, path, DEFAULT_MEDIA_TYPE).await
     }
 
     /// An HTTP error status becomes [`Error::GitHub`] (the request was definitely rejected);
     /// a transport failure stays [`Error::Http`] (the outcome is unknown).
-    async fn execute<T: serde::de::DeserializeOwned>(&self, request: reqwest::RequestBuilder, method: &str, path: &str) -> Result<T> {
+    async fn execute<T: serde::de::DeserializeOwned>(&self, request: reqwest::RequestBuilder, method: &str, path: &str, accept: &str) -> Result<T> {
         let response = request
             .bearer_auth(&self.token)
-            .header("Accept", "application/vnd.github+json")
+            .header("Accept", accept)
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .await?;
@@ -424,6 +437,7 @@ impl From<RawPullRequest> for PullRequest {
             base_repo: base_repo.full_name,
             head_repo: raw.head.repo.map(|r| r.full_name),
             default_branch: base_repo.default_branch,
+            body_html: raw.body_html.unwrap_or_default(),
         }
     }
 }
@@ -444,6 +458,8 @@ struct RawPullRequest {
     user: RawUser,
     base: RawBranch,
     head: RawBranch,
+    #[serde(default)]
+    body_html: Option<String>,
 }
 
 #[derive(Deserialize)]

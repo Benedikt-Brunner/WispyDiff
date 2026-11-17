@@ -27,6 +27,7 @@ fn pr(number: u64, base_ref: &str, head_ref: &str, clone_url: &str) -> PullReque
         base_repo: "wispy/fixture".into(),
         head_repo: Some("wispy/fixture".into()),
         default_branch: "main".into(),
+        body_html: String::new(),
     }
 }
 

@@ -26,6 +26,9 @@ pub struct InboxPr {
     /// The user's latest submitted review on GitHub (from any client).
     #[serde(default)]
     pub my_review: Option<MyReview>,
+    /// GitHub's rendering of the description (empty when there is none, or in caches from before).
+    #[serde(default)]
+    pub body_html: String,
 }
 
 /// A review the user submitted.

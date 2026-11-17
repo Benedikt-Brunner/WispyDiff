@@ -1642,6 +1642,7 @@ mod tests {
             base_repo: "owner/repo".into(),
             head_repo: Some("owner/repo".into()),
             default_branch: "main".into(),
+            body_html: String::new(),
         };
         let mut second = pr.clone();
         second.number = 9;

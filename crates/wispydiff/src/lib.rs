@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod backend;
+pub mod description;
 pub mod diff;
 pub mod http;
 pub mod inbox;

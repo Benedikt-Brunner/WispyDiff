@@ -1,5 +1,5 @@
 //! Home: review requests and your own PRs, grouped into stacks. j/k to move, Enter to open,
-//! Space/e to collapse a stack, r to refresh.
+//! Space/e to collapse a stack, r to refresh, i (or a right-click) for a PR's description.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -18,7 +18,7 @@ use crate::logic::time::{ago, exact_local, now_unix};
 use crate::settings;
 use crate::ui::{key_label, link_button, palette, status_badge, u, wordmark, BadgeKind};
 
-gpui_kit::actions!(inbox, [Down, Up, Open, Toggle, Refresh]);
+gpui_kit::actions!(inbox, [Down, Up, Open, Toggle, Refresh, Describe]);
 
 pub fn bind_keys(cx: &mut App) {
     let ctx = Some("Inbox && !Input");
@@ -31,12 +31,15 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("space", Toggle, ctx),
         KeyBinding::new("e", Toggle, ctx),
         KeyBinding::new("r", Refresh, ctx),
+        KeyBinding::new("i", Describe, ctx),
     ]);
 }
 
 pub enum InboxEvent {
     Open(String),
     Refresh,
+    /// Show this PR's description (`owner/repo#N`).
+    Describe(String),
 }
 
 fn group_key(entry: &InboxEntry) -> String {
@@ -200,6 +203,14 @@ impl Inbox {
         }
     }
 
+    fn describe(&mut self, _: &Describe, _: &mut Window, cx: &mut Context<Self>) {
+        let items = self.items();
+        let Some(current) = items.get(self.selected(&items)).cloned() else { return };
+        if !current.starts_with("group:") {
+            cx.emit(InboxEvent::Describe(current));
+        }
+    }
+
     fn refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InboxEvent::Refresh);
     }
@@ -243,6 +254,7 @@ impl Render for Inbox {
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::toggle))
             .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(Self::describe))
             .size_full()
             .bg(p.bg)
             .text_color(p.fg);
@@ -356,6 +368,8 @@ impl Render for Inbox {
                 div().flex().flex_col().children(entry.group.prs.iter().enumerate().map(|(i, pr)| {
                     let label = pr_label(pr);
                     let (open_label, hover_label) = (label.clone(), label.clone());
+                    let (menu_label, button_label) = (label.clone(), label.clone());
+                    let is_selected = selected.as_deref() == Some(&label);
                     div()
                         .id(SharedString::from(format!("inbox-pr-{label}")))
                         .flex()
@@ -366,8 +380,16 @@ impl Render for Inbox {
                         .py(u(6.))
                         .rounded(u(6.))
                         .cursor_pointer()
-                        .when(selected.as_deref() == Some(&label), |d| d.bg(p.selection))
+                        .when(is_selected, |d| d.bg(p.selection))
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(InboxEvent::Open(open_label.clone()))))
+                        // A right-click shows the description.
+                        .on_mouse_down(
+                            gpui_kit::MouseButton::Right,
+                            cx.listener(move |this, _, _, cx| {
+                                this.selected_id = Some(menu_label.clone());
+                                cx.emit(InboxEvent::Describe(menu_label.clone()));
+                            }),
+                        )
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
                             if this.selected_id.as_deref() != Some(&hover_label) {
                                 this.selected_id = Some(hover_label.clone());
@@ -391,6 +413,19 @@ impl Render for Inbox {
                         .when(pr.draft, |d| d.child(status_badge("draft", BadgeKind::Plain, cx).flex_none()))
                         .children(Self::progress_badges(&pr_label(pr), entry.progress.get(i), cx))
                         .child(div().flex_1())
+                        // On the row under the mouse (or selected with j/k).
+                        .when(is_selected, |d| {
+                            d.child(
+                                link_button("description", cx)
+                                    .id(SharedString::from(format!("inbox-description-{label}")))
+                                    .flex_none()
+                                    .tooltip(tip("Show the description (i, or right-click)"))
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(InboxEvent::Describe(button_label.clone()));
+                                    })),
+                            )
+                        })
                         .child(div().flex_shrink(100.).min_w(px(0.)).overflow_hidden().text_ellipsis().text_size(u(12.)).text_color(p.fg_muted).whitespace_nowrap().child(format!(
                             "{} · {} · {} ← {}",
                             if pr.requested { "review requested" } else { "yours" },

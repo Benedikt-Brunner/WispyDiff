@@ -293,6 +293,12 @@ pub fn backdrop(child: impl IntoElement, on_close: impl Fn(&mut Window, &mut App
 
 /// A floating panel (palette, pickers, dialogs): stops clicks reaching the backdrop.
 pub fn floating(width: f32, cx: &App) -> gpui_kit::Stateful<Div> {
+    panel(width, cx).on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// A floating panel that lets presses through, so text in it can be selected (the window's
+/// text selection starts from them); its backdrop must tell presses inside it apart itself.
+pub fn panel(width: f32, cx: &App) -> gpui_kit::Stateful<Div> {
     let p = palette(cx);
     div()
         .id("floating")
@@ -309,7 +315,6 @@ pub fn floating(width: f32, cx: &App) -> gpui_kit::Stateful<Div> {
         .text_color(p.fg)
         .when(p.shadows, |d| d.shadow_lg())
         .overflow_hidden()
-        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 // ---------- assets ----------
