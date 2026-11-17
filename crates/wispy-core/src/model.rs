@@ -11,12 +11,13 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::highlight::{plain_lines, Language, Seg};
 use crate::highlight_cache::Lines;
+use crate::mechanical::{classify, FileInput, Fold};
 use crate::noise::path_noise;
 use crate::split::align;
 use crate::words::{diff_words, Spans};
 
 /// Bump whenever [`DiffView`] or its computation changes, to invalidate cached views.
-pub const MODEL_VERSION: u32 = 10;
+pub const MODEL_VERSION: u32 = 11;
 
 pub mod row_kind {
     pub const FILE: u8 = 0;
@@ -84,6 +85,12 @@ pub struct FileSummary {
     /// Identifies this file's change by content (paths and changed/context text, not line
     /// numbers or SHAs), so a "viewed" mark survives rebases that don't touch it.
     pub content_key: String,
+    /// Runs of rows that only reformat or rename code (see [`crate::mechanical`]).
+    #[serde(default)]
+    pub folds: Vec<Fold>,
+    /// Every change of the file is in a fold.
+    #[serde(default)]
+    pub mechanical: bool,
 }
 
 /// A run of unchanged lines between hunks (or before the first, or after the last) that the
@@ -145,6 +152,7 @@ impl DiffView {
             .enumerate()
             .map(|(index, (file, attrs))| file_rows(index as u32, file, attrs, highlights))
             .collect();
+        let folds = mechanical_folds(files, &per_file, highlights, generated);
         // Per file: the path each PR knew it under, where that differs from the shown path.
         let mut renamed_in: HashMap<usize, Vec<(u8, String)>> = HashMap::new();
         for (index, attrs) in attributions.iter().enumerate() {
@@ -161,7 +169,7 @@ impl DiffView {
         let mut summaries = Vec::with_capacity(files.len());
         let mut max_line_chars = 0u32;
         let mut max_line_number = 0u32;
-        for (file, file_rows) in files.iter().zip(per_file) {
+        for ((file, file_rows), folds) in files.iter().zip(per_file).zip(folds) {
             let first_row = rows.len() as u32;
             let mut prs: Vec<u8> = file_rows.iter().filter_map(|r| r.a).collect();
             prs.sort_unstable();
@@ -208,6 +216,8 @@ impl DiffView {
                 new_lines,
                 pr_paths: renamed_in.remove(&(summaries.len())).unwrap_or_default(),
                 content_key: content_key(file),
+                mechanical: !folds.is_empty() && fully_folded(&file_rows, &folds),
+                folds,
             });
             rows.extend(file_rows);
         }
@@ -226,6 +236,42 @@ impl DiffView {
             rows,
         }
     }
+}
+
+/// The mechanical folds of each file; none for files collapsed as noise anyway.
+fn mechanical_folds(files: &[FileDiff], rows: &[Vec<Row>], highlights: &HashMap<String, Lines>, generated: &HashSet<String>) -> Vec<Vec<Fold>> {
+    let text = |blob: &Option<String>| -> Option<String> {
+        let lines = highlights.get(blob.as_ref()?)?;
+        let mut out = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            line.iter().for_each(|(_, piece)| out.push_str(piece));
+        }
+        Some(out)
+    };
+    let skip = |file: &FileDiff| file.binary || file.hunks.is_empty() || generated.contains(file.path()) || path_noise(file.path()).is_some();
+    let inputs: Vec<FileInput> = files
+        .iter()
+        .zip(rows)
+        .map(|(file, rows)| FileInput { language: if skip(file) { None } else { Language::from_path(file.path()) }, rows })
+        .collect();
+    classify(&inputs, &|i| {
+        let file = &files[i];
+        if file.binary || file.hunks.is_empty() {
+            return (None, None);
+        }
+        (text(&file.old_blob), text(&file.new_blob))
+    })
+}
+
+/// Whether every added or deleted row of a file lies in one of its folds.
+fn fully_folded(rows: &[Row], folds: &[Fold]) -> bool {
+    rows.iter().enumerate().all(|(offset, row)| {
+        let changed = row.k == row_kind::ADDED || row.k == row_kind::DELETED;
+        !changed || folds.iter().any(|f| (offset as u32) >= f.offset && (offset as u32) < f.offset + f.len)
+    })
 }
 
 /// Old and new line counts of a text file with hunks, from whichever side was highlighted

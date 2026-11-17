@@ -273,6 +273,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(Vec<String>, String)>)> {
                 (vec![s("z")], s("Wrap long lines")),
                 (vec![s("Space"), s("e")], s("Collapse / expand the file")),
                 (vec![s("E")], s("Show / hide all unchanged lines between the hunks (unified)")),
+                (vec![s("m")], s("Show / fold mechanical changes (renames, reformatting)")),
                 (vec![s("v")], s("Mark viewed and go to the next file")),
                 (vec![s("V")], s("Undo the last viewed mark and go back to that file")),
             ],

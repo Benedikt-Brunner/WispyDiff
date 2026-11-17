@@ -37,6 +37,8 @@ pub(crate) fn test_file() -> wispy_core::model::FileSummary {
         new_lines: 10,
         pr_paths: vec![],
         content_key: String::new(),
+        folds: vec![],
+        mechanical: false,
     }
 }
 

@@ -82,6 +82,7 @@ gpui_kit::actions!(
         HideExtension,
         ToggleCollapse,
         ToggleGaps,
+        ToggleMechanical,
         Comment,
         Usages_,
         Search,
@@ -115,6 +116,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("e", ToggleCollapse, ctx),
         KeyBinding::new("space", ToggleCollapse, ctx),
         KeyBinding::new("shift-e", ToggleGaps, ctx),
+        KeyBinding::new("m", ToggleMechanical, ctx),
         KeyBinding::new("c", Comment, ctx),
         KeyBinding::new("u", Usages_, ctx),
         KeyBinding::new("/", Search, ctx),
@@ -330,6 +332,8 @@ pub struct DiffViewer {
 
     // ---- per view ----
     reveals: HashMap<usize, Vec<[u32; 2]>>,
+    /// Per file: the mechanical folds opened (indexes of its `folds`).
+    open_folds: HashMap<usize, HashSet<usize>>,
     head_lines: HashMap<usize, HashMap<u32, Arc<Vec<Seg>>>>,
     split: HashMap<usize, Arc<Vec<SplitRow>>>,
     split_loading: HashSet<usize>,
@@ -439,6 +443,7 @@ impl DiffViewer {
             filter_highlight: 0,
             file_search: None,
             reveals: HashMap::new(),
+            open_folds: HashMap::new(),
             head_lines: HashMap::new(),
             split: HashMap::new(),
             split_loading: HashSet::new(),
@@ -543,6 +548,7 @@ impl DiffViewer {
             self.since = shown.since.is_some();
             self.prs = stack.prs.clone();
             self.reveals.clear();
+            self.open_folds.clear();
             self.head_lines.clear();
             self.split.clear();
             self.split_loading.clear();
@@ -579,6 +585,7 @@ impl DiffViewer {
         let s = self.s(cx);
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (s.default_mode == BaseMode::Split).hash(&mut h);
+        s.hide_mechanical.hash(&mut h);
         s.ignore_patterns.hash(&mut h);
         for f in &self.view.summary.files {
             s.is_viewed(&f.content_key).hash(&mut h);
@@ -628,7 +635,8 @@ impl DiffViewer {
         let is_temp = self.temporary.as_deref() == Some(file.path.as_str());
         let hidden = !is_temp
             && (self.collapsed.contains(&file.path)
-                || ((file.noise.is_some() || s.is_ignored(&file.path) || s.is_viewed(&file.content_key)) && !self.expanded.contains(&file.path)));
+                || ((file.noise.is_some() || (file.mechanical && s.hide_mechanical) || s.is_ignored(&file.path) || s.is_viewed(&file.content_key))
+                    && !self.expanded.contains(&file.path)));
         if hidden {
             return Mode::Collapsed;
         }
@@ -638,6 +646,34 @@ impl DiffViewer {
         } else {
             Mode::Unified
         }
+    }
+
+    /// The mechanical folds of `file` drawn as one row (indexes of its `folds`).
+    pub fn shut_folds(&self, file: usize, cx: &App) -> Vec<usize> {
+        if !self.s(cx).hide_mechanical {
+            return Vec::new();
+        }
+        let open = self.open_folds.get(&file);
+        (0..self.view.summary.files[file].folds.len()).filter(|i| !open.is_some_and(|o| o.contains(i))).collect()
+    }
+
+    /// Shows the rows of mechanical fold `fold` of `file`.
+    pub fn unfold(&mut self, file: usize, fold: usize, cx: &mut Context<Self>) {
+        self.change_layout(cx, |this, _| {
+            this.keep_open(file);
+            this.open_folds.entry(file).or_default().insert(fold);
+        });
+    }
+
+    fn on_toggle_mechanical(&mut self, _: &ToggleMechanical, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.keys_ok() {
+            return;
+        }
+        let hide = !self.s(cx).hide_mechanical;
+        self.change_layout(cx, |this, cx| {
+            this.open_folds.clear();
+            this.session.update(cx, |s, cx| s.set_hide_mechanical(hide, cx));
+        });
     }
 
     pub fn segment(&self, file: usize) -> &layout::Segment {
@@ -650,7 +686,8 @@ impl DiffViewer {
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let filtered = self.filtered();
         let modes: Vec<Mode> = (0..self.view.summary.files.len()).map(|i| self.mode_of_with(i, &filtered, cx)).collect();
-        let mut built = Built::new(&self.view, |i| modes[i], &self.reveals);
+        let shut: Vec<Vec<usize>> = (0..self.view.summary.files.len()).map(|i| self.shut_folds(i, cx)).collect();
+        let mut built = Built::new(&self.view, |i| modes[i], &self.reveals, |i| shut[i].clone());
         let items = self.comment_items(cx);
         let (placed, marks, tallies) = self.place_items(&built, &items, cx);
         built.place(placed);
@@ -988,6 +1025,7 @@ impl DiffViewer {
                 None => UnifiedRow::Line { o, n, segs: Arc::new(Vec::new()) },
             },
             DisplayRow::Gap { gap, base } => UnifiedRow::Gap { gap, header: base.map(|b| &self.view.rows[(summary.first_row + b) as usize]) },
+            DisplayRow::Fold { fold, .. } => UnifiedRow::Fold { fold },
         }
     }
 
@@ -1459,12 +1497,12 @@ impl DiffViewer {
     }
 
     fn apply_gaps(&mut self, file: usize, next: Option<Vec<[u32; 2]>>, pin: Option<usize>, cx: &mut Context<Self>) {
-        self.change_layout(cx, |this, _| {
+        self.change_layout(cx, |this, cx| {
             this.keep_open(file);
             if this.built.segments.get(file).map(|s| s.mode) == Some(Mode::Unified) {
                 let info = this.view.summary.files[file].clone();
                 let before = this.built.unified[&file].clone();
-                let after = UnifiedMap::new(&info, next.as_deref());
+                let after = UnifiedMap::with_folds(&info, next.as_deref(), &this.shut_folds(file, cx));
                 let opening = after.rows >= before.rows;
                 let start = this.built.segments[file].start;
                 let top = this.list.logical_scroll_top();
@@ -1617,7 +1655,11 @@ impl DiffViewer {
                     let to = match m {
                         Mode::Split => location.split,
                         _ => {
-                            let map = UnifiedMap::new(&self.view.summary.files[segment.file], self.reveals.get(&segment.file).map(Vec::as_slice));
+                            let map = UnifiedMap::with_folds(
+                                &self.view.summary.files[segment.file],
+                                self.reveals.get(&segment.file).map(Vec::as_slice),
+                                &self.shut_folds(segment.file, cx),
+                            );
                             match location.unified {
                                 Some(u) => Some(map.from_base(u)),
                                 None => map.from_new_line(line).or_else(|| {
@@ -2478,6 +2520,8 @@ pub enum UnifiedRow<'a> {
     Line { o: u32, n: u32, segs: Arc<Vec<Seg>> },
     /// The row standing for what's still hidden of a gap (its hunk header, or none after the last hunk).
     Gap { gap: usize, header: Option<&'a Row> },
+    /// The row standing for a folded mechanical change (index into the file's `folds`).
+    Fold { fold: usize },
     None,
 }
 
@@ -2583,6 +2627,7 @@ impl Render for DiffViewer {
             }))
             .on_action(cx.listener(Self::on_toggle_wrap))
             .on_action(cx.listener(Self::on_toggle_threads))
+            .on_action(cx.listener(Self::on_toggle_mechanical))
             .on_action(cx.listener(Self::on_toggle_list_mode))
             .on_action(cx.listener(Self::on_open_filter))
             .on_action(cx.listener(Self::on_toggle_filter))

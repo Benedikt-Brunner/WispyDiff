@@ -134,7 +134,9 @@ impl DiffViewer {
         let (why, tally) = if collapsed {
             let s = self.session.read(cx);
             let why = summary.noise.clone().unwrap_or_else(|| {
-                if s.is_viewed(&summary.content_key) {
+                if summary.mechanical && s.hide_mechanical && !s.is_viewed(&summary.content_key) {
+                    "mechanical changes only".into()
+                } else if s.is_viewed(&summary.content_key) {
                     "viewed".into()
                 } else if s.is_ignored(&summary.path) {
                     "ignored".into()
@@ -295,6 +297,7 @@ impl DiffViewer {
                 let text = header.and_then(|h| h.s.first().map(|s| s.1.clone())).unwrap_or_default();
                 return self.render_gap_row(file, gap, header.is_some(), text, cx);
             }
+            UnifiedRow::Fold { fold } => return self.render_fold_row(file, fold, cx),
             UnifiedRow::None => return div().h(u(ROW)).into_any_element(),
         };
         if let Some((o, n, segs)) = line_segs {
@@ -521,6 +524,29 @@ impl DiffViewer {
             .when(!new_side, |d| d.border_r_1().border_color(p.border))
             .child(gutter_el)
             .when(!filler, |d| d.child(self.code_cell(file, Mode::Split, side, offset, segs, words, word_bg, self.wrap_columns.1, window, cx)))
+            .into_any_element()
+    }
+
+    // ---------- mechanical folds ----------
+
+    fn render_fold_row(&mut self, file: usize, fold: usize, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx).clone();
+        let info = self.view.summary.files[file].folds[fold].clone();
+        let gutter = gutter_width(self, cx);
+        let label = format!("{} line{} {}", info.len, if info.len == 1 { "" } else { "s" }, info.reason);
+        div()
+            .id(("fold", file * 10_000 + fold))
+            .h(u(ROW))
+            .w_full()
+            .flex()
+            .bg(blend(p.hunk_bg, p.bg, 0.5))
+            .text_color(p.fg_muted)
+            .cursor_pointer()
+            .hover(|d| d.bg(blend(p.hunk_bg, p.accent, 0.12)))
+            .tooltip(tooltip(format!("Mechanical change: {} — click to show it (m shows all)", info.reason)))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.unfold(file, fold, cx)))
+            .child(div().flex_none().w(gutter * 2. + u_px(16., cx)).flex().justify_center().child("⋯"))
+            .child(div().pl(u(8.)).whitespace_nowrap().overflow_hidden().italic().font_family(crate::ui::sans_family(cx)).child(label))
             .into_any_element()
     }
 

@@ -51,6 +51,8 @@ pub struct Session {
     pub show_files: bool,
     pub default_mode: BaseMode,
     pub wrap: bool,
+    /// Fold changes that only reformat or rename code (`m`, remembered).
+    pub hide_mechanical: bool,
     /// PRs (`pr_key`) whose threads are all hidden (`h`, remembered).
     /// Oldest first (the saved list keeps the latest 500).
     pub hidden_comment_prs: indexmap::IndexSet<String>,
@@ -138,6 +140,7 @@ impl Session {
 
         let mode = settings::pref(cx, "defaultMode", &["unified", "split"], "unified");
         let wrap = settings::pref(cx, "wrap", &["on", "off"], "off") == "on";
+        let hide_mechanical = settings::pref(cx, "mechanical", &["hide", "show"], "hide") == "hide";
         let mut session = Session {
             backend: backend.clone(),
             stack: None,
@@ -152,6 +155,7 @@ impl Session {
             show_files: true,
             default_mode: if mode == "split" { BaseMode::Split } else { BaseMode::Unified },
             wrap,
+            hide_mechanical,
             hidden_comment_prs: settings::list(cx, "hiddenCommentPrs").into_iter().collect(),
             assistant: Default::default(),
             ignore_patterns: Vec::new(),
@@ -638,6 +642,12 @@ impl Session {
     pub fn set_default_mode(&mut self, mode: BaseMode, cx: &mut Context<Self>) {
         self.default_mode = mode;
         settings::set_pref(cx, "defaultMode", if mode == BaseMode::Split { "split" } else { "unified" });
+        cx.notify();
+    }
+
+    pub fn set_hide_mechanical(&mut self, hide: bool, cx: &mut Context<Self>) {
+        self.hide_mechanical = hide;
+        settings::set_pref(cx, "mechanical", if hide { "hide" } else { "show" });
         cx.notify();
     }
 

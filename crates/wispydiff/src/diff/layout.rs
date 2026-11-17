@@ -48,7 +48,12 @@ pub struct Built {
 
 impl Built {
     /// The files' segments; `place` then adds the comment items and makes the list.
-    pub fn new(view: &DiffView, mode_of: impl Fn(usize) -> Mode, reveals: &HashMap<usize, Vec<[u32; 2]>>) -> Built {
+    pub fn new(
+        view: &DiffView,
+        mode_of: impl Fn(usize) -> Mode,
+        reveals: &HashMap<usize, Vec<[u32; 2]>>,
+        shut_of: impl Fn(usize) -> Vec<usize>,
+    ) -> Built {
         let mut segments = Vec::with_capacity(view.summary.files.len());
         let mut unified = HashMap::new();
         let mut start = 0u32;
@@ -60,7 +65,7 @@ impl Built {
                 Mode::Collapsed => 1,
                 Mode::Split => file.split_rows,
                 Mode::Unified => {
-                    let map = UnifiedMap::new(file, reveals.get(&index).map(Vec::as_slice));
+                    let map = UnifiedMap::with_folds(file, reveals.get(&index).map(Vec::as_slice), &shut_of(index));
                     let rows = map.rows;
                     unified.insert(index, map);
                     rows

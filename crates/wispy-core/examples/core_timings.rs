@@ -66,6 +66,9 @@ fn main() {
         view.summary.additions,
         view.summary.deletions
     );
+    let folds: usize = view.summary.files.iter().map(|f| f.folds.len()).sum();
+    let mechanical = view.summary.files.iter().filter(|f| f.mechanical).count();
+    println!("  mechanical folds      {folds:>7}     ({mechanical} files mechanical only)");
 
     let t = Instant::now();
     let whole = compute_range(&git, &snapshot.range(0, 3), &highlighter, &highlights).unwrap();
