@@ -508,6 +508,8 @@ impl AssistantPanel {
                 cx.notify();
             });
         }));
+        // The question just sent is shown even if the conversation was scrolled up.
+        self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
