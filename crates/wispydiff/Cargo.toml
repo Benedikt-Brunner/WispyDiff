@@ -21,6 +21,8 @@ indexmap = "2"
 rusqlite = "0.40"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
+# Local time zone for exact timestamps.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 markdown = "1"

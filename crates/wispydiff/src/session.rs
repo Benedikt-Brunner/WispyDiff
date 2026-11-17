@@ -12,7 +12,7 @@ use gpui_kit::{App, Context, EventEmitter, Task, Window};
 use wispy_core::progress::Checkpoint;
 use wispy_core::service::{InboxEntry, ShownDraft};
 
-use crate::backend::{Backend, OpenedRange, OpenedStack, PrThreads};
+use crate::backend::{Backend, OpenedRange, OpenedStack, PrThreads, RefreshProgress};
 use crate::logic::comments::pr_key;
 use crate::logic::glob::GlobMatcher;
 use crate::settings;
@@ -43,6 +43,8 @@ pub struct Session {
     pub home: bool,
     pub inbox: Vec<InboxEntry>,
     pub online: Option<bool>,
+    /// A running inbox refresh (background or asked for), and how far it is.
+    pub refreshing: Option<RefreshProgress>,
     /// The PR being opened, and why the last open failed.
     pub busy: Option<String>,
     pub error: Option<String>,
@@ -79,6 +81,7 @@ enum Incoming {
     RangeReady(String, usize, usize),
     Inbox(Vec<InboxEntry>),
     Status(bool),
+    Progress(Option<RefreshProgress>),
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -99,8 +102,14 @@ impl Session {
                 let _ = tx.unbounded_send(Incoming::Inbox(entries));
             });
         }
-        backend.set_on_inbox_status(move |online| {
-            let _ = tx.unbounded_send(Incoming::Status(online));
+        {
+            let tx = tx.clone();
+            backend.set_on_inbox_status(move |online| {
+                let _ = tx.unbounded_send(Incoming::Status(online));
+            });
+        }
+        backend.set_on_inbox_progress(move |progress| {
+            let _ = tx.unbounded_send(Incoming::Progress(progress));
         });
         let listener = cx.spawn(async move |this, cx| {
             while let Some(message) = rx.next().await {
@@ -110,6 +119,7 @@ impl Session {
                             this.ready.entry(stack).or_default().insert((lo, hi));
                         }
                         Incoming::Inbox(entries) => this.inbox = entries,
+                        Incoming::Progress(progress) => this.refreshing = progress,
                         Incoming::Status(online) => {
                             this.online = Some(online);
                             // Each background refresh (launch, every 5 minutes, focus) also checks the open PR.
@@ -136,6 +146,7 @@ impl Session {
             home: true,
             inbox: Vec::new(),
             online: None,
+            refreshing: None,
             busy: None,
             error: None,
             show_files: true,
@@ -202,6 +213,10 @@ impl Session {
 
     pub fn refresh_inbox(&mut self) {
         self.backend.refresh_inbox();
+    }
+
+    pub fn refresh_inbox_on_focus(&mut self) {
+        self.backend.refresh_inbox_on_focus();
     }
 
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
@@ -561,6 +576,12 @@ impl Session {
         };
         let key = format!("{}:{:?}-{:?}:{ws}", newer.stack_id, lo, hi);
         Some((key, range, ws, newer.stack_id.clone()))
+    }
+
+    /// Whether the waiting newer version's content keys for the shown range have loaded
+    /// (until then, marking a file viewed warns as if it changed).
+    pub fn newer_keys_loaded(&self) -> bool {
+        self.newer_range().is_some_and(|(key, ..)| self.newer_keys.as_ref().is_some_and(|(k, _)| *k == key))
     }
 
     fn update_newer_keys(&mut self, cx: &mut Context<Self>) {

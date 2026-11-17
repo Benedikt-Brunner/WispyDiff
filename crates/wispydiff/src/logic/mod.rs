@@ -10,6 +10,7 @@ pub mod images;
 pub mod indent;
 pub mod layout;
 pub mod palette;
+pub mod time;
 
 #[cfg(test)]
 pub(crate) fn test_file() -> wispy_core::model::FileSummary {

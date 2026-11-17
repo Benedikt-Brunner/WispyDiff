@@ -134,10 +134,10 @@ impl WispyApp {
                 InboxEvent::Open(label) => this.session.update(cx, |s, cx| s.open(label.clone(), cx)),
                 InboxEvent::Refresh => this.session.update(cx, |s, _| s.refresh_inbox()),
             }),
-            // Every focus of the window refreshes the inbox and checks the open PR.
+            // Focusing the window refreshes the inbox and checks the open PR (at most once a minute).
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
-                    this.session.update(cx, |s, _| s.refresh_inbox());
+                    this.session.update(cx, |s, _| s.refresh_inbox_on_focus());
                 }
             }),
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -168,10 +168,12 @@ impl WispyApp {
     fn session_changed(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
         let s = session.read(cx);
         let stack_id = s.stack.as_ref().map(|st| st.stack_id.clone());
-        let (entries, online, busy, error, home) = (s.inbox.clone(), s.online, s.busy.clone(), s.error.clone(), s.home);
+        let (entries, online, refreshing, busy, error, home) =
+            (s.inbox.clone(), s.online, s.refreshing, s.busy.clone(), s.error.clone(), s.home);
         self.inbox.update(cx, |inbox, cx| {
             inbox.set_entries(entries, cx);
             inbox.set_online(online, cx);
+            inbox.set_refreshing(refreshing, cx);
         });
         if let Some(palette) = &self.palette {
             palette.update(cx, |p, cx| {
