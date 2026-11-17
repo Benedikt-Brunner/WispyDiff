@@ -5,7 +5,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Mutex, Weak};
 use std::time::Duration;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, RefreshProgress};
 
 /// Wakes the prefetch worker early.
 pub struct PrefetchTrigger(Mutex<Sender<()>>);
@@ -46,6 +46,12 @@ pub(crate) async fn cycle(backend: &Backend) {
     let Ok(service) = backend.service() else {
         return;
     };
+    backend.emit_inbox_progress(Some(RefreshProgress::Listing));
+    refresh(backend, &service).await;
+    backend.emit_inbox_progress(None);
+}
+
+async fn refresh(backend: &Backend, service: &wispy_core::service::PrService) {
     let groups = match service.refresh_inbox().await {
         Ok(groups) => groups,
         Err(err) => {
@@ -55,12 +61,14 @@ pub(crate) async fn cycle(backend: &Backend) {
         }
     };
     backend.emit_inbox_status(true);
-    emit_entries(backend, &service, groups.clone());
-    for group in &groups {
+    emit_entries(backend, service, groups.clone());
+    let total = groups.len();
+    for (done, group) in groups.iter().enumerate() {
+        backend.emit_inbox_progress(Some(RefreshProgress::Prefetching { done, total }));
         if let Err(err) = service.prefetch(group).await {
             eprintln!("prefetch {}: {err}", group.key());
         }
-        emit_entries(backend, &service, groups.clone());
+        emit_entries(backend, service, groups.clone());
     }
     if let Err(err) = service.evict_finished(&groups).await {
         eprintln!("eviction: {err}");

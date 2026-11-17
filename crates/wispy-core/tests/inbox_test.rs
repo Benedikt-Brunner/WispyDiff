@@ -254,11 +254,15 @@ async fn prefetching_makes_a_group_ready_and_finished_prs_are_evicted() {
 
     let groups = service.refresh_inbox().await.unwrap();
     assert_eq!(service.cached_inbox().unwrap(), groups);
-    assert!(!service.inbox_entries(groups.clone()).unwrap()[0].ready);
+    let before = &service.inbox_entries(groups.clone()).unwrap()[0];
+    assert!(!before.ready);
+    assert_eq!(before.fetched_at, None);
 
+    let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     service.prefetch(&groups[0]).await.unwrap();
     let entry = &service.inbox_entries(groups.clone()).unwrap()[0];
     assert!(entry.ready, "openable offline now");
+    assert!(entry.fetched_at.is_some_and(|t| t >= started), "remembers when it was fetched");
     let pr = wispy_core::pr_ref::PrRef::parse("acme/shop#4").unwrap();
     let snapshot = service.cached_stack(&pr).unwrap().unwrap();
     assert!(service.cached_range(&snapshot, 0, 0).unwrap().is_some());

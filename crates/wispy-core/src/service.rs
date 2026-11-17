@@ -62,6 +62,8 @@ pub struct InboxEntry {
     pub drafts: usize,
     /// Review progress of each of the group's PRs (same order).
     pub progress: Vec<PrProgress>,
+    /// When its stack was last fetched from GitHub in full (Unix seconds), if ever.
+    pub fetched_at: Option<i64>,
 }
 
 /// Where the user stands with one inbox PR.
@@ -79,6 +81,11 @@ pub struct PrProgress {
 }
 
 const INBOX_KEY: &str = "inbox";
+
+/// Where a group's last complete prefetch time is kept.
+fn fetched_key(group: &InboxGroup) -> String {
+    format!("fetched:{}", group.key())
+}
 
 /// One `git grep` hit on the head of a range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -472,7 +479,8 @@ impl PrService {
                         }
                     })
                     .collect();
-                Ok(InboxEntry { group, ready, drafts, progress })
+                let fetched_at = self.cache.app_value(&fetched_key(&group))?.and_then(|v| v.as_i64());
+                Ok(InboxEntry { group, ready, drafts, progress, fetched_at })
             })
             .collect()
     }
@@ -498,6 +506,8 @@ impl PrService {
             self.store.hydrate(&git, head)?;
         }
         self.refresh_threads(&snapshot).await?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        self.cache.put_app_value(&fetched_key(group), &now.into())?;
         Ok(snapshot)
     }
 

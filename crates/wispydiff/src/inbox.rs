@@ -2,8 +2,10 @@
 //! Space/e to collapse a stack, r to refresh.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use gpui_kit::prelude::*;
+use gpui_kit::AnimationExt as _;
 use gpui_kit::{
     div, px, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, Render, ScrollHandle, SharedString,
     Window,
@@ -11,6 +13,8 @@ use gpui_kit::{
 use wispy_core::inbox::InboxPr;
 use wispy_core::service::{InboxEntry, PrProgress};
 
+use crate::backend::RefreshProgress;
+use crate::logic::time::{ago, now_unix};
 use crate::settings;
 use crate::ui::{key_label, link_button, palette, status_badge, u, wordmark, BadgeKind};
 
@@ -65,6 +69,7 @@ fn review_label(review: &str) -> String {
 pub struct Inbox {
     pub entries: Vec<InboxEntry>,
     pub online: Option<bool>,
+    pub refreshing: Option<RefreshProgress>,
     collapsed: HashSet<String>,
     /// The selected item: a PR label, or a collapsed stack as `group:<key>`.
     selected_id: Option<String>,
@@ -76,9 +81,18 @@ impl EventEmitter<InboxEvent> for Inbox {}
 
 impl Inbox {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Keeps the "fetched … ago" ages current.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(30)).await;
+            if this.update(cx, |_, cx| cx.notify()).is_err() {
+                break;
+            }
+        })
+        .detach();
         Inbox {
             entries: Vec::new(),
             online: None,
+            refreshing: None,
             collapsed: settings::list(cx, "inboxCollapsed").into_iter().collect(),
             selected_id: None,
             scroll: ScrollHandle::new(),
@@ -94,6 +108,22 @@ impl Inbox {
     pub fn set_online(&mut self, online: Option<bool>, cx: &mut Context<Self>) {
         self.online = online;
         cx.notify();
+    }
+
+    pub fn set_refreshing(&mut self, refreshing: Option<RefreshProgress>, cx: &mut Context<Self>) {
+        if self.refreshing != refreshing {
+            self.refreshing = refreshing;
+            cx.notify();
+        }
+    }
+
+    /// The refresh link, or how far the running refresh is.
+    pub fn refresh_label(&self) -> String {
+        match self.refreshing {
+            None => "refresh".into(),
+            Some(RefreshProgress::Listing) => "checking GitHub…".into(),
+            Some(RefreshProgress::Prefetching { done, total }) => format!("prefetching {}/{total}…", done + 1),
+        }
     }
 
     /// What j/k move over: each PR, or a collapsed stack as a whole.
@@ -236,6 +266,7 @@ impl Render for Inbox {
 
         let items = self.items();
         let selected = items.get(self.selected(&items)).cloned();
+        let now = now_unix();
         let status = if self.online == Some(false) {
             "offline · showing cached".to_string()
         } else {
@@ -299,9 +330,21 @@ impl Render for Inbox {
                     ))
                 })
                 .child(div().flex_1())
+                .when_some(entry.fetched_at, |d, fetched| {
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("inbox-fetched-{key}")))
+                            .flex_none()
+                            .text_size(u(11.))
+                            .text_color(p.fg_muted)
+                            .tooltip(tip("Last fetched from GitHub"))
+                            .child(format!("fetched {}", ago(fetched, now))),
+                    )
+                })
                 .child(
                     div()
                         .id(SharedString::from(format!("inbox-ready-{key}")))
+                        .flex_none()
                         .text_size(u(11.))
                         .text_color(if entry.ready { p.add_fg } else { p.fg_muted })
                         .tooltip(tip(if entry.ready { "Prefetched: opens instantly, offline too" } else { "Prefetching…" }))
@@ -373,7 +416,23 @@ impl Render for Inbox {
                             .gap(u(10.))
                             .child(div().text_size(u(18.)).font_weight(FontWeight::SEMIBOLD).child("Inbox"))
                             .child(div().text_size(u(12.)).text_color(p.fg_muted).child(status))
-                            .child(link_button("refresh", cx).id("inbox-refresh").on_click(cx.listener(|_, _, _, cx| cx.emit(InboxEvent::Refresh)))),
+                            .child(match self.refreshing {
+                                None => link_button("refresh", cx)
+                                    .id("inbox-refresh")
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(InboxEvent::Refresh)))
+                                    .into_any_element(),
+                                Some(_) => div()
+                                    .id("inbox-refresh")
+                                    .text_size(u(12.))
+                                    .text_color(p.fg_muted)
+                                    .child(self.refresh_label())
+                                    .with_animation(
+                                        "inbox-refreshing",
+                                        gpui_kit::Animation::new(Duration::from_millis(1200)).repeat().with_easing(gpui_kit::pulsating_between(0.4, 1.)),
+                                        |d, delta| d.opacity(delta),
+                                    )
+                                    .into_any_element(),
+                            }),
                     )
                     .children(groups),
             ),

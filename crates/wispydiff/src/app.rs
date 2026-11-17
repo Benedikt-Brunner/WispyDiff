@@ -168,10 +168,12 @@ impl WispyApp {
     fn session_changed(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
         let s = session.read(cx);
         let stack_id = s.stack.as_ref().map(|st| st.stack_id.clone());
-        let (entries, online, busy, error, home) = (s.inbox.clone(), s.online, s.busy.clone(), s.error.clone(), s.home);
+        let (entries, online, refreshing, busy, error, home) =
+            (s.inbox.clone(), s.online, s.refreshing, s.busy.clone(), s.error.clone(), s.home);
         self.inbox.update(cx, |inbox, cx| {
             inbox.set_entries(entries, cx);
             inbox.set_online(online, cx);
+            inbox.set_refreshing(refreshing, cx);
         });
         if let Some(palette) = &self.palette {
             palette.update(cx, |p, cx| {

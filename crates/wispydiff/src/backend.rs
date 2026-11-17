@@ -195,6 +195,16 @@ pub struct Backend {
     prefetch: OnceLock<PrefetchTrigger>,
     on_inbox: Mutex<Option<Arc<dyn Fn(Vec<wispy_core::service::InboxEntry>) + Send + Sync>>>,
     on_inbox_status: Mutex<Option<Arc<dyn Fn(bool) + Send + Sync>>>,
+    on_inbox_progress: Mutex<Option<Arc<dyn Fn(Option<RefreshProgress>) + Send + Sync>>>,
+}
+
+/// How far a running inbox refresh is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshProgress {
+    /// Asking GitHub for the inbox.
+    Listing,
+    /// Prefetching the listed stacks: `done` of `total`.
+    Prefetching { done: usize, total: usize },
 }
 
 impl Backend {
@@ -222,6 +232,7 @@ impl Backend {
             prefetch: OnceLock::new(),
             on_inbox: Mutex::new(None),
             on_inbox_status: Mutex::new(None),
+            on_inbox_progress: Mutex::new(None),
             data_dir,
             service: OnceLock::new(),
             stacks: Mutex::new(HashMap::new()),
@@ -1322,6 +1333,18 @@ impl Backend {
     /// Registers the UI's connectivity callback, invoked on the prefetch worker.
     pub fn set_on_inbox_status(&self, f: impl Fn(bool) + Send + Sync + 'static) {
         *lock(&self.on_inbox_status) = Some(Arc::new(f));
+    }
+
+    /// Registers the UI's refresh-progress callback (`None`: idle), invoked on the prefetch worker.
+    pub fn set_on_inbox_progress(&self, f: impl Fn(Option<RefreshProgress>) + Send + Sync + 'static) {
+        *lock(&self.on_inbox_progress) = Some(Arc::new(f));
+    }
+
+    pub(crate) fn emit_inbox_progress(&self, progress: Option<RefreshProgress>) {
+        let callback = lock(&self.on_inbox_progress).clone();
+        if let Some(callback) = callback {
+            callback(progress);
+        }
     }
 
     pub(crate) fn emit_inbox(&self, entries: Vec<wispy_core::service::InboxEntry>) {

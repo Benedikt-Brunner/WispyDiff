@@ -415,19 +415,48 @@ fn backend_commands_and_jobs_from_a_non_tokio_executor() {
     backend.set_on_inbox_status(move |online| {
         status_sender.send(online).unwrap();
     });
+    let (progress_sender, progress_receiver) = mpsc::channel();
+    backend.set_on_inbox_progress(move |progress| {
+        let _ = progress_sender.send(progress);
+    });
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     backend.start_prefetch();
     backend.start_prefetch(); // idempotent
     assert!(status_receiver
         .recv_timeout(Duration::from_secs(120))
         .unwrap());
-    loop {
+    let fetched = loop {
         let entries = inbox_receiver
             .recv_timeout(Duration::from_secs(120))
             .unwrap();
         if !entries.is_empty() && entries.iter().all(|entry| entry.ready) {
+            break entries;
+        }
+    };
+    // A refresh reports listing, then each stack it prefetches, then idle.
+    let mut progress = Vec::new();
+    loop {
+        let step = progress_receiver
+            .recv_timeout(Duration::from_secs(120))
+            .unwrap();
+        progress.push(step);
+        if step.is_none() {
             break;
         }
     }
+    let total = fetched.len();
+    let mut expected = vec![Some(backend::RefreshProgress::Listing)];
+    expected.extend((0..total).map(|done| Some(backend::RefreshProgress::Prefetching { done, total })));
+    expected.push(None);
+    assert_eq!(progress, expected);
+    let entries = block_on(backend.get_inbox()).unwrap();
+    assert!(
+        entries.iter().all(|e| e.fetched_at.is_some_and(|t| t >= started)),
+        "every prefetched stack remembers when it was fetched"
+    );
     let inbox = block_on(backend.get_inbox()).unwrap();
     assert!(!inbox.is_empty());
     assert!(inbox.iter().all(|entry| entry.ready));
