@@ -215,6 +215,10 @@ impl Session {
         self.backend.refresh_inbox();
     }
 
+    pub fn refresh_inbox_on_focus(&mut self) {
+        self.backend.refresh_inbox_on_focus();
+    }
+
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
         self.home = true;
         self.load_inbox(cx);

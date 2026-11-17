@@ -193,10 +193,15 @@ pub struct Backend {
     prefs: Prefs,
     lasting: Lasting,
     prefetch: OnceLock<PrefetchTrigger>,
+    /// Whether an inbox refresh is running, and when the last one finished.
+    refresh_state: Mutex<(bool, Option<std::time::Instant>)>,
     on_inbox: Mutex<Option<Arc<dyn Fn(Vec<wispy_core::service::InboxEntry>) + Send + Sync>>>,
     on_inbox_status: Mutex<Option<Arc<dyn Fn(bool) + Send + Sync>>>,
     on_inbox_progress: Mutex<Option<Arc<dyn Fn(Option<RefreshProgress>) + Send + Sync>>>,
 }
+
+/// Window focus refreshes the inbox at most this often after a refresh finished.
+const FOCUS_REFRESH_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How far a running inbox refresh is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +235,7 @@ impl Backend {
             prefs: Prefs::load(&data_dir),
             lasting: Lasting::default(),
             prefetch: OnceLock::new(),
+            refresh_state: Mutex::new((false, None)),
             on_inbox: Mutex::new(None),
             on_inbox_status: Mutex::new(None),
             on_inbox_progress: Mutex::new(None),
@@ -1341,6 +1347,13 @@ impl Backend {
     }
 
     pub(crate) fn emit_inbox_progress(&self, progress: Option<RefreshProgress>) {
+        {
+            let mut state = lock(&self.refresh_state);
+            state.0 = progress.is_some();
+            if progress.is_none() {
+                state.1 = Some(std::time::Instant::now());
+            }
+        }
         let callback = lock(&self.on_inbox_progress).clone();
         if let Some(callback) = callback {
             callback(progress);
@@ -1381,6 +1394,16 @@ impl Backend {
     /// Asks the background worker to refresh the inbox and prefetch now.
     pub fn refresh_inbox(&self) {
         self.trigger_prefetch();
+    }
+
+    /// Refreshes on window focus, unless a refresh is running or finished within the last
+    /// minute (a full refresh can take a minute, and focus changes often).
+    pub fn refresh_inbox_on_focus(&self) {
+        let (running, finished) = *lock(&self.refresh_state);
+        let recent = finished.is_some_and(|at| at.elapsed() < FOCUS_REFRESH_GAP);
+        if !running && !recent {
+            self.trigger_prefetch();
+        }
     }
 
     /// Opens a web link (from a rendered comment) in the default browser.

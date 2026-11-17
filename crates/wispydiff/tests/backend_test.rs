@@ -452,6 +452,11 @@ fn backend_commands_and_jobs_from_a_non_tokio_executor() {
     expected.extend((0..total).map(|done| Some(backend::RefreshProgress::Prefetching { done, total })));
     expected.push(None);
     assert_eq!(progress, expected);
+    // Focus right after a refresh does not start another one.
+    backend.refresh_inbox_on_focus();
+    assert!(progress_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .is_err());
     let entries = block_on(backend.get_inbox()).unwrap();
     assert!(
         entries.iter().all(|e| e.fetched_at.is_some_and(|t| t >= started)),
