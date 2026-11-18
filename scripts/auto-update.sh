@@ -70,10 +70,11 @@ lock() {
   trap 'rm -rf "$DIR/lock"' EXIT
 }
 
+# Runs as an `if` condition, where bash ignores `set -e`: each step must fail the function itself.
 build() {
-  cargo build --release --locked -p wispydiff
+  cargo build --release --locked -p wispydiff || return
   if [ "$(uname -s)" = Darwin ]; then
-    scripts/bundle-macos.sh release
+    scripts/bundle-macos.sh release || return
   fi
 }
 
@@ -176,6 +177,13 @@ run() {
 
   git -C "$SRC" checkout --quiet --force --detach "$sha"
   git -C "$SRC" clean -fdq # untracked files only; target/ is ignored, so kept
+  # The new commit may build differently (the GPUI rewrite did): continue with its script.
+  if [ -z "${WISPY_UPDATER_REEXEC:-}" ] && [ -f "$SRC/scripts/auto-update.sh" ] \
+    && ! cmp -s "$SRC/scripts/auto-update.sh" "$DIR/auto-update.sh"; then
+    copy_script "$SRC/scripts/auto-update.sh"
+    rm -rf "$DIR/lock" # exec skips the EXIT trap; the new script takes the lock again
+    WISPY_UPDATER_REEXEC=1 exec /bin/bash "$DIR/auto-update.sh" run "$force"
+  fi
   log "building ${sha:0:9} $subject"
   local started=$SECONDS
   if ! (cd "$SRC" && build) > "$DIR/build.log" 2>&1; then
