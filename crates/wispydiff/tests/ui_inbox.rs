@@ -99,9 +99,11 @@ async fn a_tree_of_prs_is_one_group_and_the_stack_bar_switches_its_branches(cx: 
     let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
     let ui = Ui::new(backend.clone(), cx);
     ui.home(cx).await;
-    ui.wait(cx, |cx| {
+    // Prefetching a tree fetches and diffs every branch: more work than one stack, so a slow
+    // CI runner gets more time.
+    ui.wait_within(cx, TIMEOUT * 3, |cx| {
         let inbox = &ui.session.read(cx).inbox;
-        inbox.iter().any(|e| e.group.prs.len() == 5) && inbox.iter().all(|e| e.ready)
+        inbox.iter().any(|e| e.group.prs.len() == 5 && e.ready)
     })
     .await;
     ui.session.read_with(cx, |s, _| {

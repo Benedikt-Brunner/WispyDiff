@@ -134,9 +134,18 @@ impl Ui {
         cx.update_window(self.window, |_, window, cx| window.render_frame(cx))
             .unwrap();
     }
-    pub async fn wait(&self, cx: &mut TestAppContext, mut f: impl FnMut(&App) -> bool) {
-        let deadline = Instant::now() + TIMEOUT;
-        cx.wait_for(self.window, TIMEOUT, |_, cx| {
+    pub async fn wait(&self, cx: &mut TestAppContext, f: impl FnMut(&App) -> bool) {
+        self.wait_within(cx, TIMEOUT, f).await
+    }
+    /// [`Ui::wait`] with its own limit, for waits on more background work than one stack's.
+    pub async fn wait_within(
+        &self,
+        cx: &mut TestAppContext,
+        timeout: Duration,
+        mut f: impl FnMut(&App) -> bool,
+    ) {
+        let deadline = Instant::now() + timeout;
+        cx.wait_for(self.window, timeout, |_, cx| {
             let ready = f(cx);
             assert!(
                 ready || Instant::now() < deadline,
