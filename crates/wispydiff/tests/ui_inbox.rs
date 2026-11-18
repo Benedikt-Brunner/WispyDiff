@@ -1,7 +1,7 @@
 //! Ports inbox.e2e.ts. Each test owns its GitHub state (including submitted reviews).
 mod comments_support;
 use comments_support::*;
-use gpui_kit::{point, px, size, TestAppContext, VisualTestContext};
+use gpui_kit::{point, px, size, App, TestAppContext, VisualTestContext};
 use wispy_core::model::row_kind;
 use wispydiff::{backend::Backend, diff::UnifiedRow, logic::layout::Mode};
 
@@ -86,6 +86,58 @@ async fn prefetches_every_group_and_opens_each_without_github(cx: &mut TestAppCo
             .read_with(cx, |s, _| s.stack.as_ref().unwrap().prs[0].title.clone()),
         "Fix carrier label typo"
     );
+    fixture.get("/__online");
+    drop(backend);
+    ui.close(cx).await;
+}
+
+/// #1 ← {#2 ← #3 ← #4, #6}: one inbox group; the stack bar switches between the branches.
+#[gpui_kit::test]
+async fn a_tree_of_prs_is_one_group_and_the_stack_bar_switches_its_branches(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    fixture.get("/__branch");
+    let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
+    let ui = Ui::new(backend.clone(), cx);
+    ui.home(cx).await;
+    // Prefetching a tree fetches and diffs every branch: more work than one stack, so a slow
+    // CI runner gets more time.
+    ui.wait_within(cx, TIMEOUT * 3, |cx| {
+        let inbox = &ui.session.read(cx).inbox;
+        inbox.iter().any(|e| e.group.prs.len() == 5 && e.ready)
+    })
+    .await;
+    ui.session.read_with(cx, |s, _| {
+        let tree = s.inbox.iter().find(|e| e.group.prs[0].number == 1).unwrap();
+        assert_eq!(tree.group.prs.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 2, 3, 4, 6]);
+        assert_eq!(tree.group.parents, vec![None, Some(0), Some(1), Some(2), Some(0)]);
+        assert_eq!(tree.group.branches(), 2);
+    });
+
+    // Every branch was prefetched: switching works offline.
+    fixture.get("/__offline");
+    let numbers = |cx: &App| -> Vec<u64> {
+        ui.session.read(cx).stack.as_ref().map(|s| s.prs.iter().map(|p| p.number).collect()).unwrap_or_default()
+    };
+    let settled = |cx: &App, prs: &[u64], at: usize| {
+        let s = ui.session.read(cx);
+        assert!(s.error.is_none(), "open: {:?}", s.error);
+        numbers(cx) == prs && s.busy.is_none() && s.shown.as_ref().is_some_and(|v| (v.range.lo, v.range.hi) == (at, at))
+    };
+    inbox_select(&ui, cx, 6);
+    ui.press(cx, "enter");
+    ui.wait(cx, |cx| settled(cx, &[1, 6], 1)).await;
+    ui.session.read_with(cx, |s, _| {
+        let branches = s.stack.as_ref().unwrap().snapshot.stack.branches(0).to_vec();
+        assert_eq!(branches.iter().map(|b| (b.number, b.size)).collect::<Vec<_>>(), vec![(2, 3), (6, 1)]);
+    });
+
+    ui.press(cx, "b");
+    ui.wait(cx, |cx| ui.app.read(cx).open_menu().as_deref() == Some("stack-branches-0")).await;
+    ui.press(cx, "up");
+    ui.press(cx, "enter");
+    ui.wait(cx, |cx| settled(cx, &[1, 2, 3, 4], 1)).await;
+    assert_eq!(ui.app.read_with(cx, |a, _| a.open_menu()), None);
+
     fixture.get("/__online");
     drop(backend);
     ui.close(cx).await;

@@ -48,7 +48,7 @@ fn adds_the_assistants_comments_on_the_prs_their_lines_belong_to_then_edits_them
         Cache::open(&data.path().join("cache.sqlite")).unwrap(),
         Highlighter::new(),
     );
-    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 0 }).unwrap();
+    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 0, forks: Vec::new() }).unwrap();
 
     let add = |path: &str, lines: Option<(u32, u32)>, body: &str| {
         let mut args = json!({ "path": path, "body": body });

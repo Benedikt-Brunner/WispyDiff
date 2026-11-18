@@ -41,6 +41,10 @@ impl MenuSlot {
         self.open.is_some()
     }
 
+    pub fn open_id(&self) -> Option<&str> {
+        self.open.as_ref().map(|(id, ..)| id.as_ref())
+    }
+
     /// Opens `id`'s menu, or closes it if it's open. `pick` gets the picked option's index.
     #[allow(clippy::too_many_arguments)]
     pub fn toggle<T: 'static>(

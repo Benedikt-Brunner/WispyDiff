@@ -38,6 +38,7 @@ async fn opens_a_stack_and_reopens_any_member_offline() {
     let server = MockServer::start().await;
     mount(&server, "/repos/acme/shop/pulls/42", None, pr42.clone()).await;
     mount(&server, "/repos/acme/shop/pulls", Some(("head", "acme:stack/1")), serde_json::json!([pr41])).await;
+    mount(&server, "/repos/acme/shop/pulls", Some(("base", "stack/1")), serde_json::json!([pr42])).await;
     mount(&server, "/repos/acme/shop/pulls", Some(("base", "stack/2")), serde_json::json!([])).await;
 
     let data = tempfile::tempdir().unwrap();

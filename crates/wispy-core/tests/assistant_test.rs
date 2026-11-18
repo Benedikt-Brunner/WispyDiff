@@ -135,7 +135,7 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
         Cache::open(&data.path().join("cache.sqlite")).unwrap(),
         Highlighter::new(),
     );
-    let snapshot = service.fetch(Stack { prs: vec![pull_request(3, "main", "feature", &origin.url())], focus: 0 }).unwrap();
+    let snapshot = service.fetch(Stack { prs: vec![pull_request(3, "main", "feature", &origin.url())], focus: 0, forks: Vec::new() }).unwrap();
 
     let selection = Selection { path: "src/Order.php".into(), pr_label: "#3".into(), start_line: 2, end_line: 2, text: "+$state = 'picked';".into(), head_start: Some(2), head_end: Some(2) };
     let mut streamed = String::new();

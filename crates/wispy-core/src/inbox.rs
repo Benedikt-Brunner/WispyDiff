@@ -1,7 +1,7 @@
 //! The home screen: PRs where the user's review is requested or that they authored, grouped
 //! into stacks.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -42,18 +42,38 @@ pub struct MyReview {
     pub submitted_at: String,
 }
 
-/// PRs of one repo that stack on each other (bottom first), or a single PR.
+/// PRs of one repo that stack on each other, or a single PR. Several PRs can build on the same
+/// PR, so a group is a tree: bottom first, then depth-first (each PR's branches lowest number
+/// first, every branch in full before the next).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxGroup {
     pub repo: String,
     pub prs: Vec<InboxPr>,
     pub updated_at: String,
+    /// Index (in `prs`) of the PR each one builds on; `None` for the bottom. Empty in caches
+    /// from before trees: each PR then builds on the one before it.
+    #[serde(default)]
+    pub parents: Vec<Option<usize>>,
 }
 
 impl InboxGroup {
     pub fn key(&self) -> String {
         format!("{}#{}", self.repo, self.prs[0].number)
+    }
+
+    /// The PR (index) stack PR `index` builds on.
+    pub fn parent(&self, index: usize) -> Option<usize> {
+        match self.parents.get(index) {
+            Some(parent) => *parent,
+            None => index.checked_sub(1),
+        }
+    }
+
+    /// How many branches the group splits into (1: a plain stack).
+    pub fn branches(&self) -> usize {
+        let has_child = |i: usize| (0..self.prs.len()).any(|c| self.parent(c) == Some(i));
+        (0..self.prs.len()).filter(|&i| !has_child(i)).count()
     }
 }
 
@@ -72,9 +92,8 @@ pub fn merge(results: impl IntoIterator<Item = InboxPr>) -> Vec<InboxPr> {
     by_key.into_values().collect()
 }
 
-/// Chains PRs whose base branch is another inbox PR's head branch (same repo). Where several
-/// PRs branch off one head, the oldest continues the chain and the others start their own.
-/// Groups are ordered by most recent activity.
+/// Groups PRs whose base branch is another inbox PR's head branch (same repo) into trees,
+/// listed depth-first. Groups are ordered by most recent activity.
 pub fn group(prs: Vec<InboxPr>) -> Vec<InboxGroup> {
     let mut groups = Vec::new();
     let mut by_repo: HashMap<String, Vec<InboxPr>> = HashMap::new();
@@ -83,30 +102,38 @@ pub fn group(prs: Vec<InboxPr>) -> Vec<InboxGroup> {
     }
     for (repo, mut prs) in by_repo {
         prs.sort_by_key(|p| p.number);
-        let heads: HashSet<&str> = prs.iter().map(|p| p.head_ref.as_str()).collect();
+        // Two PRs may share a head branch: the oldest is the one PRs build on.
+        let mut by_head: HashMap<&str, usize> = HashMap::new();
+        for (i, pr) in prs.iter().enumerate() {
+            by_head.entry(pr.head_ref.as_str()).or_insert(i);
+        }
+        let parent: Vec<Option<usize>> =
+            prs.iter().enumerate().map(|(i, pr)| by_head.get(pr.base_ref.as_str()).copied().filter(|&p| p != i)).collect();
         let mut used = vec![false; prs.len()];
-        // Bottoms first (base isn't another PR's head), then whatever is left (branch-offs).
-        let mut starts: Vec<usize> = (0..prs.len()).filter(|&i| !heads.contains(prs[i].base_ref.as_str())).collect();
+        // Bottoms first, then whatever is left (PRs building on each other in a cycle).
+        let mut starts: Vec<usize> = (0..prs.len()).filter(|&i| parent[i].is_none()).collect();
         starts.extend(0..prs.len());
         for start in starts {
             if used[start] {
                 continue;
             }
-            let mut chain = vec![start];
-            used[start] = true;
-            loop {
-                let head = &prs[*chain.last().unwrap()].head_ref;
-                match (0..prs.len()).find(|&i| !used[i] && &prs[i].base_ref == head) {
-                    Some(next) => {
-                        used[next] = true;
-                        chain.push(next);
-                    }
-                    None => break,
+            // Depth-first; `order` holds (PR index, its parent's position in the group).
+            let mut order: Vec<(usize, Option<usize>)> = Vec::new();
+            let mut pending = vec![(start, None)];
+            while let Some((i, up)) = pending.pop() {
+                if used[i] {
+                    continue;
                 }
+                used[i] = true;
+                let position = order.len();
+                order.push((i, up));
+                // Pushed highest first, so the lowest-numbered branch comes out first.
+                pending.extend((0..prs.len()).rev().filter(|&c| parent[c] == Some(i) && !used[c]).map(|c| (c, Some(position))));
             }
-            let members: Vec<InboxPr> = chain.into_iter().map(|i| prs[i].clone()).collect();
+            let members: Vec<InboxPr> = order.iter().map(|&(i, _)| prs[i].clone()).collect();
+            let parents = order.iter().map(|&(_, up)| up).collect();
             let updated_at = members.iter().map(|p| p.updated_at.clone()).max().unwrap_or_default();
-            groups.push(InboxGroup { repo: repo.clone(), prs: members, updated_at });
+            groups.push(InboxGroup { repo: repo.clone(), prs: members, updated_at, parents });
         }
     }
     groups.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.key().cmp(&b.key())));

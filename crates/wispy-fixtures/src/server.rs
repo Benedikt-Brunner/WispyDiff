@@ -25,6 +25,8 @@ struct State {
     next_id: u64,
     /// Simulated network outage: every request is dropped without a response.
     offline: bool,
+    /// Hidden PRs are served too (`GET /__branch`).
+    branch: bool,
 }
 
 impl State {
@@ -131,6 +133,7 @@ fn handle(mut stream: TcpStream, fixture: &Fixture, state: &Mutex<State>) {
             return;
         }
         match target {
+            "/__branch" => state.branch = true,
             "/__offline" => state.offline = true,
             "/__online" => state.offline = false,
             _ if state.offline => return, // drop the connection, like a dead network
@@ -147,6 +150,19 @@ fn handle(mut stream: TcpStream, fixture: &Fixture, state: &Mutex<State>) {
 }
 
 fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str, Value) {
+    // Hidden PRs don't exist until turned on.
+    let shown;
+    let fixture = if fixture.prs.iter().any(|pr| pr.hidden && !state.branch) {
+        shown = Fixture {
+            owner: fixture.owner.clone(),
+            repo: fixture.repo.clone(),
+            origin: fixture.origin.clone(),
+            prs: fixture.prs.iter().filter(|pr| !pr.hidden).map(FixturePr::clone).collect(),
+        };
+        &shown
+    } else {
+        fixture
+    };
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let param = |key: &str| query.split('&').find_map(|pair| pair.strip_prefix(key)?.strip_prefix('=')).map(decode);
     let pulls = format!("/repos/{}/{}/pulls", fixture.owner, fixture.repo);
@@ -315,7 +331,7 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
         let q = variables["q"].as_str().unwrap_or_default();
         let found: Vec<u64>;
         let numbers: &[u64] = if q.contains("review-requested:@me") {
-            &[2, 3, 4, 5]
+            if state.branch { &[2, 3, 4, 5, 6] } else { &[2, 3, 4, 5] }
         } else if q.contains("author:@me") {
             &[1]
         } else {

@@ -65,15 +65,26 @@ fn a_stack_missing_its_bottom_still_groups_what_is_there() {
 }
 
 #[test]
-fn branch_offs_start_their_own_group() {
+fn prs_branching_off_one_pr_stay_in_its_group_depth_first() {
     let groups = group(vec![
         inbox_pr("acme/shop", 1, "main", "a", "1"),
         inbox_pr("acme/shop", 3, "a", "c", "1"),
+        inbox_pr("acme/shop", 4, "b", "d", "1"),
         inbox_pr("acme/shop", 2, "a", "b", "1"),
     ]);
-    let mut numbers: Vec<Vec<u64>> = shape(&groups).into_iter().map(|(_, n)| n).collect();
-    numbers.sort();
-    assert_eq!(numbers, vec![vec![1, 2], vec![3]]);
+    assert_eq!(shape(&groups), vec![("acme/shop".into(), vec![1, 2, 4, 3])]);
+    assert_eq!(groups[0].parents, vec![None, Some(0), Some(1), Some(0)]);
+    assert_eq!(groups[0].branches(), 2);
+}
+
+#[test]
+fn a_plain_stack_is_one_branch_also_when_cached_before_trees() {
+    let mut groups = group(vec![inbox_pr("acme/shop", 1, "main", "a", "1"), inbox_pr("acme/shop", 2, "a", "b", "1")]);
+    assert_eq!(groups[0].parents, vec![None, Some(0)]);
+    assert_eq!(groups[0].branches(), 1);
+    groups[0].parents.clear();
+    assert_eq!((groups[0].parent(0), groups[0].parent(1)), (None, Some(0)));
+    assert_eq!(groups[0].branches(), 1);
 }
 
 #[test]
@@ -285,6 +296,77 @@ async fn prefetching_makes_a_group_ready_and_finished_prs_are_evicted() {
     assert_eq!(service.evict_finished(&[]).await.unwrap(), 1);
     assert!(service.cached_stack(&pr).unwrap().is_none());
     assert!(service.cached_range(&snapshot, 0, 0).unwrap().is_none());
+}
+
+/// #1 ← {#2, #3}, all in the inbox.
+#[tokio::test]
+async fn prefetching_a_tree_keeps_each_pr_on_the_branch_it_was_last_seen_on() {
+    let origin = OriginRepo::init();
+    origin.write("a.php", "<?php\n$a = 1;\n");
+    origin.commit("base");
+    origin.checkout_new("s/1");
+    origin.write("a.php", "<?php\n$a = 2;\n");
+    let head1 = origin.commit("one");
+    origin.publish_pr(1, "s/1");
+    origin.checkout_new("s/2");
+    origin.write("b.php", "<?php\n$b = 1;\n");
+    let head2 = origin.commit("two");
+    origin.publish_pr(2, "s/2");
+    origin.checkout("s/1");
+    origin.checkout_new("s/3");
+    origin.write("c.php", "<?php\n$c = 1;\n");
+    let head3 = origin.commit("three");
+    origin.publish_pr(3, "s/3");
+    let url = origin.url();
+
+    let server = MockServer::start().await;
+    let pr1 = support::pull_request_json(1, "main", "s/1", &head1, &url);
+    let pr2 = support::pull_request_json(2, "s/1", "s/2", &head2, &url);
+    let pr3 = support::pull_request_json(3, "s/1", "s/3", &head3, &url);
+    let respond = |body: serde_json::Value| ResponseTemplate::new(200).set_body_json(body);
+    for (number, body) in [(1, &pr1), (2, &pr2), (3, &pr3)] {
+        Mock::given(path(format!("/repos/acme/shop/pulls/{number}"))).respond_with(respond(body.clone())).mount(&server).await;
+    }
+    for (key, value, body) in [
+        ("head", "acme:s/1", serde_json::json!([pr1])),
+        ("base", "s/1", serde_json::json!([pr3, pr2])),
+        ("base", "s/2", serde_json::json!([])),
+        ("base", "s/3", serde_json::json!([])),
+    ] {
+        Mock::given(path("/repos/acme/shop/pulls")).and(query_param(key, value)).respond_with(respond(body)).mount(&server).await;
+    }
+    let threads = serde_json::json!({ "data": { "repository": { "pullRequest": { "reviewThreads": { "pageInfo": { "hasNextPage": false }, "nodes": [] } } } } });
+    Mock::given(path("/graphql")).and(body_string_contains("reviewThreads")).respond_with(respond(threads)).mount(&server).await;
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new(server.uri(), "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+    let groups = group(vec![
+        inbox_pr("acme/shop", 1, "main", "s/1", "1"),
+        inbox_pr("acme/shop", 2, "s/1", "s/2", "1"),
+        inbox_pr("acme/shop", 3, "s/1", "s/3", "1"),
+    ]);
+    assert_eq!(groups.len(), 1);
+    let pr = |n: u64| wispy_core::pr_ref::PrRef::parse(&format!("acme/shop#{n}")).unwrap();
+    let cached = |n: u64| -> Vec<u64> { service.cached_stack(&pr(n)).unwrap().unwrap().stack.prs.iter().map(|p| p.number).collect() };
+
+    let snapshots = service.prefetch(&groups[0]).await.unwrap();
+    assert_eq!(snapshots.len(), 2, "one stack per branch");
+    assert_eq!((cached(1), cached(2), cached(3)), (vec![1, 2], vec![1, 2], vec![1, 3]));
+    let three = service.cached_stack(&pr(3)).unwrap().unwrap();
+    assert_eq!(three.stack.branches(0).iter().map(|b| b.number).collect::<Vec<_>>(), vec![2, 3]);
+    assert!(service.cached_range(&three, 1, 1).unwrap().is_some(), "every member is precomputed");
+
+    // Reading #3 makes its branch the one #1 opens on, and prefetching keeps it so.
+    service.fetch(service.discover(&pr(3)).await.unwrap()).unwrap();
+    assert_eq!(cached(1), vec![1, 3]);
+    assert_eq!(service.discover(&pr(1)).await.unwrap().prs.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 3]);
+    service.prefetch(&groups[0]).await.unwrap();
+    assert_eq!((cached(1), cached(2), cached(3)), (vec![1, 3], vec![1, 2], vec![1, 3]));
 }
 
 #[tokio::test]

@@ -1650,6 +1650,7 @@ mod tests {
             stack: Stack {
                 prs: vec![pr, second],
                 focus: 0,
+                forks: Vec::new(),
             },
             heads: vec!["0123456789abcdef".into(), "short".into()],
             bases: vec!["base".into(), "0123456789abcdef".into()],

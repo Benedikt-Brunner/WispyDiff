@@ -33,7 +33,7 @@ fn setup() -> (OriginRepo, PrService, StackSnapshot, tempfile::TempDir) {
         Cache::open(&data.path().join("cache.sqlite")).unwrap(),
         Highlighter::new(),
     );
-    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "feature", &origin.url())], focus: 0 }).unwrap();
+    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "feature", &origin.url())], focus: 0, forks: Vec::new() }).unwrap();
     (origin, service, snapshot, data)
 }
 

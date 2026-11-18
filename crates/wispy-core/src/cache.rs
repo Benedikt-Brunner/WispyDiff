@@ -131,11 +131,19 @@ impl Cache {
     }
 
     /// Stores the snapshot under every PR of the stack, so opening any of them is cached.
+    /// Records `snapshot` as the stack each of its PRs was last seen in.
     pub fn put_stack(&self, snapshot: &StackSnapshot) -> Result<()> {
+        let numbers: Vec<u64> = snapshot.stack.prs.iter().map(|p| p.number).collect();
+        self.put_stack_for(snapshot, &numbers)
+    }
+
+    /// Records `snapshot` as the stack of its PRs `numbers` only (a PR can be in several
+    /// stacks where PRs branch off; the others keep theirs).
+    pub fn put_stack_for(&self, snapshot: &StackSnapshot, numbers: &[u64]) -> Result<()> {
         let data = serde_json::to_string(snapshot).map_err(Error::codec)?;
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        for index in 0..snapshot.len() {
+        for index in (0..snapshot.len()).filter(|&i| numbers.contains(&snapshot.stack.prs[i].number)) {
             tx.execute(
                 "INSERT INTO stack_snapshots (pr, data) VALUES (?1, ?2)
                  ON CONFLICT(pr) DO UPDATE SET data = excluded.data, updated_at = unixepoch()",
