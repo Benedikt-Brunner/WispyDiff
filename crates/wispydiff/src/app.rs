@@ -44,6 +44,7 @@ gpui_kit::actions!(
         ExtendDown,
         ExtendUp,
         ShowDescription,
+        SwitchBranch,
     ]
 );
 
@@ -78,6 +79,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-[", ExtendDown, stack),
         KeyBinding::new("shift-]", ExtendUp, stack),
         KeyBinding::new("i", ShowDescription, stack),
+        KeyBinding::new("b", SwitchBranch, stack),
     ]);
 }
 
@@ -312,6 +314,11 @@ impl WispyApp {
 
     pub fn inbox_view(&self) -> &Entity<Inbox> {
         &self.inbox
+    }
+
+    /// The id of the open menu, if any.
+    pub fn open_menu(&self) -> Option<String> {
+        self.menus.open_id().map(str::to_string)
     }
 
     // ---------- actions ----------
@@ -744,6 +751,49 @@ impl WispyApp {
             )
     }
 
+    /// `b`: the branches splitting off where the selection is (the highest split at or below
+    /// its top PR; else the first one).
+    fn switch_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let s = self.session.read(cx);
+        let (Some(stack), Some(shown)) = (&s.stack, &s.shown) else { return };
+        let splits = |i: &usize| !stack.snapshot.stack.branches(*i).is_empty();
+        let index = (0..=shown.range.hi).rev().find(splits).or_else(|| (0..stack.prs.len()).find(splits));
+        if let Some(index) = index {
+            self.toggle_branches(index, window, cx);
+        }
+    }
+
+    /// Opens (or closes) the menu of the branches building on stack PR `index`; picking another
+    /// one opens its first PR, in the stack going on along that branch.
+    fn toggle_branches(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let s = self.session.read(cx);
+        let Some(stack) = &s.stack else { return };
+        let branches = stack.snapshot.stack.branches(index);
+        if branches.is_empty() {
+            return;
+        }
+        let repo = stack.snapshot.repo_slug().to_string();
+        let shown = stack.prs.get(index + 1).map(|p| p.number);
+        let labels: Vec<SharedString> = branches.iter().map(|b| branch_label(b, Some(b.number) == shown).into()).collect();
+        let numbers: Vec<u64> = branches.iter().map(|b| b.number).collect();
+        let selected = numbers.iter().position(|n| Some(*n) == shown);
+        self.menus.toggle(
+            format!("stack-branches-{index}"),
+            labels,
+            selected,
+            |this: &mut Self| &mut this.menus,
+            move |this, i, _, cx| {
+                if let Some(&number) = numbers.get(i).filter(|n| Some(**n) != shown) {
+                    let label = format!("{repo}#{number}");
+                    this.session.update(cx, |s, cx| s.open(label, cx));
+                }
+            },
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
     fn render_stack_bar(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let p = palette(cx).clone();
         let s = self.session.read(cx);
@@ -809,6 +859,39 @@ impl WispyApp {
                 .when(warn, |d| d.child(div().flex_none().text_color(p.pr(1)).child("⚠")))
                 .when(!ready, |d| d.child(div().size(u(5.)).flex_none().rounded_full().bg(p.fg_muted.opacity(0.5))))
         });
+        // Where several PRs build on one, a switch between those branches follows its chip.
+        let splits: Vec<_> = (0..stack.prs.len())
+            .map(|i| {
+                let count = stack.snapshot.stack.branches(i).len();
+                (count > 0).then(|| {
+                    let menu = self.menus.get(&format!("stack-branches-{i}"));
+                    let tip = format!("{count} branches build on #{} · b to switch", stack.prs[i].number);
+                    div()
+                        .id(("stack-branches", i))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h(u(20.))
+                        .px(u(6.))
+                        .mx(u(2.))
+                        .rounded(u(4.))
+                        .border_1()
+                        .border_color(p.border)
+                        .text_size(u(11.))
+                        .text_color(p.fg_muted)
+                        .whitespace_nowrap()
+                        .cursor_pointer()
+                        .hover(|d| d.text_color(p.fg))
+                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _, window, cx| this.toggle_branches(i, window, cx)))
+                        .child(format!("{count} branches ▾"))
+                        .when_some(menu, |d, menu| d.child(deferred(anchored().child(div().mt(u(20.)).child(menu)))))
+                })
+            })
+            .collect();
+        let chips = chips.zip(splits).flat_map(|(chip, split)| {
+            std::iter::once(chip.into_any_element()).chain(split.map(IntoElement::into_any_element))
+        });
         Some(
             // Scrolls sideways when the stack is wider than the window.
             div()
@@ -835,6 +918,12 @@ impl WispyApp {
                 .children(chips),
         )
     }
+}
+
+/// A branch in the stack bar's branch menu.
+fn branch_label(branch: &wispy_core::stack::Branch, shown: bool) -> String {
+    let size = if branch.size > 1 { format!(" · {} PRs", branch.size) } else { String::new() };
+    format!("#{} {}{size}{}", branch.number, branch.title, if shown { " · shown" } else { "" })
 }
 
 fn checkpoint_label(c: &wispy_core::progress::Checkpoint) -> String {
@@ -987,6 +1076,7 @@ impl Render for WispyApp {
             .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.stack_action(cx, |s, cx| s.step_range('{', cx))))
             .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.stack_action(cx, |s, cx| s.step_range('}', cx))))
             .on_action(cx.listener(|this, _: &ShowDescription, window, cx| this.describe_shown(window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchBranch, window, cx| this.switch_branch(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSubmit, window, cx| {
                 if this.blocked() || this.palette.is_some() || this.sheet.is_some() {
                     return;

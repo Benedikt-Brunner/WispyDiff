@@ -57,6 +57,7 @@ fn three_pr_stack() -> (OriginRepo, StackSnapshot, tempfile::TempDir) {
             pull_request(3, "stack/2", "stack/3", &url),
         ],
         focus: 0,
+        forks: Vec::new(),
     };
     let root = tempfile::tempdir().unwrap();
     let store = RepoStore::new(root.path(), None);

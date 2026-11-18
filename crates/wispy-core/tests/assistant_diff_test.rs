@@ -55,7 +55,7 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
         Cache::open(&data.path().join("cache.sqlite")).unwrap(),
         Highlighter::new(),
     );
-    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url), pull_request(3, "s/2", "s/3", &url)], focus: 0 }).unwrap();
+    let snapshot = service.fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url), pull_request(3, "s/2", "s/3", &url)], focus: 0, forks: Vec::new() }).unwrap();
 
     let steps = json!([
         ["file_diff", { "path": "src/Order.php" }],

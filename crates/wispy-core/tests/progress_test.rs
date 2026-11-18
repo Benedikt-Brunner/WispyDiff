@@ -51,7 +51,7 @@ fn service(data: &std::path::Path) -> PrService {
 }
 
 fn stack(origin: &OriginRepo) -> Stack {
-    Stack { prs: vec![pull_request(1, "main", "feature", &origin.url())], focus: 0 }
+    Stack { prs: vec![pull_request(1, "main", "feature", &origin.url())], focus: 0, forks: Vec::new() }
 }
 
 fn paths(view: &wispy_core::model::DiffView) -> Vec<String> {
@@ -145,7 +145,7 @@ fn checkpoints_must_cover_both_ends_of_the_range() {
     let data = tempfile::tempdir().unwrap();
     let service = service(data.path());
     let snapshot = service
-        .fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 0 })
+        .fetch(Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 0, forks: Vec::new() })
         .unwrap();
     service.mark_reviewed(&snapshot, 1, 1, "submit").unwrap();
     let both = service.mark_reviewed(&snapshot, 0, 1, "manual").unwrap();
@@ -229,7 +229,7 @@ fn since_checkpoint_leaves_out_the_pr_below_merged_into_a_stacked_pr() {
         origin.publish_pr(n, branch);
     }
     let url = origin.url();
-    let stack = || Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 1 };
+    let stack = || Stack { prs: vec![pull_request(1, "main", "s/1", &url), pull_request(2, "s/1", "s/2", &url)], focus: 1, forks: Vec::new() };
     let data = tempfile::tempdir().unwrap();
     let service = PrService::new(
         GitHubClient::new("http://127.0.0.1:9", "t").unwrap(),

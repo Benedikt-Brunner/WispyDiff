@@ -14,6 +14,7 @@ use wispy_core::inbox::InboxPr;
 use wispy_core::service::{InboxEntry, PrProgress};
 
 use crate::backend::RefreshProgress;
+use crate::logic::stack_tree::guides;
 use crate::logic::time::{ago, exact_local, now_unix};
 use crate::settings;
 use crate::ui::{key_label, link_button, palette, status_badge, u, wordmark, BadgeKind};
@@ -284,6 +285,7 @@ impl Render for Inbox {
             let n = self.entries.len();
             format!("{n} group{}", if n == 1 { "" } else { "s" })
         };
+        let mono = crate::ui::mono_family(cx);
         let groups = self.entries.iter().enumerate().map(|(index, entry)| {
             let key = group_key(entry);
             let stack = entry.group.prs.len() > 1;
@@ -328,7 +330,14 @@ impl Render for Inbox {
                     )
                 })
                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(u(13.)).child(entry.group.repo.clone()))
-                .when(stack, |d| d.child(status_badge(format!("stack of {}", entry.group.prs.len()), BadgeKind::Plain, cx)))
+                .when(stack, |d| {
+                    let branches = entry.group.branches();
+                    let text = match branches {
+                        1 => format!("stack of {}", entry.group.prs.len()),
+                        n => format!("stack of {} · {n} branches", entry.group.prs.len()),
+                    };
+                    d.child(status_badge(text, BadgeKind::Plain, cx))
+                })
                 .when(collapsed && current > 0, |d| {
                     d.child(status_badge(format!("{current}/{} reviewed", entry.group.prs.len()), BadgeKind::Ok, cx))
                 })
@@ -365,7 +374,9 @@ impl Render for Inbox {
                         .child(if entry.ready { "offline ready" } else { "prefetching…" }),
                 );
             let prs = (!collapsed).then(|| {
+                let guides = guides(entry.group.prs.len(), |i| entry.group.parent(i));
                 div().flex().flex_col().children(entry.group.prs.iter().enumerate().map(|(i, pr)| {
+                    let guide = guides[i].clone();
                     let label = pr_label(pr);
                     let (open_label, hover_label) = (label.clone(), label.clone());
                     let (menu_label, button_label) = (label.clone(), label.clone());
@@ -396,6 +407,18 @@ impl Render for Inbox {
                                 cx.notify();
                             }
                         }))
+                        // Where the stack branches: which PR this one builds on.
+                        .when(!guide.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .font_family(mono.clone())
+                                    .text_size(u(12.))
+                                    .text_color(p.fg_muted.opacity(0.6))
+                                    .whitespace_nowrap()
+                                    .child(guide),
+                            )
+                        })
                         .child(div().flex_none().text_size(u(12.)).text_color(p.fg_muted).child(format!("#{}", pr.number)))
                         // Up to half the row; the branch names on the right give way first.
                         .child(

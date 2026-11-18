@@ -49,6 +49,7 @@ fn main() {
             pr(4, "stack/3", "stack/4", &url),
         ],
         focus: 0,
+        forks: Vec::new(),
     };
     let t = Instant::now();
     let git = store.ensure_repo("wispy", "fixture", &url).unwrap();

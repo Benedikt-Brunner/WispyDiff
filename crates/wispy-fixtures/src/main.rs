@@ -1,6 +1,7 @@
 //! `wispy-fixtures generate --out DIR [--seed N]` builds a deterministic repository with a
 //! four-PR stack (the bottom PR is the ~500 files / ~50k changed lines worst case, including
-//! one 20k-line file) and publishes the PRs as `refs/pull/<n>/head`.
+//! one 20k-line file), a standalone PR, and a second branch on the bottom PR that is hidden
+//! until `GET /__branch`, and publishes the PRs as `refs/pull/<n>/head`.
 //!
 //! `wispy-fixtures serve --fixture DIR --port P` (`0`: any free port, printed as `port N` on
 //! stdout once listening) answers the GitHub REST calls WispyDiff
@@ -27,9 +28,12 @@ pub struct Fixture {
     pub prs: Vec<FixturePr>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FixturePr {
     pub number: u64,
+    /// Only served once `GET /__branch` turned it on.
+    #[serde(default)]
+    pub hidden: bool,
     pub title: String,
     pub base_ref: String,
     pub head_ref: String,
@@ -130,6 +134,13 @@ fn generate(out: &Path, seed: u64) -> Fixture {
     files[250].write(&origin);
     commit(&origin, "Fix carrier label typo", 6);
     prs.push(("solo", "main", "Fix carrier label typo"));
+    // A second branch on PR 1 (PR 6), turning the stack into a tree; hidden until asked for.
+    git(&["checkout", "--quiet", "stack/1"]);
+    git(&["checkout", "--quiet", "-b", "stack/2b"]);
+    files[300].mutate(3, &mut rng);
+    files[300].write(&origin);
+    commit(&origin, "Count bins per zone", 7);
+    prs.push(("stack/2b", "stack/1", "Count bins per zone"));
     git(&["checkout", "--quiet", "main"]);
 
     let prs: Vec<FixturePr> = prs
@@ -140,6 +151,7 @@ fn generate(out: &Path, seed: u64) -> Fixture {
             git(&["update-ref", &format!("refs/pull/{number}/head"), head_ref]);
             FixturePr {
                 number,
+                hidden: head_ref == "stack/2b",
                 title: title.to_string(),
                 base_ref: base_ref.to_string(),
                 head_ref: head_ref.to_string(),

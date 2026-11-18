@@ -23,7 +23,7 @@ use crate::pr_ref::PrRef;
 use crate::range::{blob_lines, compute_range};
 use crate::repo_store::RepoStore;
 use crate::split::{align, split_rows, SplitRow};
-use crate::stack::{discover_stack, Stack, StackSnapshot};
+use crate::stack::{discover_stack, discover_tree, Stack, StackSnapshot};
 
 /// Opens stacks: structure from GitHub, code from the local blobless clone, and precomputed
 /// range views from the cache whenever the SHAs are unchanged.
@@ -155,19 +155,36 @@ impl PrService {
         self.cache.stack(pr)
     }
 
+    /// The stack `pr` is in. Where PRs branch off above it, it goes on along the branch it was
+    /// last seen on (the oldest one at first).
     pub async fn discover(&self, pr: &PrRef) -> Result<Stack> {
-        discover_stack(&self.github, pr).await
+        discover_stack(&self.github, pr, &self.last_branch(pr)?).await
     }
 
-    /// Fetches every PR of `stack` into the local clone and records the snapshot.
-    /// Blocking: call from a worker thread.
+    /// The PRs above `pr` in the stack it was last seen in, bottom first.
+    fn last_branch(&self, pr: &PrRef) -> Result<Vec<u64>> {
+        Ok(self
+            .cache
+            .stack(pr)?
+            .map(|s| s.stack.prs[s.stack.focus + 1..].iter().map(|p| p.number).collect())
+            .unwrap_or_default())
+    }
+
+    /// Fetches every PR of `stack` into the local clone and records the snapshot as the stack
+    /// each of its PRs was last seen in. Blocking: call from a worker thread.
     pub fn fetch(&self, stack: Stack) -> Result<StackSnapshot> {
+        let numbers: Vec<u64> = stack.prs.iter().map(|p| p.number).collect();
+        self.fetch_for(stack, &numbers)
+    }
+
+    /// Like [`PrService::fetch`], recording the snapshot only for the PRs `numbers`.
+    fn fetch_for(&self, stack: Stack, numbers: &[u64]) -> Result<StackSnapshot> {
         let bottom = &stack.prs[0];
         let (owner, repo) = bottom.base_repo.split_once('/').unwrap_or((&bottom.base_repo, ""));
         let git = self.store.ensure_repo(owner, repo, &bottom.clone_url)?;
         let points = self.store.fetch_stack(&git, &stack.prs)?;
         let snapshot = StackSnapshot::new(stack, points);
-        self.cache.put_stack(&snapshot)?;
+        self.cache.put_stack_for(&snapshot, numbers)?;
         Ok(snapshot)
     }
 
@@ -485,30 +502,52 @@ impl PrService {
             .collect()
     }
 
-    /// Makes a group openable offline: discovers and fetches its full stack, precomputes each
-    /// member alone and the whole stack, downloads every head's files (for whole-repo search),
-    /// and caches review threads.
-    pub async fn prefetch(&self, group: &InboxGroup) -> Result<StackSnapshot> {
+    /// Makes a group openable offline: discovers its whole tree of PRs and fetches every stack
+    /// in it (each PR in the one it was last seen in: where PRs branch off, every branch is a
+    /// stack of its own), precomputes each member alone and every whole stack, downloads every
+    /// head's files (for whole-repo search), and caches review threads.
+    pub async fn prefetch(&self, group: &InboxGroup) -> Result<Vec<StackSnapshot>> {
         let pr = PrRef { owner: owner_of(&group.repo).into(), repo: name_of(&group.repo).into(), number: group.prs[0].number };
-        let stack = self.discover(&pr).await?;
-        let snapshot = self.fetch(stack)?;
-        let members: Vec<usize> = group
-            .prs
-            .iter()
-            .filter_map(|member| snapshot.stack.prs.iter().position(|p| p.number == member.number))
-            .collect();
-        for &index in &members {
-            self.precompute(&snapshot, index, index)?;
+        let (tree, _) = discover_tree(&self.github, &pr).await?;
+        // Each stack, with the PRs it is the last-seen stack of.
+        let mut stacks: Vec<(Stack, Vec<u64>)> = Vec::new();
+        for (index, member) in tree.prs.iter().enumerate() {
+            let reference = PrRef { number: member.number, ..pr.clone() };
+            let stack = tree.stack(index, &self.last_branch(&reference)?);
+            let same = |s: &Stack| s.prs.iter().map(|p| p.number).eq(stack.prs.iter().map(|p| p.number));
+            match stacks.iter_mut().find(|(s, _)| same(s)) {
+                Some((_, members)) => members.push(member.number),
+                None => stacks.push((stack, vec![member.number])),
+            }
         }
-        self.precompute(&snapshot, 0, snapshot.len() - 1)?;
-        let git = self.git(&snapshot)?;
-        for head in &snapshot.heads {
-            self.store.hydrate(&git, head)?;
+        let mut snapshots = Vec::new();
+        let (mut hydrated, mut threads) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for (stack, members) in stacks {
+            let snapshot = self.fetch_for(stack, &members)?;
+            for (index, pr) in snapshot.stack.prs.iter().enumerate() {
+                if members.contains(&pr.number) && group.prs.iter().any(|g| g.number == pr.number) {
+                    self.precompute(&snapshot, index, index)?;
+                }
+            }
+            self.precompute(&snapshot, 0, snapshot.len() - 1)?;
+            let git = self.git(&snapshot)?;
+            for head in &snapshot.heads {
+                if hydrated.insert(head.clone()) {
+                    self.store.hydrate(&git, head)?;
+                }
+            }
+            for index in 0..snapshot.len() {
+                let pr = snapshot.pr_ref(index);
+                if threads.insert(pr.number) {
+                    let found = self.github.review_threads(&pr).await?;
+                    self.cache.put_threads(snapshot.repo_slug(), pr.number, &found)?;
+                }
+            }
+            snapshots.push(snapshot);
         }
-        self.refresh_threads(&snapshot).await?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         self.cache.put_app_value(&fetched_key(group), &now.into())?;
-        Ok(snapshot)
+        Ok(snapshots)
     }
 
     /// Drops cached stacks of PRs that left the inbox because they were merged or closed,

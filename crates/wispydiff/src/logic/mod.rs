@@ -10,6 +10,7 @@ pub mod images;
 pub mod indent;
 pub mod layout;
 pub mod palette;
+pub mod stack_tree;
 pub mod time;
 
 #[cfg(test)]

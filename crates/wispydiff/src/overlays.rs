@@ -263,6 +263,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(Vec<String>, String)>)> {
                 (vec![s("M")], s("Mark as reviewed (local checkpoint)")),
                 (vec![s("d")], s("Changes since the last checkpoint")),
                 (vec![s("i")], s("The stack's descriptions, at the PR in view (or double-click a PR)")),
+                (vec![s("b")], s("Switch to another branch where PRs branch off")),
             ],
         ),
         (
