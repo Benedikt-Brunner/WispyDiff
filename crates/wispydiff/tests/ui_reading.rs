@@ -1024,12 +1024,14 @@ async fn navigation_skips_viewed_except_shift_arrows(cx: &mut TestAppContext) {
     t.finish(cx).await;
 }
 
-// keys.e2e: "marks the last files viewed even though they can't scroll to the top".
+// keys.e2e: "marks the last files viewed even though they can't scroll to the top", going back
+// up to the nearest file still to review once none is left below.
 #[gpui_kit::test]
 async fn last_file_stays_current_while_marking_and_unmarking(cx: &mut TestAppContext) {
     let t = Reading::new(cx);
     t.open(cx, 3).await;
     let last = t.read(cx, |d, _| d.view.summary.files.len() - 1);
+    assert!(last >= 2);
     t.click_file(cx, last - 1);
     t.keys(cx, "v");
     t.read(cx, |d, cx| {
@@ -1039,8 +1041,10 @@ async fn last_file_stays_current_while_marking_and_unmarking(cx: &mut TestAppCon
     t.keys(cx, "v");
     t.read(cx, |d, cx| {
         assert!(viewed(d, last, cx));
-        assert_eq!(d.current(), Some(last));
+        assert_eq!(d.current(), Some(last - 2));
     });
+    t.click_file(cx, last);
+    assert_eq!(t.read(cx, |d, _| d.current()), Some(last));
     t.keys(cx, "v");
     t.read(cx, |d, cx| {
         assert!(!viewed(d, last, cx));

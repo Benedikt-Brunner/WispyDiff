@@ -2431,12 +2431,14 @@ impl DiffViewer {
         }
     }
 
-    /// `v`: marks the file viewed (or not) and, marking, moves on to the next file still to review.
+    /// `v`: marks the file viewed (or not) and, marking, moves on to the next file still to review
+    /// (the nearest one above when none is left below).
     fn apply_viewed_now(&mut self, here: usize, viewed: bool, cx: &mut Context<Self>) {
         let file = self.view.summary.files[here].clone();
         let filtered = self.filtered();
         let next = if viewed {
-            self.view.summary.files.iter().enumerate().position(|(i, f)| i > here && !self.is_viewed(&f.content_key, cx) && !filtered[i])
+            let to_review: Vec<bool> = self.view.summary.files.iter().enumerate().map(|(i, f)| i != here && !filtered[i] && !self.is_viewed(&f.content_key, cx)).collect();
+            (here + 1..to_review.len()).find(|&i| to_review[i]).or_else(|| (0..here).rev().find(|&i| to_review[i]))
         } else {
             None
         };
