@@ -2710,6 +2710,9 @@ impl Render for DiffViewer {
                             .relative()
                             .flex_1()
                             .min_h(px(0.))
+                            // The sticky header slides up out of view as the next file's header
+                            // pushes it (a negative top): clipped here, not over the stack bar.
+                            .overflow_hidden()
                             .font_family(crate::ui::mono_family(cx))
                             .text_size(u(12.))
                             .line_height(u(20.))
