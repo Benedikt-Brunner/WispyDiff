@@ -180,6 +180,8 @@ pub struct Backend {
     runtime: Option<Runtime>,
     data_dir: PathBuf,
     service: OnceLock<Result<Arc<PrService>, String>>,
+    /// Set by [`Backend::shut_down`].
+    shut_down: std::sync::atomic::AtomicBool,
     stacks: Mutex<HashMap<String, Arc<StackSnapshot>>>,
     views: Mutex<VecDeque<OpenView>>,
     split_files: Mutex<VecDeque<(String, Arc<Vec<SplitRow>>)>>,
@@ -241,6 +243,7 @@ impl Backend {
             on_inbox_progress: Mutex::new(None),
             data_dir,
             service: OnceLock::new(),
+            shut_down: Default::default(),
             stacks: Mutex::new(HashMap::new()),
             views: Mutex::new(VecDeque::new()),
             split_files: Mutex::new(VecDeque::new()),
@@ -263,7 +266,13 @@ impl Backend {
     /// Created lazily so a missing `gh` login is reported on first use instead of at launch.
     pub fn service(&self) -> Result<Arc<PrService>, String> {
         self.service
-            .get_or_init(|| self.create_service().map(Arc::new))
+            .get_or_init(|| {
+                let service = Arc::new(self.create_service()?);
+                if self.is_shut_down() {
+                    service.stop();
+                }
+                Ok(service)
+            })
             .clone()
     }
 
@@ -1434,6 +1443,20 @@ impl Backend {
         lock(&self.stacks).get(id).cloned()
     }
 
+    /// The app is closing (its window is gone): background work (prefetching, precomputing the
+    /// stack's ranges) ends at its next step instead of keeping the backend busy and alive.
+    pub fn shut_down(&self) {
+        self.shut_down.store(true, std::sync::atomic::Ordering::Relaxed);
+        *lock(&self.current_stack) = None;
+        if let Some(Ok(service)) = self.service.get() {
+            service.stop();
+        }
+    }
+
+    pub(crate) fn is_shut_down(&self) -> bool {
+        self.shut_down.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn is_current_stack(&self, id: &str) -> bool {
         lock(&self.current_stack).as_deref() == Some(id)
     }
@@ -1554,21 +1577,23 @@ impl Backend {
     }
 
     /// Computes every range of the stack into the cache (most useful first) so switching ranges
-    /// is a cache read. Stops as soon as another stack is opened.
+    /// is a cache read. Stops as soon as another stack is opened, or after the range at hand once
+    /// the backend is shut down (window closed): it holds the backend only weakly, so the whole
+    /// stack's work doesn't keep it alive.
     fn spawn_precompute(self: &Arc<Self>, stack_id: String, snapshot: Arc<StackSnapshot>) {
         if !self.start_precompute(&stack_id) {
             return;
         }
-        let backend = self.clone();
+        let backend = Arc::downgrade(self);
         std::thread::spawn(move || {
-            if let Ok(service) = backend.service() {
+            if let Some(Ok(service)) = backend.upgrade().map(|b| b.service()) {
                 for (lo, hi) in snapshot.ranges_by_priority() {
-                    if !backend.is_current_stack(&stack_id) {
+                    if !backend.upgrade().is_some_and(|b| b.is_current_stack(&stack_id)) {
                         break;
                     }
                     match service.precompute(&snapshot, lo, hi) {
                         Ok(_) => {
-                            let callback = lock(&backend.on_range_ready).clone();
+                            let callback = backend.upgrade().and_then(|b| lock(&b.on_range_ready).clone());
                             if let Some(callback) = callback {
                                 callback(RangeReady {
                                     stack_id: stack_id.clone(),
@@ -1581,7 +1606,9 @@ impl Backend {
                     }
                 }
             }
-            backend.finish_precompute(&stack_id);
+            if let Some(backend) = backend.upgrade() {
+                backend.finish_precompute(&stack_id);
+            }
         });
     }
 
