@@ -175,6 +175,8 @@ impl Session {
         };
         session.load_inbox(cx);
         backend.start_prefetch();
+        // The window is gone (the app quits): its background work stops too.
+        cx.on_release(|session, _| session.backend.shut_down()).detach();
         session
     }
 

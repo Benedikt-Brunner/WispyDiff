@@ -31,6 +31,9 @@ pub(crate) fn start(backend: Weak<Backend>) -> PrefetchTrigger {
             return;
         };
         backend.block_on_prefetch();
+        if backend.is_shut_down() {
+            return;
+        }
         // Do not retain the Backend (and its sender/runtime) while the worker is asleep.
         drop(backend);
         match receiver.recv_timeout(interval()) {
@@ -64,11 +67,17 @@ async fn refresh(backend: &Backend, service: &wispy_core::service::PrService) {
     emit_entries(backend, service, groups.clone());
     let total = groups.len();
     for (done, group) in groups.iter().enumerate() {
+        if backend.is_shut_down() {
+            return;
+        }
         backend.emit_inbox_progress(Some(RefreshProgress::Prefetching { done, total }));
         if let Err(err) = service.prefetch(group).await {
             eprintln!("prefetch {}: {err}", group.key());
         }
         emit_entries(backend, service, groups.clone());
+    }
+    if backend.is_shut_down() {
+        return;
     }
     if let Err(err) = service.evict_finished(&groups).await {
         eprintln!("eviction: {err}");

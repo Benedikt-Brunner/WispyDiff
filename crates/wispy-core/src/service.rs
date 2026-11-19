@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -36,6 +37,8 @@ pub struct PrService {
     coverage: Mutex<HashMap<String, Arc<Coverage>>>,
     /// The signed-in user's login, once asked for.
     viewer: Mutex<Option<String>>,
+    /// Set by [`PrService::stop`]: background work ends at its next step.
+    stopped: AtomicBool,
 }
 
 /// A pending draft of a stack PR, with its anchor moved to the PR's current head
@@ -147,7 +150,17 @@ impl PrService {
     pub fn new(github: GitHubClient, store: RepoStore, cache: Cache, highlighter: Highlighter) -> Self {
         let cache = Arc::new(cache);
         let highlights = HighlightCache::new(3_000_000, Some(cache.clone()));
-        PrService { github, store, cache, highlighter, highlights, coverage: Mutex::new(HashMap::new()), viewer: Mutex::new(None) }
+        PrService { github, store, cache, highlighter, highlights, coverage: Mutex::new(HashMap::new()), viewer: Mutex::new(None), stopped: AtomicBool::new(false) }
+    }
+
+    /// Ends background work (prefetching, precomputing ranges) at its next step, for good: the
+    /// app is closing. What already runs finishes; what is asked for afterwards is skipped.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
     }
 
     /// The stack `pr` was last seen in, without touching the network.
@@ -207,8 +220,12 @@ impl PrService {
         self.compute(snapshot, spec).map(Arc::new)
     }
 
-    /// Computes `lo..=hi` into the cache unless it's already there. Returns whether it computed.
+    /// Computes `lo..=hi` into the cache unless it's already there (or the service is stopped).
+    /// Returns whether it computed.
     pub fn precompute(&self, snapshot: &StackSnapshot, lo: usize, hi: usize) -> Result<bool> {
+        if self.stopped() {
+            return Ok(false);
+        }
         let spec = snapshot.range(lo, hi);
         if self.cache.has_diff_view(snapshot.repo_slug(), &spec)? {
             return Ok(false);
@@ -523,6 +540,10 @@ impl PrService {
         let mut snapshots = Vec::new();
         let (mut hydrated, mut threads) = (std::collections::HashSet::new(), std::collections::HashSet::new());
         for (stack, members) in stacks {
+            // Stopped: the group isn't marked fetched, so the next launch prefetches it again.
+            if self.stopped() {
+                return Ok(snapshots);
+            }
             let snapshot = self.fetch_for(stack, &members)?;
             for (index, pr) in snapshot.stack.prs.iter().enumerate() {
                 if members.contains(&pr.number) && group.prs.iter().any(|g| g.number == pr.number) {
@@ -530,6 +551,9 @@ impl PrService {
                 }
             }
             self.precompute(&snapshot, 0, snapshot.len() - 1)?;
+            if self.stopped() {
+                return Ok(snapshots);
+            }
             let git = self.git(&snapshot)?;
             for head in &snapshot.heads {
                 if hydrated.insert(head.clone()) {

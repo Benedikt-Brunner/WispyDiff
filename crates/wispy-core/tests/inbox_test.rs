@@ -298,6 +298,61 @@ async fn prefetching_makes_a_group_ready_and_finished_prs_are_evicted() {
     assert!(service.cached_range(&snapshot, 0, 0).unwrap().is_none());
 }
 
+#[tokio::test]
+async fn a_stopped_service_skips_prefetching() {
+    let origin = OriginRepo::init();
+    origin.write("a.php", "<?php\n$a = 1;\n");
+    origin.write("untouched.php", "<?php\n$b = 1;\n");
+    origin.commit("base");
+    origin.checkout_new("feature");
+    origin.write("a.php", "<?php\n$a = 2;\n");
+    let head = origin.commit("change");
+    origin.publish_pr(4, "feature");
+    let url = origin.url();
+
+    let server = MockServer::start().await;
+    let pr_json = support::pull_request_json(4, "main", "feature", &head, &url);
+    Mock::given(path("/repos/acme/shop/pulls/4"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pr_json.clone()))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(path("/repos/acme/shop/pulls")).and(query_param("base", "feature"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+    let threads = serde_json::json!({ "data": { "repository": { "pullRequest": { "reviewThreads": { "pageInfo": { "hasNextPage": false }, "nodes": [] } } } } });
+    Mock::given(path("/graphql")).and(body_string_contains("reviewThreads"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads))
+        .mount(&server)
+        .await;
+    let search = |nodes: serde_json::Value| ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": { "search": { "nodes": nodes } } }));
+    let node = serde_json::json!({
+        "number": 4, "title": "PR 4", "url": "u", "isDraft": false, "updatedAt": "2026-09-30T00:00:00Z",
+        "headRefName": "feature", "baseRefName": "main", "headRefOid": head,
+        "author": { "login": "me" }, "repository": { "nameWithOwner": "acme/shop" }
+    });
+    Mock::given(path("/graphql")).and(body_string_contains("review-requested")).respond_with(search(serde_json::json!([node]))).mount(&server).await;
+    Mock::given(path("/graphql")).and(body_string_contains("author:@me")).respond_with(search(serde_json::json!([]))).mount(&server).await;
+
+    let data = tempfile::tempdir().unwrap();
+    let service = PrService::new(
+        GitHubClient::new(server.uri(), "t").unwrap(),
+        RepoStore::new(data.path().join("repos"), None),
+        Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+        Highlighter::new(),
+    );
+
+    let groups = service.refresh_inbox().await.unwrap();
+
+    // The app is closing: what is asked for afterwards is skipped.
+    service.stop();
+    service.prefetch(&groups[0]).await.unwrap();
+    let entry = &service.inbox_entries(groups.clone()).unwrap()[0];
+    assert!(!entry.ready, "nothing was computed");
+    assert_eq!(entry.fetched_at, None, "fetched again on the next launch");
+}
+
 /// #1 ← {#2, #3}, all in the inbox.
 #[tokio::test]
 async fn prefetching_a_tree_keeps_each_pr_on_the_branch_it_was_last_seen_on() {
