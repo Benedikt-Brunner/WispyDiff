@@ -25,6 +25,8 @@ pub struct DescribedPr {
     pub body_html: String,
     /// The PR's colour in the open stack.
     pub color: Option<u8>,
+    /// Auto-merge is enabled.
+    pub auto_merge: bool,
 }
 
 pub struct DescriptionView {
@@ -112,6 +114,7 @@ impl Render for DescriptionView {
                         .gap(u(8.))
                         .when_some(pr.color, |d, color| d.child(div().size(u(8.)).flex_none().rounded_full().bg(p.pr(color))))
                         .child(div().flex_1().min_w(px(0.)).font_family(mono.clone()).text_size(u(12.)).text_color(p.fg_muted).child(pr.label.clone()))
+                        .when(pr.auto_merge, |d| d.child(crate::ui::auto_merge_badge(format!("description-auto-merge-{}", pr.label), cx)))
                         .when(!url.is_empty(), |d| {
                             d.child(
                                 link_button("open on GitHub", cx)

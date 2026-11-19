@@ -157,6 +157,7 @@ impl WispyApp {
                                 url: pr.url.clone(),
                                 body_html: pr.body_html.clone(),
                                 color: colored.then_some(i as u8),
+                                auto_merge: pr.auto_merge,
                             })
                             .collect();
                         this.show_description(prs, first, window, cx);
@@ -414,6 +415,7 @@ impl WispyApp {
                     url: pr.html_url.clone(),
                     body_html: pr.body_html.clone(),
                     color: colored.then_some(i as u8),
+                    auto_merge: pr.auto_merge,
                 }
             })
             .collect()
@@ -662,6 +664,17 @@ impl WispyApp {
         } else {
             format!("{} · {} ← {} · {} files ·", top.base_repo, bottom.base_ref, top.head_ref, summary.files.len())
         };
+        // Auto-merge on the shown PR, or on some of the shown range.
+        let auto: Vec<u64> = stack.prs[lo..=hi].iter().filter(|pr| pr.auto_merge).map(|pr| pr.number).collect();
+        let auto_badge = (!auto.is_empty()).then(|| {
+            if lo == hi {
+                crate::ui::auto_merge_badge("header-auto-merge", cx)
+            } else {
+                let numbers = auto.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+                let text = if auto.len() == hi - lo + 1 { "auto-merge".to_string() } else { format!("auto-merge · {} of {}", auto.len(), hi - lo + 1) };
+                crate::ui::labeled_auto_merge_badge("header-auto-merge", text, format!("Auto-merge is enabled on {numbers}: GitHub merges them once their checks pass"), cx)
+            }
+        });
         let since = shown.since.clone();
         let checkpoints = s.checkpoints.clone();
         let since_menu = self.menus.get("since-picker");
@@ -691,6 +704,7 @@ impl WispyApp {
                     }))
                     .child(title),
             )
+            .children(auto_badge)
             .child(
                 div()
                     .flex()
@@ -809,10 +823,11 @@ impl WispyApp {
             let warn = stack.needs_rebase.get(i).copied().unwrap_or(false);
             let ready = s.ready(i, i);
             let tip = format!(
-                "{}\n{} ← {}{}\nShift-click to select a range · double-click for the description",
+                "{}\n{} ← {}{}{}\nShift-click to select a range · double-click for the description",
                 pr.title,
                 pr.base_ref,
                 pr.head_ref,
+                if pr.auto_merge { "\nAuto-merge is enabled" } else { "" },
                 if warn { "\n⚠ Not based on the latest head of the PR below" } else { "" }
             );
             // A selected range reads as one band: the chips inside it share their top and bottom
@@ -856,6 +871,7 @@ impl WispyApp {
                 .child(div().size(u(8.)).flex_none().rounded_full().bg(color))
                 .child(div().flex_none().font_family(mono.clone()).text_size(u(11.)).child(format!("#{}", pr.number)))
                 .child(div().min_w(px(0.)).whitespace_nowrap().text_ellipsis().overflow_hidden().child(pr.title.clone()))
+                .when(pr.auto_merge, |d| d.child(div().flex_none().text_size(u(10.)).text_color(p.add_fg).child("auto")))
                 .when(warn, |d| d.child(div().flex_none().text_color(p.pr(1)).child("⚠")))
                 .when(!ready, |d| d.child(div().size(u(5.)).flex_none().rounded_full().bg(p.fg_muted.opacity(0.5))))
         });

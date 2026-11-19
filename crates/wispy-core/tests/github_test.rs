@@ -68,6 +68,21 @@ async fn reports_merged_pull_requests_as_merged() {
 }
 
 #[tokio::test]
+async fn tells_whether_auto_merge_is_enabled() {
+    let server = MockServer::start().await;
+    let mut enabled = support::pull_request_json(5, "main", "x", "abc", "https://github.com/acme/shop.git");
+    enabled["auto_merge"] = serde_json::json!({ "enabled_by": { "login": "octocat" }, "merge_method": "squash" });
+    let mut disabled = support::pull_request_json(6, "main", "y", "def", "https://github.com/acme/shop.git");
+    disabled["auto_merge"] = serde_json::Value::Null;
+    Mock::given(path("/repos/acme/shop/pulls/5")).respond_with(ResponseTemplate::new(200).set_body_json(enabled)).mount(&server).await;
+    Mock::given(path("/repos/acme/shop/pulls/6")).respond_with(ResponseTemplate::new(200).set_body_json(disabled)).mount(&server).await;
+
+    let client = GitHubClient::new(server.uri(), "t").unwrap();
+    assert!(client.pull_request(&pr_ref(5)).await.unwrap().auto_merge);
+    assert!(!client.pull_request(&pr_ref(6)).await.unwrap().auto_merge);
+}
+
+#[tokio::test]
 async fn surfaces_github_error_messages() {
     let server = MockServer::start().await;
     Mock::given(path("/repos/acme/shop/pulls/404"))

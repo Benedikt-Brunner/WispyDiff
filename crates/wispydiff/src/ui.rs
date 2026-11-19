@@ -230,6 +230,20 @@ pub fn status_badge(text: impl Into<SharedString>, kind: BadgeKind, cx: &App) ->
     }
 }
 
+/// "auto-merge": GitHub merges the PR once its checks pass.
+pub fn auto_merge_badge(id: impl Into<SharedString>, cx: &App) -> gpui_kit::Stateful<Div> {
+    labeled_auto_merge_badge(id, "auto-merge", "Auto-merge is enabled: GitHub merges it once its checks pass", cx)
+}
+
+/// An auto-merge badge with its own text and tooltip (a range of PRs).
+pub fn labeled_auto_merge_badge(id: impl Into<SharedString>, text: impl Into<SharedString>, tip: impl Into<SharedString>, cx: &App) -> gpui_kit::Stateful<Div> {
+    let tip: SharedString = tip.into();
+    status_badge(text, BadgeKind::Ok, cx)
+        .id(id.into())
+        .flex_none()
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+}
+
 #[derive(Clone, Copy)]
 pub enum BadgeKind {
     Plain,

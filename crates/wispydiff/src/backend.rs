@@ -58,6 +58,14 @@ pub struct OpenedStack {
     pub ignore_whitespace: bool,
 }
 
+/// What re-checking the open stack found.
+pub enum Refreshed {
+    /// Structure or heads changed: the newer version.
+    Moved(Box<OpenedStack>),
+    /// Same commits; the PRs as GitHub has them now (title, description, auto-merge, …).
+    Same(Vec<PullRequest>),
+}
+
 #[derive(Clone)]
 pub struct Since {
     pub checkpoint_id: String,
@@ -335,12 +343,12 @@ impl Backend {
         async move { task.await.map_err(|e| e.to_string())? }
     }
 
-    /// Re-discovers the stack; returns it only if anything (structure or heads) changed.
+    /// Re-discovers the stack; returns it whole only if anything (structure or heads) changed.
     pub fn refresh_pr(
         self: &Arc<Self>,
         input: String,
         known_stack_id: String,
-    ) -> impl Future<Output = Result<Option<OpenedStack>, String>> + Send + 'static {
+    ) -> impl Future<Output = Result<Refreshed, String>> + Send + 'static {
         let backend = self.clone();
         let task = self.runtime().spawn(async move {
             let pr = PrRef::parse(&input).map_err(|e| e.to_string())?;
@@ -353,10 +361,10 @@ impl Backend {
                 })
                 .await?;
             if stack_id(&snapshot) == known_stack_id {
-                return Ok(None);
+                return Ok(Refreshed::Same(snapshot.stack.prs));
             }
             let (snapshot, view) = backend.load_focus(&service, Arc::new(snapshot)).await?;
-            Ok(Some(backend.open_stack(snapshot, view, false)))
+            Ok(Refreshed::Moved(Box::new(backend.open_stack(snapshot, view, false))))
         });
         async move { task.await.map_err(|e| e.to_string())? }
     }
@@ -1670,6 +1678,7 @@ mod tests {
             head_repo: Some("owner/repo".into()),
             default_branch: "main".into(),
             body_html: String::new(),
+            auto_merge: false,
         };
         let mut second = pr.clone();
         second.number = 9;

@@ -27,9 +27,16 @@ struct State {
     offline: bool,
     /// Hidden PRs are served too (`GET /__branch`).
     branch: bool,
+    /// PRs someone enabled auto-merge on outside the app (`GET /__auto-merge/N`).
+    auto_merge: Vec<u64>,
 }
 
 impl State {
+    /// Whether auto-merge is enabled on PR `number` (by the app or, as seeded, elsewhere).
+    fn auto_merge(&self, number: u64) -> bool {
+        self.auto_merge.contains(&number) || self.merges.iter().any(|m| m["number"] == json!(number) && m["auto"] == json!(true))
+    }
+
     fn id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
@@ -136,6 +143,11 @@ fn handle(mut stream: TcpStream, fixture: &Fixture, state: &Mutex<State>) {
             "/__branch" => state.branch = true,
             "/__offline" => state.offline = true,
             "/__online" => state.offline = false,
+            _ if target.starts_with("/__auto-merge/") => {
+                if let Ok(number) = target["/__auto-merge/".len()..].parse() {
+                    state.auto_merge.push(number);
+                }
+            }
             _ if state.offline => return, // drop the connection, like a dead network
             _ => {}
         }
@@ -193,7 +205,7 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
             .iter()
             .filter(|pr| head.as_ref().is_none_or(|h| &pr.head_ref == h))
             .filter(|pr| base.as_ref().is_none_or(|b| &pr.base_ref == b))
-            .map(|pr| pull_json(pr, fixture))
+            .map(|pr| pull_json(pr, fixture, state))
             .collect();
         return ("200 OK", Value::Array(matching));
     }
@@ -204,7 +216,7 @@ fn route(method: &str, target: &str, body: &Value, fixture: &Fixture, state: &mu
     let text = |key: &str| body[key].as_str().unwrap_or_default().to_string();
 
     match (method, segments.next(), segments.next(), segments.next()) {
-        ("GET", None, _, _) => ("200 OK", pull_json(pr, fixture)),
+        ("GET", None, _, _) => ("200 OK", pull_json(pr, fixture, state)),
         ("GET", Some("reviews"), None, _) => {
             let reviews: Vec<Value> = state.reviews.get(&number).into_iter().flatten().enumerate().map(|(i, b)| json!({ "id": i + 1, "body": b })).collect();
             ("200 OK", Value::Array(reviews))
@@ -277,6 +289,7 @@ fn search_nodes(fixture: &Fixture, state: &State, numbers: &[u64]) -> Vec<Value>
                 "repository": { "nameWithOwner": format!("{}/{}", fixture.owner, fixture.repo) },
                 "viewerLatestReview": state.latest_review.get(&pr.number).cloned().unwrap_or(Value::Null),
                 "bodyHTML": body_html(&description(pr.number)),
+                "autoMergeRequest": if state.auto_merge(pr.number) { json!({ "enabledAt": "2026-09-30T10:00:00Z" }) } else { Value::Null },
             })
         })
         .collect()
@@ -301,7 +314,7 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
             return ("200 OK", json!({ "data": { "repository": { "pullRequest": null } } }));
         };
         let green = number == 1;
-        let auto = state.merges.iter().any(|m| m["number"] == json!(number) && m["auto"] == json!(true));
+        let auto = state.auto_merge(number);
         return (
             "200 OK",
             json!({ "data": { "repository": {
@@ -362,7 +375,7 @@ fn graphql(body: &Value, fixture: &Fixture, state: &mut State) -> (&'static str,
     ("200 OK", json!({ "errors": [{ "message": "unsupported query" }] }))
 }
 
-fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
+fn pull_json(pr: &FixturePr, fixture: &Fixture, state: &State) -> Value {
     let repo = json!({
         "clone_url": format!("file://{}", fixture.origin.display()),
         "full_name": format!("{}/{}", fixture.owner, fixture.repo),
@@ -384,6 +397,7 @@ fn pull_json(pr: &FixturePr, fixture: &Fixture) -> Value {
         "head": { "ref": pr.head_ref, "sha": head_sha, "repo": repo },
         "body": description(pr.number),
         "body_html": body_html(&description(pr.number)),
+        "auto_merge": if state.auto_merge(pr.number) { json!({ "merge_method": "squash" }) } else { Value::Null },
     })
 }
 

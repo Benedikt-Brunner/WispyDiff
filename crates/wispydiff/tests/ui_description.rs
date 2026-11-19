@@ -148,3 +148,46 @@ async fn the_inbox_shows_a_description_on_i_or_a_right_click(cx: &mut TestAppCon
     drop(backend);
     ui.close(cx).await;
 }
+
+#[gpui_kit::test]
+async fn shows_which_prs_merge_automatically(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    // Someone enabled auto-merge on #3 on GitHub.
+    fixture.get("/__auto-merge/3");
+    let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
+    let ui = Ui::new(backend.clone(), cx);
+    ui.home(cx).await;
+    let auto = |prs: Vec<(u64, bool)>| prs.into_iter().filter(|(_, auto)| *auto).map(|(n, _)| n).collect::<Vec<_>>();
+    let in_inbox = ui.session.read_with(cx, |s, _| s.inbox.iter().flat_map(|e| &e.group.prs).map(|p| (p.number, p.auto_merge)).collect());
+    assert_eq!(auto(in_inbox), [3], "the inbox");
+
+    // The inbox's description modal.
+    inbox_select(&ui, cx, 3);
+    ui.press(cx, "i");
+    let described = |ui: &Ui, cx: &mut TestAppContext| -> Vec<(u64, bool)> {
+        let prs = ui.app.read_with(cx, |a, cx| a.described_prs(cx)).expect("the description is open");
+        prs.into_iter().map(|p| (p.label.rsplit('#').next().unwrap().parse().unwrap(), p.auto_merge)).collect()
+    };
+    assert_eq!(auto(described(&ui, cx)), [3]);
+    ui.press(cx, "escape");
+
+    // The open stack (title bar, stack bar) and its description modal.
+    ui.open(cx, 3).await;
+    let in_stack = |ui: &Ui, cx: &mut TestAppContext| -> Vec<(u64, bool)> {
+        ui.session.read_with(cx, |s, _| s.stack.as_ref().unwrap().prs.iter().map(|p| (p.number, p.auto_merge)).collect())
+    };
+    assert_eq!(auto(in_stack(&ui, cx)), [3]);
+    ui.press(cx, "i");
+    assert_eq!(auto(described(&ui, cx)), [3]);
+    ui.press(cx, "escape");
+
+    // Enabled on #2 meanwhile: the next check of the open stack picks it up, with no new commits.
+    fixture.get("/__auto-merge/2");
+    ui.session.update(cx, |s, _| s.refresh_inbox());
+    ui.wait(cx, |cx| ui.session.read(cx).stack.as_ref().unwrap().prs[1].auto_merge).await;
+    assert_eq!(auto(in_stack(&ui, cx)), [2, 3]);
+    assert!(ui.session.read_with(cx, |s, _| s.newer.is_none()), "nothing to load");
+
+    drop(backend);
+    ui.close(cx).await;
+}
