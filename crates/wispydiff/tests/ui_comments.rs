@@ -971,6 +971,9 @@ async fn merges_green_and_enables_auto_merge_with_edited_commit_message(cx: &mut
         ui.app.read_with(cx, |a, _| a.toast_text()).as_deref(),
         Some("#1 merged · Auto-merge enabled for #2")
     );
+    // The title bar and stack bar show it at once.
+    let auto: Vec<u64> = ui.session.read_with(cx, |s, _| s.stack.as_ref().unwrap().prs.iter().filter(|p| p.auto_merge).map(|p| p.number).collect());
+    assert_eq!(auto, [2]);
     let merges = fixture.get("/__merges");
     let expected = serde_json::json!([
         {"number":1,"auto":false,"method":"SQUASH","title":"Ship the first module","body":"Fixes #101\n\nEdited in the sheet"},

@@ -27,6 +27,7 @@ fn inbox_pr(repo: &str, number: u64, base: &str, head: &str, updated: &str) -> I
         authored: false,
         my_review: None,
         body_html: String::new(),
+        auto_merge: false,
     }
 }
 
@@ -165,6 +166,30 @@ async fn search_results_carry_my_latest_submitted_review() {
             None,
         ]
     );
+}
+
+#[tokio::test]
+async fn search_results_tell_whether_auto_merge_is_enabled() {
+    let server = MockServer::start().await;
+    let node = |number: u64, auto: serde_json::Value| {
+        serde_json::json!({
+            "number": number, "title": format!("PR {number}"), "url": "u", "isDraft": false, "updatedAt": "2026-09-30T00:00:00Z",
+            "headRefName": format!("h{number}"), "baseRefName": "main", "headRefOid": format!("sha{number}"),
+            "author": { "login": "someone" }, "repository": { "nameWithOwner": "acme/shop" }, "viewerLatestReview": null,
+            "autoMergeRequest": auto
+        })
+    };
+    let nodes = serde_json::json!([node(1, serde_json::json!({ "enabledAt": "2026-09-29T00:00:00Z" })), node(2, serde_json::Value::Null)]);
+    Mock::given(path("/graphql"))
+        .and(body_string_contains("autoMergeRequest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": { "search": { "nodes": nodes } } })))
+        .mount(&server)
+        .await;
+
+    let github = GitHubClient::new(server.uri(), "t").unwrap();
+    let prs = github.search_prs("x", &[]).await.unwrap();
+    let auto: Vec<(u64, bool)> = prs.iter().map(|p| (p.number, p.auto_merge)).collect();
+    assert_eq!(auto, vec![(1, true), (2, false)]);
 }
 
 #[test]

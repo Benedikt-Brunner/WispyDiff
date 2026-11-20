@@ -176,11 +176,10 @@ fn backend_commands_and_jobs_from_a_non_tokio_executor() {
         ready_ranges.insert((ready.lo, ready.hi));
     }
     assert!(ready_ranges.contains(&(0, 3)));
-    assert!(
-        block_on(backend.refresh_pr(input.clone(), opened.stack_id.clone()))
-            .unwrap()
-            .is_none()
-    );
+    assert!(matches!(
+        block_on(backend.refresh_pr(input.clone(), opened.stack_id.clone())).unwrap(),
+        backend::Refreshed::Same(prs) if prs == opened.prs
+    ));
     let cached = block_on(backend.open_pr(input)).unwrap();
     assert!(cached.from_cache);
     assert_eq!(cached.stack_id, opened.stack_id);

@@ -405,6 +405,9 @@ impl SubmitSheet {
                         let _ = this.update(cx, |this, cx| {
                             this.merge_results.insert(job.index, MergeResult::Done(outcome));
                             this.merges.remove(&job.index);
+                            if outcome == MergeOutcome::AutoMergeEnabled {
+                                this.session.update(cx, |s, cx| s.auto_merge_enabled(job.number, cx));
+                            }
                             cx.notify();
                         });
                         said.push(match outcome {

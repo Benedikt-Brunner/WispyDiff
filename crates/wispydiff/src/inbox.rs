@@ -434,6 +434,7 @@ impl Render for Inbox {
                                 .child(pr.title.clone()),
                         )
                         .when(pr.draft, |d| d.child(status_badge("draft", BadgeKind::Plain, cx).flex_none()))
+                        .when(pr.auto_merge, |d| d.child(crate::ui::auto_merge_badge(format!("inbox-auto-merge-{label}"), cx)))
                         .children(Self::progress_badges(&pr_label(pr), entry.progress.get(i), cx))
                         .child(div().flex_1())
                         // On the row under the mouse (or selected with j/k).

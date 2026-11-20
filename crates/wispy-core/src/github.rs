@@ -32,6 +32,9 @@ pub struct PullRequest {
     /// caches from before it was fetched).
     #[serde(default)]
     pub body_html: String,
+    /// Auto-merge is enabled: GitHub merges it once its checks pass (false in caches from before).
+    #[serde(default)]
+    pub auto_merge: bool,
 }
 
 impl PullRequest {
@@ -121,6 +124,7 @@ const SEARCH_QUERY: &str = "query($q: String!) {
     nodes {
       ... on PullRequest {
         number title url isDraft updatedAt headRefName baseRefName headRefOid bodyHTML
+        autoMergeRequest { enabledAt }
         author { login }
         repository { nameWithOwner }
         viewerLatestReview { state submittedAt commit { oid } }
@@ -290,6 +294,7 @@ impl GitHubClient {
                 authored: !requested,
                 my_review: parse_my_review(&node["viewerLatestReview"]),
                 body_html: text("bodyHTML"),
+                auto_merge: !node["autoMergeRequest"].is_null(),
             });
         }
         Ok(prs)
@@ -438,6 +443,7 @@ impl From<RawPullRequest> for PullRequest {
             head_repo: raw.head.repo.map(|r| r.full_name),
             default_branch: base_repo.default_branch,
             body_html: raw.body_html.unwrap_or_default(),
+            auto_merge: raw.auto_merge.is_some_and(|a| !a.is_null()),
         }
     }
 }
@@ -460,6 +466,8 @@ struct RawPullRequest {
     head: RawBranch,
     #[serde(default)]
     body_html: Option<String>,
+    #[serde(default)]
+    auto_merge: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

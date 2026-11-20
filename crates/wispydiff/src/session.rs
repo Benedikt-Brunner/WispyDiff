@@ -12,7 +12,7 @@ use gpui_kit::{App, Context, EventEmitter, Task, Window};
 use wispy_core::progress::Checkpoint;
 use wispy_core::service::{InboxEntry, ShownDraft};
 
-use crate::backend::{Backend, OpenedRange, OpenedStack, PrThreads, RefreshProgress};
+use crate::backend::{Backend, OpenedRange, OpenedStack, PrThreads, RefreshProgress, Refreshed};
 use crate::logic::comments::pr_key;
 use crate::logic::glob::GlobMatcher;
 use crate::settings;
@@ -275,12 +275,21 @@ impl Session {
             let fresh = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.checking = false;
-                if let Ok(Some(fresh)) = fresh {
-                    if this.stack.as_ref().is_some_and(|s| s.stack_id == stack_id) {
-                        this.newer = Some(fresh);
+                let Some(stack) = this.stack.as_mut().filter(|s| s.stack_id == stack_id) else { return };
+                match fresh {
+                    Ok(Refreshed::Moved(fresh)) => {
+                        this.newer = Some(*fresh);
                         this.update_newer_keys(cx);
                         cx.notify();
                     }
+                    // The same commits: take the PRs' other details (title, auto-merge, …) as they are now.
+                    Ok(Refreshed::Same(prs)) => {
+                        if prs.iter().map(|p| p.number).eq(stack.prs.iter().map(|p| p.number)) && prs != stack.prs {
+                            stack.prs = prs;
+                            cx.notify();
+                        }
+                    }
+                    Err(_) => {}
                 }
             });
         })
@@ -683,6 +692,14 @@ impl Session {
     pub fn toggle_files(&mut self, cx: &mut Context<Self>) {
         self.show_files = !self.show_files;
         cx.notify();
+    }
+
+    /// The submit sheet enabled auto-merge on PR `number` of the open stack.
+    pub fn auto_merge_enabled(&mut self, number: u64, cx: &mut Context<Self>) {
+        if let Some(pr) = self.stack.as_mut().and_then(|s| s.prs.iter_mut().find(|p| p.number == number)) {
+            pr.auto_merge = true;
+            cx.notify();
+        }
     }
 
     /// After the submit sheet sent something: drafts and threads changed; a newer stack waits.

@@ -29,6 +29,9 @@ pub struct InboxPr {
     /// GitHub's rendering of the description (empty when there is none, or in caches from before).
     #[serde(default)]
     pub body_html: String,
+    /// Auto-merge is enabled: GitHub merges it once its checks pass.
+    #[serde(default)]
+    pub auto_merge: bool,
 }
 
 /// A review the user submitted.

@@ -111,6 +111,7 @@ pub fn pull_request(number: u64, base_ref: &str, head_ref: &str, clone_url: &str
         head_repo: Some("acme/shop".into()),
         default_branch: "main".into(),
         body_html: String::new(),
+        auto_merge: false,
     }
 }
 
