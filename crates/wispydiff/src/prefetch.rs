@@ -1,11 +1,18 @@
 //! Background inbox refresh + prefetch: at launch, every few minutes, and whenever the window
 //! gains focus, so every inbox stack opens instantly and offline.
 
+use std::collections::HashSet;
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::{Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use futures::StreamExt;
+use wispy_core::service::PrService;
+
 use crate::backend::{Backend, RefreshProgress};
+
+/// Inbox groups prefetched at once: each mostly waits on GitHub and git fetches.
+const PARALLEL_PREFETCHES: usize = 5;
 
 /// Wakes the prefetch worker early.
 pub struct PrefetchTrigger(Mutex<Sender<()>>);
@@ -54,7 +61,7 @@ pub(crate) async fn cycle(backend: &Backend) {
     backend.emit_inbox_progress(None);
 }
 
-async fn refresh(backend: &Backend, service: &wispy_core::service::PrService) {
+async fn refresh(backend: &Backend, service: &Arc<PrService>) {
     let groups = match service.refresh_inbox().await {
         Ok(groups) => groups,
         Err(err) => {
@@ -64,17 +71,48 @@ async fn refresh(backend: &Backend, service: &wispy_core::service::PrService) {
         }
     };
     backend.emit_inbox_status(true);
-    emit_entries(backend, service, groups.clone());
+    // Groups not ready yet stay so until their own prefetch ends: while others run alongside,
+    // their stack can be cached before its diffs are precomputed.
+    let mut unready: HashSet<String> = HashSet::new();
+    emit_entries(backend, service, groups.clone(), &unready);
+    if let Ok(entries) = service.inbox_entries(groups.clone()) {
+        unready.extend(entries.iter().filter(|e| !e.ready).map(|e| e.group.key()));
+    }
     let total = groups.len();
-    for (done, group) in groups.iter().enumerate() {
-        if backend.is_shut_down() {
-            return;
+    if total > 0 {
+        backend.emit_inbox_progress(Some(RefreshProgress::Prefetching { done: 0, total }));
+    }
+    let handle = backend.runtime_handle();
+    let mut prefetches = futures::stream::iter(groups.iter().cloned().map(|group| {
+        let (service, handle) = (service.clone(), handle.clone());
+        async move {
+            let key = group.key();
+            if backend.is_shut_down() {
+                return key;
+            }
+            // Prefetching runs git and diffing between its network waits: on the blocking pool,
+            // so groups run side by side without holding the runtime's workers.
+            let blocking = handle.clone();
+            let result = blocking
+                .spawn_blocking(move || handle.block_on(service.prefetch(&group)).map(drop).map_err(|e| e.to_string()))
+                .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => eprintln!("prefetch {key}: {err}"),
+                Err(err) => eprintln!("prefetch {key}: {err}"),
+            }
+            key
         }
-        backend.emit_inbox_progress(Some(RefreshProgress::Prefetching { done, total }));
-        if let Err(err) = service.prefetch(group).await {
-            eprintln!("prefetch {}: {err}", group.key());
+    }))
+    .buffer_unordered(PARALLEL_PREFETCHES);
+    let mut done = 0;
+    while let Some(key) = prefetches.next().await {
+        done += 1;
+        unready.remove(&key);
+        emit_entries(backend, service, groups.clone(), &unready);
+        if done < total && !backend.is_shut_down() {
+            backend.emit_inbox_progress(Some(RefreshProgress::Prefetching { done, total }));
         }
-        emit_entries(backend, service, groups.clone());
     }
     if backend.is_shut_down() {
         return;
@@ -86,10 +124,14 @@ async fn refresh(backend: &Backend, service: &wispy_core::service::PrService) {
 
 fn emit_entries(
     backend: &Backend,
-    service: &wispy_core::service::PrService,
+    service: &PrService,
     groups: Vec<wispy_core::inbox::InboxGroup>,
+    unready: &HashSet<String>,
 ) {
-    if let Ok(entries) = service.inbox_entries(groups) {
+    if let Ok(mut entries) = service.inbox_entries(groups) {
+        for entry in &mut entries {
+            entry.ready &= !unready.contains(&entry.group.key());
+        }
         backend.emit_inbox(entries);
     }
 }
