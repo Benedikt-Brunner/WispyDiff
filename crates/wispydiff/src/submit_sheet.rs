@@ -15,8 +15,9 @@ use wispy_core::github::Verdict;
 use wispy_core::merge::{MergeInfo, MergeMethod, MergeOutcome, MergeRequest};
 use wispy_core::review::{Outcome, Plan, Planned};
 
-use crate::backend::{Backend, OpenedStack, SubmitPlan};
+use crate::backend::{Backend, OpenedStack, PrPlan, SubmitPlan};
 use crate::logic::comments::line_label;
+use crate::logic::stack_tree::guides;
 use crate::session::Session;
 use crate::ui::{button, floating, key_label, link_button, palette, status_badge, u, BadgeKind};
 
@@ -129,14 +130,15 @@ pub struct SubmitSheet {
     shown: (usize, usize),
     plan: Option<SubmitPlan>,
     error: Option<String>,
-    verdicts: HashMap<usize, Verdict>,
-    summaries: HashMap<usize, Entity<TextareaState>>,
-    results: HashMap<usize, Result_>,
-    merges: HashMap<usize, Merge>,
-    merge_results: HashMap<usize, MergeResult>,
+    // Per PR, by number: the PRs listed (a whole tree of them) can change between loads.
+    verdicts: HashMap<u64, Verdict>,
+    summaries: HashMap<u64, Entity<TextareaState>>,
+    results: HashMap<u64, Result_>,
+    merges: HashMap<u64, Merge>,
+    merge_results: HashMap<u64, MergeResult>,
     submitting: bool,
     /// The PR whose field has the focus (keys act on it).
-    focused: Option<usize>,
+    focused: Option<u64>,
     menus: crate::menu::MenuSlot,
     body_scroll: gpui_kit::ScrollHandle,
     focus: FocusHandle,
@@ -146,9 +148,19 @@ pub struct SubmitSheet {
 impl EventEmitter<SheetEvent> for SubmitSheet {}
 
 impl SubmitSheet {
-    /// The current verdict for a PR, including the default before it is edited.
-    pub fn verdict(&self, index: usize) -> Verdict {
-        self.verdicts.get(&index).copied().unwrap_or(Verdict::Comment)
+    /// The current verdict for PR `number`, including the default before it is edited.
+    pub fn verdict(&self, number: u64) -> Verdict {
+        self.verdicts.get(&number).copied().unwrap_or(Verdict::Comment)
+    }
+
+    /// The PRs listed, top of the sheet first (a tree's PRs depth-first).
+    pub fn listed(&self) -> Vec<u64> {
+        self.plan.as_ref().map_or_else(Vec::new, |p| p.prs.iter().map(|pr| pr.pr.number).collect())
+    }
+
+    /// The PR whose field has the focus.
+    pub fn focused(&self) -> Option<u64> {
+        self.focused
     }
 
     /// Whether a dropdown is currently taking keyboard input.
@@ -209,98 +221,111 @@ impl SubmitSheet {
     }
 
     fn ensure_fields(&mut self, plan: &SubmitPlan, window: &mut Window, cx: &mut Context<Self>) {
-        for index in 0..plan.stack.prs.len() {
-            if self.summaries.contains_key(&index) {
+        for number in plan.prs.iter().map(|pr| pr.pr.number) {
+            if self.summaries.contains_key(&number) {
                 continue;
             }
             let summary = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true).auto_grow(2, 8).placeholder("Summary (optional)"));
             let sub = cx.subscribe_in(&summary, window, move |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::PressEnter { shift: false, secondary: false } => this.submit(vec![index], window, cx),
-                InputEvent::Focus => this.focus_pr(index),
+                InputEvent::PressEnter { shift: false, secondary: false } => this.submit(vec![number], window, cx),
+                InputEvent::Focus => this.focus_pr(number),
                 InputEvent::Change => cx.notify(),
                 _ => {}
             });
             self._subscriptions.push(sub);
-            self.summaries.insert(index, summary);
+            self.summaries.insert(number, summary);
         }
+    }
+
+    /// The listed PRs shown in the diff (the open stack's `shown` range), in order.
+    fn on_screen(&self) -> Vec<u64> {
+        let Some(plan) = &self.plan else { return Vec::new() };
+        let (lo, hi) = self.shown;
+        plan.prs.iter().filter(|pr| pr.stack_id == plan.stack.stack_id && (lo..=hi).contains(&pr.pr_index)).map(|pr| pr.pr.number).collect()
     }
 
     /// Keyboard first: start in the summary of the first on-screen PR with drafts (else the lowest).
     fn focus_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(plan) = &self.plan else { return };
-        let (lo, hi) = self.shown;
-        let with_drafts = (lo..=hi.min(plan.stack.prs.len() - 1)).find(|i| !self.planned_for(*i).is_empty());
-        let index = with_drafts.unwrap_or(lo);
-        if let Some(summary) = self.summaries.get(&index) {
+        let on_screen = self.on_screen();
+        let with_drafts = on_screen.iter().copied().find(|n| !self.planned_for(*n).is_empty());
+        let Some(number) = with_drafts.or(on_screen.first().copied()).or(self.listed().first().copied()) else { return };
+        if let Some(summary) = self.summaries.get(&number) {
             summary.update(cx, |s, cx| s.focus(window, cx));
-            self.focus_pr(index);
+            self.focus_pr(number);
         }
     }
 
-    fn planned_for(&self, index: usize) -> &[Planned] {
-        self.plan.as_ref().and_then(|p| p.prs.iter().find(|pr| pr.pr_index == index)).map_or(&[], |pr| pr.planned.as_slice())
+    fn entry(&self, number: u64) -> Option<&PrPlan> {
+        self.plan.as_ref().and_then(|p| p.prs.iter().find(|pr| pr.pr.number == number))
+    }
+
+    fn planned_for(&self, number: u64) -> &[Planned] {
+        self.entry(number).map_or(&[], |pr| pr.planned.as_slice())
     }
 
     /// GitHub lets the author of a PR only comment on it.
-    fn own(&self, index: usize) -> bool {
-        self.plan.as_ref().is_some_and(|p| p.stack.prs.get(index).is_some_and(|pr| pr.author == p.viewer))
+    fn own(&self, number: u64) -> bool {
+        self.plan.as_ref().is_some_and(|p| self.entry(number).is_some_and(|pr| pr.pr.author == p.viewer))
     }
 
-    fn blocked(&self, index: usize) -> bool {
-        self.planned_for(index).iter().any(|p| matches!(p.plan, Plan::Outdated))
+    fn blocked(&self, number: u64) -> bool {
+        self.planned_for(number).iter().any(|p| matches!(p.plan, Plan::Outdated))
     }
 
-    fn summary_text(&self, index: usize, cx: &App) -> String {
-        self.summaries.get(&index).map(|s| s.read(cx).value().trim().to_string()).unwrap_or_default()
+    fn summary_text(&self, number: u64, cx: &App) -> String {
+        self.summaries.get(&number).map(|s| s.read(cx).value().trim().to_string()).unwrap_or_default()
     }
 
-    fn has_review_work(&self, index: usize, cx: &App) -> bool {
-        !self.planned_for(index).is_empty() || self.verdicts.get(&index).copied().unwrap_or(Verdict::Comment) != Verdict::Comment || !self.summary_text(index, cx).is_empty()
+    fn has_review_work(&self, number: u64, cx: &App) -> bool {
+        !self.planned_for(number).is_empty() || self.verdict(number) != Verdict::Comment || !self.summary_text(number, cx).is_empty()
     }
 
     /// Merging was asked for and can go ahead (a commit title is needed unless rebasing).
-    fn wants_merge(&self, index: usize, cx: &App) -> bool {
-        self.merges.get(&index).is_some_and(|m| {
+    fn wants_merge(&self, number: u64, cx: &App) -> bool {
+        self.merges.get(&number).is_some_and(|m| {
             m.info.as_ref().is_some_and(|info| merge_blocked(info).is_none()) && (m.method == MergeMethod::Rebase || !m.title.read(cx).value().trim().is_empty())
         })
     }
 
-    fn has_work(&self, index: usize, cx: &App) -> bool {
-        self.has_review_work(index, cx) || self.wants_merge(index, cx)
+    fn has_work(&self, number: u64, cx: &App) -> bool {
+        self.has_review_work(number, cx) || self.wants_merge(number, cx)
     }
 
-    /// A field of PR `index` got the focus: keys act on that PR, and its section scrolls into view.
-    fn focus_pr(&mut self, index: usize) {
-        self.focused = Some(index);
-        self.body_scroll.scroll_to_item(index);
+    /// A field of PR `number` got the focus: keys act on that PR, and its section scrolls into view.
+    fn focus_pr(&mut self, number: u64) {
+        self.focused = Some(number);
+        if let Some(position) = self.listed().iter().position(|n| *n == number) {
+            self.body_scroll.scroll_to_item(position);
+        }
     }
 
     /// Turns merging a PR on (asking GitHub how it would merge) or off.
-    fn toggle_merge(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merges.remove(&index).is_some() {
+    fn toggle_merge(&mut self, number: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((stack_id, index)) = self.entry(number).map(|pr| (pr.stack_id.clone(), pr.pr_index)) else { return };
+        if self.merges.remove(&number).is_some() {
             cx.notify();
             return;
         }
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("Commit title"));
         let body = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true).auto_grow(2, 6).placeholder("Commit message (optional)"));
         self._subscriptions.push(cx.subscribe_in(&title, window, move |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { shift: false, secondary: false } => this.submit(vec![index], window, cx),
-            InputEvent::Focus => this.focus_pr(index),
+            InputEvent::PressEnter { shift: false, secondary: false } => this.submit(vec![number], window, cx),
+            InputEvent::Focus => this.focus_pr(number),
             _ => cx.notify(),
         }));
         self._subscriptions.push(cx.subscribe_in(&body, window, move |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { shift: false, secondary: false } => this.submit(vec![index], window, cx),
-            InputEvent::Focus => this.focus_pr(index),
+            InputEvent::PressEnter { shift: false, secondary: false } => this.submit(vec![number], window, cx),
+            InputEvent::Focus => this.focus_pr(number),
             _ => cx.notify(),
         }));
-        self.merges.insert(index, Merge { info: None, error: None, method: MergeMethod::Squash, title, body });
-        let task = self.backend.merge_info(self.stack_id.clone(), index);
+        self.merges.insert(number, Merge { info: None, error: None, method: MergeMethod::Squash, title, body });
+        let task = self.backend.merge_info(stack_id, index);
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = cx.update_window(handle, |_, window, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    let Some(merge) = this.merges.get_mut(&index) else { return };
+                    let Some(merge) = this.merges.get_mut(&number) else { return };
                     match result {
                         Ok(info) => {
                             merge.method = info.methods.first().copied().unwrap_or(MergeMethod::Squash);
@@ -319,8 +344,8 @@ impl SubmitSheet {
         cx.notify();
     }
 
-    /// Submits the review of each PR in `indices` that has something to send.
-    fn submit(&mut self, indices: Vec<usize>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Submits the review of each PR in `numbers` that has something to send.
+    fn submit(&mut self, numbers: Vec<u64>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(plan) = &self.plan else { return };
         if self.submitting {
             return;
@@ -328,49 +353,53 @@ impl SubmitSheet {
         self.submitting = true;
         let fresh = plan.stack.clone();
         // Work this submit leaves behind: other PRs' drafts, verdicts or summaries, or PRs held back.
-        let mut done = !(0..fresh.prs.len()).any(|i| self.has_work(i, cx) && (!indices.contains(&i) || self.blocked(i)));
+        let mut done = !self.listed().into_iter().any(|n| self.has_work(n, cx) && (!numbers.contains(&n) || self.blocked(n)));
         struct Job {
+            stack_id: String,
             index: usize,
             number: u64,
             review: Option<(Verdict, Option<String>)>,
             merge: Option<MergeRequest>,
         }
-        let jobs: Vec<Job> = indices
+        let jobs: Vec<Job> = plan
+            .prs
             .iter()
-            .filter(|&&i| self.has_work(i, cx) && !self.blocked(i))
-            .map(|&i| Job {
-                index: i,
-                number: fresh.prs[i].number,
-                review: self.has_review_work(i, cx).then(|| {
-                    let summary = self.summary_text(i, cx);
-                    (self.verdicts.get(&i).copied().unwrap_or(Verdict::Comment), (!summary.is_empty()).then_some(summary))
+            .filter(|pr| numbers.contains(&pr.pr.number))
+            .map(|pr| (pr.pr.number, pr.stack_id.clone(), pr.pr_index))
+            .filter(|&(n, _, _)| self.has_work(n, cx) && !self.blocked(n))
+            .map(|(n, stack_id, index)| Job {
+                stack_id,
+                index,
+                number: n,
+                review: self.has_review_work(n, cx).then(|| {
+                    let summary = self.summary_text(n, cx);
+                    (self.verdict(n), (!summary.is_empty()).then_some(summary))
                 }),
-                merge: self.wants_merge(i, cx).then(|| {
-                    let m = &self.merges[&i];
+                merge: self.wants_merge(n, cx).then(|| {
+                    let m = &self.merges[&n];
                     MergeRequest { method: m.method, title: m.title.read(cx).value().to_string(), body: m.body.read(cx).value().to_string() }
                 }),
             })
             .collect();
         let backend = self.backend.clone();
-        let stack_id = fresh.stack_id.clone();
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let mut said: Vec<String> = Vec::new();
             for job in jobs {
                 if let Some((verdict, summary)) = job.review {
                     let _ = this.update(cx, |this, cx| {
-                        this.results.insert(job.index, Result_::Sending);
+                        this.results.insert(job.number, Result_::Sending);
                         cx.notify();
                     });
-                    match backend.submit_review(stack_id.clone(), job.index, verdict, summary).await {
+                    match backend.submit_review(job.stack_id.clone(), job.index, verdict, summary).await {
                         Ok(outcome) => {
                             let incomplete = !outcome.failed.is_empty() || outcome.unknown > 0;
                             let _ = cx.update_window(handle, |_, window, cx| {
                                 let _ = this.update(cx, |this, cx| {
-                                    this.results.insert(job.index, Result_::Done(outcome));
+                                    this.results.insert(job.number, Result_::Done(outcome));
                                     // Sent: the verdict and summary don't go out again with a later submit.
-                                    this.verdicts.remove(&job.index);
-                                    if let Some(s) = this.summaries.get(&job.index) {
+                                    this.verdicts.remove(&job.number);
+                                    if let Some(s) = this.summaries.get(&job.number) {
                                         s.update(cx, |s, cx| s.set_value(String::new(), window, cx));
                                     }
                                     cx.notify();
@@ -387,7 +416,7 @@ impl SubmitSheet {
                         }
                         Err(err) => {
                             let _ = this.update(cx, |this, cx| {
-                                this.results.insert(job.index, Result_::Error(err));
+                                this.results.insert(job.number, Result_::Error(err));
                                 cx.notify();
                             });
                             done = false;
@@ -397,14 +426,14 @@ impl SubmitSheet {
                 }
                 let Some(request) = job.merge else { continue };
                 let _ = this.update(cx, |this, cx| {
-                    this.merge_results.insert(job.index, MergeResult::Sending);
+                    this.merge_results.insert(job.number, MergeResult::Sending);
                     cx.notify();
                 });
-                match backend.merge_pr(stack_id.clone(), job.index, request).await {
+                match backend.merge_pr(job.stack_id.clone(), job.index, request).await {
                     Ok(outcome) => {
                         let _ = this.update(cx, |this, cx| {
-                            this.merge_results.insert(job.index, MergeResult::Done(outcome));
-                            this.merges.remove(&job.index);
+                            this.merge_results.insert(job.number, MergeResult::Done(outcome));
+                            this.merges.remove(&job.number);
                             if outcome == MergeOutcome::AutoMergeEnabled {
                                 this.session.update(cx, |s, cx| s.auto_merge_enabled(job.number, cx));
                             }
@@ -417,7 +446,7 @@ impl SubmitSheet {
                     }
                     Err(err) => {
                         let _ = this.update(cx, |this, cx| {
-                            this.merge_results.insert(job.index, MergeResult::Error(err));
+                            this.merge_results.insert(job.number, MergeResult::Error(err));
                             cx.notify();
                         });
                         done = false;
@@ -442,18 +471,19 @@ impl SubmitSheet {
     }
 
     fn submit_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(plan) = &self.plan else { return };
-        let all = (0..plan.stack.prs.len()).collect();
+        let all = self.listed();
         self.submit(all, window, cx);
     }
 
     fn set_verdict(&mut self, verdict: Verdict, cx: &mut Context<Self>) {
-        if self.plan.is_none() || self.submitting {
+        let Some(plan) = &self.plan else { return };
+        if self.submitting {
             return;
         }
-        let index = self.focused.or_else(|| self.plan.as_ref().and_then(|p| p.prs.first().map(|pr| pr.pr_index))).unwrap_or(0);
-        if verdict == Verdict::Comment || !self.own(index) {
-            self.verdicts.insert(index, verdict);
+        let first = || plan.prs.iter().find(|pr| !pr.planned.is_empty()).or(plan.prs.first()).map(|pr| pr.pr.number);
+        let Some(number) = self.focused.or_else(first) else { return };
+        if verdict == Verdict::Comment || !self.own(number) {
+            self.verdicts.insert(number, verdict);
             cx.notify();
         }
     }
@@ -464,18 +494,17 @@ impl SubmitSheet {
         }
     }
 
-    /// The fields Tab moves through: every PR's summary and merge fields, in order.
-    fn fields(&self, cx: &App) -> Vec<FocusHandle> {
+    /// The fields Tab moves through: every PR's summary and merge fields, in order, with their PR.
+    fn fields(&self, cx: &App) -> Vec<(u64, FocusHandle)> {
         let mut out = Vec::new();
-        let count = self.plan.as_ref().map_or(0, |p| p.stack.prs.len());
-        for i in 0..count {
-            if let Some(s) = self.summaries.get(&i) {
-                out.push(s.focus_handle(cx));
+        for n in self.listed() {
+            if let Some(s) = self.summaries.get(&n) {
+                out.push((n, s.focus_handle(cx)));
             }
-            if let Some(m) = self.merges.get(&i) {
+            if let Some(m) = self.merges.get(&n) {
                 if m.info.as_ref().is_some_and(|info| merge_blocked(info).is_none()) && m.method != MergeMethod::Rebase {
-                    out.push(m.title.focus_handle(cx));
-                    out.push(m.body.focus_handle(cx));
+                    out.push((n, m.title.focus_handle(cx)));
+                    out.push((n, m.body.focus_handle(cx)));
                 }
             }
         }
@@ -487,9 +516,13 @@ impl SubmitSheet {
         if fields.is_empty() {
             return;
         }
-        let at = fields.iter().position(|f| f.contains_focused(window, cx)).unwrap_or(fields.len() - 1);
+        let at = fields.iter().position(|(_, f)| f.contains_focused(window, cx)).unwrap_or(fields.len() - 1);
         let next = if back { (at + fields.len() - 1) % fields.len() } else { (at + 1) % fields.len() };
-        window.focus(&fields[next], cx);
+        let (number, field) = &fields[next];
+        window.focus(field, cx);
+        // Not left to the field's focus event: one scrolled out of view doesn't get it.
+        self.focus_pr(*number);
+        cx.notify();
     }
 
     fn resolve_outdated(&mut self, id: String, as_file: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -516,7 +549,7 @@ impl SubmitSheet {
     }
 
     /// Images pasted into a summary go in as Markdown (uploaded when submitting).
-    fn paste_into_summary(&mut self, index: usize, item: &ClipboardItem, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn paste_into_summary(&mut self, number: u64, item: &ClipboardItem, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let images: Vec<_> = item
             .entries()
             .iter()
@@ -537,7 +570,7 @@ impl SubmitSheet {
                     Ok(m) => md.push(m),
                     Err(e) => {
                         let _ = this.update(cx, |this, cx| {
-                            this.results.insert(index, Result_::Error(format!("Couldn't paste the image: {e}")));
+                            this.results.insert(number, Result_::Error(format!("Couldn't paste the image: {e}")));
                             cx.notify();
                         });
                     }
@@ -545,7 +578,7 @@ impl SubmitSheet {
             }
             let _ = cx.update_window(handle, |_, window, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(s) = this.summaries.get(&index) {
+                    if let Some(s) = this.summaries.get(&number) {
                         let text = md.join("\n");
                         s.update(cx, |s, cx| s.insert(text, window, cx));
                     }
@@ -556,22 +589,24 @@ impl SubmitSheet {
         true
     }
 
-    fn render_pr(&mut self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// PR `index` of the sheet's list, after its tree guide (`├─ `…; empty unless the stack branches).
+    fn render_pr(&mut self, index: usize, guide: String, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx).clone();
         let plan = self.plan.as_ref().unwrap();
-        let pr = plan.stack.prs[index].clone();
-        let planned = self.planned_for(index).to_vec();
-        let own = self.own(index);
-        let verdict = self.verdicts.get(&index).copied().unwrap_or(Verdict::Comment);
+        let pr = plan.prs[index].pr.clone();
+        let number = pr.number;
+        let planned = self.planned_for(number).to_vec();
+        let own = self.own(number);
+        let verdict = self.verdict(number);
         let verdict_label = match verdict {
             Verdict::Comment => "Comment",
             Verdict::Approve => "Approve",
             Verdict::RequestChanges => "Request changes",
         };
-        let can_submit = !self.submitting && self.has_work(index, cx) && !self.blocked(index);
-        let verdict_menu = self.menus.get(&format!("verdict-{index}")).filter(|_| !own && !self.submitting);
-        let merge_on = self.merges.contains_key(&index);
-        let summary = self.summaries.get(&index).cloned();
+        let can_submit = !self.submitting && self.has_work(number, cx) && !self.blocked(number);
+        let verdict_menu = self.menus.get(&format!("verdict-{number}")).filter(|_| !own && !self.submitting);
+        let merge_on = self.merges.contains_key(&number);
+        let summary = self.summaries.get(&number).cloned();
         let weak = cx.entity().downgrade();
         let verdict_tip = if own {
             "Your own PR: GitHub only lets you comment".to_string()
@@ -591,6 +626,7 @@ impl SubmitSheet {
                     .items_center()
                     .gap(u(8.))
                     .text_size(u(13.))
+                    .when(!guide.is_empty(), |d| d.child(div().flex_none().font_family(crate::ui::mono_family(cx)).text_color(p.fg_muted).whitespace_nowrap().child(guide)))
                     .child(div().text_color(p.fg_muted).child(format!("#{}", pr.number)))
                     .child(div().flex_1().min_w(px(0.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().overflow_hidden().text_ellipsis().child(pr.title.clone()))
                     .child(div().text_size(u(12.)).text_color(p.fg_muted).child(format!("{} item{}", planned.len(), if planned.len() == 1 { "" } else { "s" })))
@@ -614,12 +650,12 @@ impl SubmitSheet {
                                 let verdicts = [Verdict::Comment, Verdict::Approve, Verdict::RequestChanges];
                                 let selected = verdicts.iter().position(|v| *v == verdict);
                                 this.menus.toggle(
-                                    format!("verdict-{index}"),
+                                    format!("verdict-{number}"),
                                     vec!["Comment".into(), "Approve".into(), "Request changes".into()],
                                     selected,
                                     |this: &mut Self| &mut this.menus,
                                     move |this, i, _, _| {
-                                        this.verdicts.insert(index, verdicts[i]);
+                                        this.verdicts.insert(number, verdicts[i]);
                                     },
                                     window,
                                     cx,
@@ -643,7 +679,7 @@ impl SubmitSheet {
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if !this.submitting {
-                                    this.toggle_merge(index, window, cx)
+                                    this.toggle_merge(number, window, cx)
                                 }
                             }))
                             .child(div().size(u(12.)).rounded(u(3.)).border_1().border_color(p.fg_muted).when(merge_on, |d| d.bg(p.accent)))
@@ -659,15 +695,15 @@ impl SubmitSheet {
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if can_submit {
-                                    this.submit(vec![index], window, cx)
+                                    this.submit(vec![number], window, cx)
                                 }
                             })),
                     ),
             )
             .children(summary.map(|s| {
-                Textarea::new(&s).disabled(self.submitting).on_paste(move |item, window, cx| weak.update(cx, |this, cx| this.paste_into_summary(index, item, window, cx)).unwrap_or(false))
+                Textarea::new(&s).disabled(self.submitting).on_paste(move |item, window, cx| weak.update(cx, |this, cx| this.paste_into_summary(number, item, window, cx)).unwrap_or(false))
             }))
-            .children(self.render_merge(index, pr.number, cx))
+            .children(self.render_merge(index, number, cx))
             .child(div().flex().flex_col().gap(u(4.)).children(planned.iter().map(|planned| {
                 let draft = planned.draft.clone();
                 let outdated = matches!(planned.plan, Plan::Outdated);
@@ -690,8 +726,8 @@ impl SubmitSheet {
                     })
                     .when(draft.status == DraftStatus::Failed, |d| d.child(div().text_color(p.del_fg).child(draft.error.clone().unwrap_or_default())))
             })))
-            .when(self.blocked(index), |d| d.child(note("Decide on the outdated comments before this PR can be submitted.", &p)))
-            .children(self.results.get(&index).map(|r| match r {
+            .when(self.blocked(number), |d| d.child(note("Decide on the outdated comments before this PR can be submitted.", &p)))
+            .children(self.results.get(&number).map(|r| match r {
                 Result_::Sending => note("Sending…", &p),
                 Result_::Error(m) => div().text_size(u(12.)).text_color(p.del_fg).child(m.clone()).into_any_element(),
                 Result_::Done(outcome) => {
@@ -705,7 +741,7 @@ impl SubmitSheet {
                     }
                 }
             }))
-            .children(self.merge_results.get(&index).map(|r| match r {
+            .children(self.merge_results.get(&number).map(|r| match r {
                 MergeResult::Sending => note("Merging…", &p),
                 MergeResult::Error(m) => div().text_size(u(12.)).text_color(p.del_fg).child(format!("Not merged: {m}")).into_any_element(),
                 MergeResult::Done(MergeOutcome::Merged) => div().text_size(u(12.)).text_color(p.add_fg).child("Merged ✓").into_any_element(),
@@ -716,10 +752,10 @@ impl SubmitSheet {
             .into_any_element()
     }
 
-    /// Where and how the PR merges, with its commit message to edit.
+    /// Where and how PR `number` (`index` of the list) merges, with its commit message to edit.
     fn render_merge(&mut self, index: usize, number: u64, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = palette(cx).clone();
-        let merge = self.merges.get(&index)?;
+        let merge = self.merges.get(&number)?;
         if let Some(error) = &merge.error {
             return Some(div().text_size(u(12.)).text_color(p.del_fg).child(format!("Can't check how #{number} merges: {error}")).into_any_element());
         }
@@ -728,7 +764,7 @@ impl SubmitSheet {
         let elsewhere = info.base_ref != info.default_branch;
         let method = merge.method;
         let (title, body) = (merge.title.clone(), merge.body.clone());
-        let method_menu = self.menus.get(&format!("method-{index}")).filter(|_| !self.submitting);
+        let method_menu = self.menus.get(&format!("method-{number}")).filter(|_| !self.submitting);
         let status = blocked.map(String::from).unwrap_or_else(|| merge_status(&info));
         Some(
             div()
@@ -771,12 +807,12 @@ impl SubmitSheet {
                                             let labels = methods.iter().map(|m| SharedString::from(method_label(*m))).collect();
                                             let selected = methods.iter().position(|m| *m == method);
                                             this.menus.toggle(
-                                                format!("method-{index}"),
+                                                format!("method-{number}"),
                                                 labels,
                                                 selected,
                                                 |this: &mut Self| &mut this.menus,
                                                 move |this, i, _, _| {
-                                                    if let (Some(merge), Some(m)) = (this.merges.get_mut(&index), methods.get(i)) {
+                                                    if let (Some(merge), Some(m)) = (this.merges.get_mut(&number), methods.get(i)) {
                                                         merge.method = *m;
                                                     }
                                                 },
@@ -810,8 +846,8 @@ impl Focusable for SubmitSheet {
 impl Render for SubmitSheet {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx).clone();
-        let count = self.plan.as_ref().map_or(0, |pl| pl.stack.prs.len());
-        let prs: Vec<AnyElement> = (0..count).map(|i| self.render_pr(i, cx)).collect();
+        let guides = self.plan.as_ref().map_or_else(Vec::new, |pl| guides(pl.prs.len(), |i| pl.prs[i].parent));
+        let prs: Vec<AnyElement> = guides.into_iter().enumerate().map(|(i, guide)| self.render_pr(i, guide, cx)).collect();
         let _ = &self.session;
         floating(820., cx)
             .max_h(gpui_kit::relative(0.76))
@@ -830,9 +866,10 @@ impl Render for SubmitSheet {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleMerge, window, cx| {
-                if this.plan.is_some() && !this.submitting {
-                    let index = this.focused.unwrap_or(this.shown.0);
-                    this.toggle_merge(index, window, cx);
+                if !this.submitting {
+                    if let Some(number) = this.focused.or_else(|| this.on_screen().first().copied()) {
+                        this.toggle_merge(number, window, cx);
+                    }
                 }
             }))
             .on_action(cx.listener(|this, _: &VerdictComment, _, cx| this.set_verdict(Verdict::Comment, cx)))

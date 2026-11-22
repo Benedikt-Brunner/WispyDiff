@@ -489,9 +489,13 @@ fn backend_commands_and_jobs_from_a_non_tokio_executor() {
     assert_eq!(plan.viewer, "you");
     assert_eq!(plan.stack.stack_id, stack_id);
     assert!(!plan.stack.from_cache);
-    assert_eq!(plan.prs.len(), 1);
-    assert_eq!(plan.prs[0].pr_index, 1);
-    assert_eq!(plan.prs[0].planned[0].draft.id, draft.id);
+    // Every PR of the stack is listed, in stack order; only the one with the draft has work.
+    assert_eq!(plan.prs.len(), plan.stack.prs.len());
+    let with_drafts: Vec<_> = plan.prs.iter().filter(|p| !p.planned.is_empty()).collect();
+    assert_eq!(with_drafts.len(), 1);
+    assert_eq!((with_drafts[0].pr_index, &with_drafts[0].stack_id), (1, &stack_id));
+    assert_eq!(with_drafts[0].planned[0].draft.id, draft.id);
+    assert_eq!(plan.prs.iter().map(|p| p.pr_index).collect::<Vec<_>>(), (0..plan.stack.prs.len()).collect::<Vec<_>>());
     let outcome =
         block_on(backend.submit_review(plan.stack.stack_id, 1, Verdict::Comment, None)).unwrap();
     assert_eq!(outcome.posted, 1);

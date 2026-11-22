@@ -24,7 +24,7 @@ use crate::pr_ref::PrRef;
 use crate::range::{blob_lines, compute_range};
 use crate::repo_store::RepoStore;
 use crate::split::{align, split_rows, SplitRow};
-use crate::stack::{discover_stack, discover_tree, Stack, StackSnapshot};
+use crate::stack::{discover_stack, discover_tree, Stack, StackSnapshot, StackTree};
 
 /// Opens stacks: structure from GitHub, code from the local blobless clone, and precomputed
 /// range views from the cache whenever the SHAs are unchanged.
@@ -174,6 +174,28 @@ impl PrService {
         discover_stack(&self.github, pr, &self.last_branch(pr)?).await
     }
 
+    /// Like [`PrService::discover`], with the whole tree of PRs `pr`'s stack is a path through.
+    pub async fn discover_with_tree(&self, pr: &PrRef) -> Result<(Stack, StackTree)> {
+        let (tree, index) = discover_tree(&self.github, pr).await?;
+        Ok((tree.stack(index, &self.last_branch(pr)?), tree))
+    }
+
+    /// The stacks the PRs of `tree` (in `pr`'s repo) were last seen in, each with those PRs: where
+    /// PRs branch off, every branch is a stack of its own.
+    pub fn tree_stacks(&self, tree: &StackTree, pr: &PrRef) -> Result<Vec<(Stack, Vec<u64>)>> {
+        let mut stacks: Vec<(Stack, Vec<u64>)> = Vec::new();
+        for (index, member) in tree.prs.iter().enumerate() {
+            let reference = PrRef { number: member.number, ..pr.clone() };
+            let stack = tree.stack(index, &self.last_branch(&reference)?);
+            let same = |s: &Stack| s.prs.iter().map(|p| p.number).eq(stack.prs.iter().map(|p| p.number));
+            match stacks.iter_mut().find(|(s, _)| same(s)) {
+                Some((_, members)) => members.push(member.number),
+                None => stacks.push((stack, vec![member.number])),
+            }
+        }
+        Ok(stacks)
+    }
+
     /// The PRs above `pr` in the stack it was last seen in, bottom first.
     fn last_branch(&self, pr: &PrRef) -> Result<Vec<u64>> {
         Ok(self
@@ -191,7 +213,7 @@ impl PrService {
     }
 
     /// Like [`PrService::fetch`], recording the snapshot only for the PRs `numbers`.
-    fn fetch_for(&self, stack: Stack, numbers: &[u64]) -> Result<StackSnapshot> {
+    pub fn fetch_for(&self, stack: Stack, numbers: &[u64]) -> Result<StackSnapshot> {
         let bottom = &stack.prs[0];
         let (owner, repo) = bottom.base_repo.split_once('/').unwrap_or((&bottom.base_repo, ""));
         let git = self.store.ensure_repo(owner, repo, &bottom.clone_url)?;
@@ -526,17 +548,7 @@ impl PrService {
     pub async fn prefetch(&self, group: &InboxGroup) -> Result<Vec<StackSnapshot>> {
         let pr = PrRef { owner: owner_of(&group.repo).into(), repo: name_of(&group.repo).into(), number: group.prs[0].number };
         let (tree, _) = discover_tree(&self.github, &pr).await?;
-        // Each stack, with the PRs it is the last-seen stack of.
-        let mut stacks: Vec<(Stack, Vec<u64>)> = Vec::new();
-        for (index, member) in tree.prs.iter().enumerate() {
-            let reference = PrRef { number: member.number, ..pr.clone() };
-            let stack = tree.stack(index, &self.last_branch(&reference)?);
-            let same = |s: &Stack| s.prs.iter().map(|p| p.number).eq(stack.prs.iter().map(|p| p.number));
-            match stacks.iter_mut().find(|(s, _)| same(s)) {
-                Some((_, members)) => members.push(member.number),
-                None => stacks.push((stack, vec![member.number])),
-            }
-        }
+        let stacks = self.tree_stacks(&tree, &pr)?;
         let mut snapshots = Vec::new();
         let (mut hydrated, mut threads) = (std::collections::HashSet::new(), std::collections::HashSet::new());
         for (stack, members) in stacks {
