@@ -62,6 +62,21 @@ impl StackTree {
         (0..self.prs.len()).filter(move |&i| self.parents[i] == Some(index))
     }
 
+    /// Indices of the PRs depth-first from the bottom: each branch in full, lowest number first.
+    pub fn depth_first(&self) -> Vec<usize> {
+        fn visit(tree: &StackTree, index: usize, out: &mut Vec<usize>) {
+            out.push(index);
+            for child in tree.children(index).collect::<Vec<_>>() {
+                visit(tree, child, out);
+            }
+        }
+        let mut out = Vec::with_capacity(self.prs.len());
+        if !self.prs.is_empty() {
+            visit(self, 0, &mut out);
+        }
+        out
+    }
+
     fn size(&self, index: usize) -> usize {
         1 + self.children(index).map(|c| self.size(c)).sum::<usize>()
     }

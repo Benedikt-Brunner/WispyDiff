@@ -86,13 +86,21 @@ pub struct PrThreads {
 pub struct SubmitPlan {
     /// The stack as it is on GitHub right now (drafts are planned against it).
     pub stack: OpenedStack,
+    /// Every PR of the stack's tree (the stack itself where it doesn't branch), depth-first from
+    /// the bottom: each branch in full, lowest number first.
     pub prs: Vec<PrPlan>,
     /// The signed-in user: GitHub only lets them comment on their own PRs.
     pub viewer: String,
 }
 
 pub struct PrPlan {
+    pub pr: PullRequest,
+    /// The stack it is submitted (and merged) through, and its index there: the open stack for
+    /// its PRs, else the stack the PR was last seen in.
+    pub stack_id: String,
     pub pr_index: usize,
+    /// The PR it builds on, as an index into [`SubmitPlan::prs`] (`None`: the bottom).
+    pub parent: Option<usize>,
     pub planned: Vec<Planned>,
 }
 
@@ -901,6 +909,8 @@ impl Backend {
     }
 
     /// Re-fetches the stack, settles interrupted submits, and plans every PR's pending drafts.
+    /// Where the stack is a path through a tree of PRs, the other branches are fetched too (each
+    /// as the stack its PRs were last seen in), so every PR of the tree can be reviewed at once.
     pub fn prepare_submit(
         self: &Arc<Self>,
         stack_id: String,
@@ -909,35 +919,65 @@ impl Backend {
         let task = self.runtime().spawn(async move {
             let (snapshot, service) = (backend.snapshot_of(&stack_id)?, backend.service()?);
             let pr = snapshot.pr_ref(snapshot.stack.focus);
-            let stack = service.discover(&pr).await.map_err(|e| e.to_string())?;
+            let (stack, tree) = service.discover_with_tree(&pr).await.map_err(|e| e.to_string())?;
             let viewer = service.viewer().await.map_err(|e| e.to_string())?;
-            let fresh = Arc::new(
-                backend
-                    .blocking({
-                        let service = service.clone();
-                        move || service.fetch(stack)
-                    })
-                    .await?,
-            );
-            for index in 0..fresh.len() {
-                service
-                    .reconcile(&fresh, index)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            let (plans, fresh) = backend
+            let on_stack: Vec<u64> = stack.prs.iter().map(|p| p.number).collect();
+            // The other branches: each stack with the PRs off the open stack it holds.
+            let others: Vec<(wispy_core::stack::Stack, Vec<u64>)> = service
+                .tree_stacks(&tree, &pr)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter_map(|(stack, members)| {
+                    let members: Vec<u64> = members.into_iter().filter(|n| !on_stack.contains(n)).collect();
+                    (!members.is_empty()).then_some((stack, members))
+                })
+                .collect();
+            let (fresh, others) = backend
                 .blocking({
-                    let (service, fresh) = (service.clone(), fresh.clone());
+                    let service = service.clone();
                     move || {
-                        let plans = (0..fresh.len())
-                            .map(|pr_index| {
+                        let fresh = Arc::new(service.fetch(stack)?);
+                        let others = others
+                            .into_iter()
+                            .map(|(stack, members)| Ok((Arc::new(service.fetch_for(stack, &members)?), members)))
+                            .collect::<wispy_core::Result<Vec<_>>>()?;
+                        Ok((fresh, others))
+                    }
+                })
+                .await?;
+            // Where each PR of the tree is submitted through: its snapshot and index there.
+            let mut places: Vec<(Arc<StackSnapshot>, usize)> = (0..fresh.len()).map(|i| (fresh.clone(), i)).collect();
+            for (snapshot, members) in &others {
+                backend.keep_stack(snapshot.clone());
+                places.extend(
+                    snapshot.stack.prs.iter().enumerate().filter(|(_, p)| members.contains(&p.number)).map(|(i, _)| (snapshot.clone(), i)),
+                );
+            }
+            for (snapshot, index) in &places {
+                service.reconcile(snapshot, *index).await.map_err(|e| e.to_string())?;
+            }
+            // Depth-first through the tree; PRs it doesn't know (none expected) go last.
+            let number = |(s, i): &(Arc<StackSnapshot>, usize)| s.stack.prs[*i].number;
+            let order: Vec<u64> = tree.depth_first().into_iter().map(|i| tree.prs[i].number).collect();
+            places.sort_by_key(|place| order.iter().position(|n| *n == number(place)).unwrap_or(usize::MAX));
+            let plans = backend
+                .blocking({
+                    let service = service.clone();
+                    move || {
+                        let numbers: Vec<u64> = places.iter().map(number).collect();
+                        places
+                            .iter()
+                            .map(|(snapshot, index)| {
+                                let parent = index.checked_sub(1).map(|below| snapshot.stack.prs[below].number);
                                 Ok(PrPlan {
-                                    pr_index,
-                                    planned: service.plan(&fresh, pr_index)?,
+                                    pr: snapshot.stack.prs[*index].clone(),
+                                    stack_id: self::stack_id(snapshot),
+                                    pr_index: *index,
+                                    parent: parent.and_then(|n| numbers.iter().position(|m| *m == n)),
+                                    planned: service.plan(snapshot, *index)?,
                                 })
                             })
-                            .collect::<wispy_core::Result<Vec<_>>>()?;
-                        Ok((plans, fresh))
+                            .collect::<wispy_core::Result<Vec<_>>>()
                     }
                 })
                 .await?;
@@ -945,10 +985,7 @@ impl Backend {
             let opened = backend.open_stack(fresh, view, false);
             Ok(SubmitPlan {
                 stack: opened,
-                prs: plans
-                    .into_iter()
-                    .filter(|p| !p.planned.is_empty())
-                    .collect(),
+                prs: plans,
                 viewer,
             })
         });
@@ -1438,6 +1475,13 @@ impl Backend {
             .spawn()
             .map(drop)
             .map_err(|e| format!("{opener}: {e}"))
+    }
+
+    /// Keeps a stack addressable by its id (for submitting to its PRs) without opening it.
+    fn keep_stack(&self, snapshot: Arc<StackSnapshot>) -> String {
+        let id = stack_id(&snapshot);
+        lock(&self.stacks).insert(id.clone(), snapshot);
+        id
     }
 
     fn register_stack(&self, snapshot: Arc<StackSnapshot>) -> String {

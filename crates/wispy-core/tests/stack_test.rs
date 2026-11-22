@@ -5,7 +5,7 @@ use wiremock::matchers::{path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wispy_core::github::GitHubClient;
 use wispy_core::pr_ref::PrRef;
-use wispy_core::stack::discover_stack;
+use wispy_core::stack::{discover_stack, discover_tree};
 use wispy_core::Error;
 
 const URL: &str = "https://github.com/acme/shop.git";
@@ -120,6 +120,18 @@ async fn a_tree_goes_on_along_its_oldest_branch_and_lists_every_branch() {
     assert_eq!(branches(&stack, 0), vec![(7, 2), (9, 1)], "forks never join");
     assert!(stack.branches(1).is_empty() && stack.branches(2).is_empty());
     assert_eq!(stack.branches(0)[1].title, "PR 9");
+}
+
+#[tokio::test]
+async fn a_tree_lists_its_prs_depth_first_each_branch_lowest_number_first() {
+    let server = MockServer::start().await;
+    serve_tree(&server).await;
+    let github = GitHubClient::new(server.uri(), "t").unwrap();
+
+    let (tree, _) = discover_tree(&github, &PrRef::parse("acme/shop#10").unwrap()).await.unwrap();
+
+    let order: Vec<u64> = tree.depth_first().into_iter().map(|i| tree.prs[i].number).collect();
+    assert_eq!(order, vec![1, 7, 10, 9], "a fork PR (#3) is not in the tree");
 }
 
 #[tokio::test]

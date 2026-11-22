@@ -798,6 +798,65 @@ async fn submits_one_pr_keeps_other_drafts_and_keyboard_verdicts_respect_own_pr(
     ui.close(cx).await;
 }
 
+/// #1 ← {#2 ← #3 ← #4, #6}: reviewing #2 on its branch, the sheet lists the whole tree, and
+/// submitting all reaches #6 on the other branch too.
+#[gpui_kit::test]
+async fn sheet_lists_every_pr_of_a_tree_and_submits_to_other_branches(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    fixture.get("/__branch");
+    let backend = Backend::with_github(
+        fixture.data.path().into(),
+        fixture.api(),
+        "fixture-token".into(),
+    );
+    let ui = Ui::new(backend.clone(), cx);
+    let diff = ui.open(cx, 2).await;
+    draft(&ui, &diff, "On the open branch", cx).await;
+    ui.sheet(cx).await;
+    ui.wait(cx, |cx| {
+        ui.app.read(cx).sheet.as_ref().is_some_and(|s| !s.read(cx).listed().is_empty())
+    })
+    .await;
+    let sheet = ui.app.read_with(cx, |a, _| a.sheet.clone().unwrap());
+    sheet.read_with(cx, |s, _| {
+        assert_eq!(s.listed(), vec![1, 2, 3, 4, 6], "depth-first through the tree");
+        assert_eq!(s.focused(), Some(2), "starts at the on-screen PR with drafts");
+    });
+    // Tab goes on past the open branch's top (#4) to #6.
+    for (n, expected) in [3, 4, 6].into_iter().enumerate() {
+        ui.press(cx, "tab");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        ui.wait(cx, |cx| {
+            let focused = sheet.read(cx).focused();
+            assert!(std::time::Instant::now() < deadline, "tab {n}: focused {focused:?}, want #{expected}");
+            focused == Some(expected)
+        })
+        .await;
+    }
+    ui.input(cx, "Summary for the other branch");
+    ui.submitted(cx).await;
+    let bodies = |n: u64| -> Vec<String> {
+        fixture
+            .get(&format!("/repos/wispy/fixture/pulls/{n}/reviews"))
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["body"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(bodies(2).len(), 1, "#2's draft went out");
+    let six = bodies(6);
+    assert!(
+        six.len() == 1 && six[0].contains("Summary for the other branch"),
+        "#6 got its summary: {six:?}"
+    );
+    assert!(bodies(3).is_empty() && bodies(4).is_empty() && bodies(1).is_empty());
+    drop(sheet);
+    drop(diff);
+    drop(backend);
+    ui.close(cx).await;
+}
+
 #[gpui_kit::test]
 async fn clipboard_image_is_local_then_uploaded_on_submit(cx: &mut TestAppContext) {
     use base64::Engine as _;
@@ -1334,13 +1393,13 @@ async fn verdict_menu_keyboard_pick_escape_tab_and_trigger_toggle(cx: &mut TestA
         .unwrap()
         .unwrap();
     assert_ne!(focus, sheet.read_with(cx, |s, cx| s.focus_handle(cx)));
-    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(1)), Verdict::Comment);
+    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(2)), Verdict::Comment);
 
     let trigger = verdict_trigger(&ui, cx, 1);
     click(&ui, cx, trigger);
     assert!(sheet.read_with(cx, |s, _| s.menu_is_open()));
     ui.press(cx, "down enter");
-    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(1)), Verdict::Approve);
+    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(2)), Verdict::Approve);
     assert!(!sheet.read_with(cx, |s, _| s.menu_is_open()));
     assert!(cx
         .update_window(ui.window, |_, w, _| focus.is_focused(w))
@@ -1353,7 +1412,7 @@ async fn verdict_menu_keyboard_pick_escape_tab_and_trigger_toggle(cx: &mut TestA
         assert!(sheet.read_with(cx, |s, _| s.menu_is_open()));
         ui.press(cx, &format!("down {close}"));
         assert!(!sheet.read_with(cx, |s, _| s.menu_is_open()));
-        assert_eq!(sheet.read_with(cx, |s, _| s.verdict(1)), Verdict::Approve);
+        assert_eq!(sheet.read_with(cx, |s, _| s.verdict(2)), Verdict::Approve);
         assert!(cx
             .update_window(ui.window, |_, w, _| focus.is_focused(w))
             .unwrap());
@@ -1363,7 +1422,7 @@ async fn verdict_menu_keyboard_pick_escape_tab_and_trigger_toggle(cx: &mut TestA
     click(&ui, cx, trigger);
     ui.press(cx, "up up space");
     assert!(!sheet.read_with(cx, |s, _| s.menu_is_open()));
-    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(1)), Verdict::Comment);
+    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(2)), Verdict::Comment);
     assert!(cx
         .update_window(ui.window, |_, w, _| focus.is_focused(w))
         .unwrap());
@@ -1377,7 +1436,7 @@ async fn verdict_menu_keyboard_pick_escape_tab_and_trigger_toggle(cx: &mut TestA
         !sheet.read_with(cx, |s, _| s.menu_is_open()),
         "clicking an open trigger must close without reopening"
     );
-    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(1)), Verdict::Approve);
+    assert_eq!(sheet.read_with(cx, |s, _| s.verdict(2)), Verdict::Approve);
     assert!(cx
         .update_window(ui.window, |_, w, _| focus.is_focused(w))
         .unwrap());
