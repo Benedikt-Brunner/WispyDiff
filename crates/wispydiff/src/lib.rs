@@ -8,6 +8,7 @@ pub mod backend;
 pub mod description;
 pub mod diff;
 pub mod http;
+pub mod image_viewer;
 pub mod inbox;
 pub mod logic;
 pub mod markdown;
@@ -46,6 +47,7 @@ pub fn init(backend: Arc<Backend>, cx: &mut App) {
     inbox::bind_keys(cx);
     palette::bind_keys(cx);
     overlays::bind_keys(cx);
+    image_viewer::bind_keys(cx);
     submit_sheet::bind_keys(cx);
     diff::bind_keys(cx);
     diff::inserts::bind_keys(cx);

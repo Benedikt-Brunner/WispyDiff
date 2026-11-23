@@ -3,7 +3,8 @@
 //!
 //! TextView's HTML parser has no custom-node hooks. We sanitize/partition HTML once,
 //! retain ordinary rich text in TextView::html, and use its Markdown custom-block hook
-//! for native disclosures, rules and fenced code. No WebView or implicit URL opener.
+//! for native disclosures, rules, fenced code and images standing alone (paragraphs or table cells
+//! of nothing else; the tables around them become native too). No WebView or implicit URL opener.
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -26,6 +27,7 @@ use gpui_kit::{
 use html5ever::{parse_document, tendril::TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
+pub use crate::image_viewer::ViewedImage;
 pub use crate::logic::file_refs::CodeRef;
 use crate::logic::file_refs::{
     escape_html, parse_line_list, parse_ref, resolve_line_list, safe_decode, RefPart,
@@ -33,6 +35,12 @@ use crate::logic::file_refs::{
 
 pub type OpenUrl = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 pub type ImageResolver = Rc<dyn Fn(&str) -> Option<Arc<Image>>>;
+pub type OpenImage = Rc<dyn Fn(ViewedImage, &mut Window, &mut App)>;
+
+/// Images link here, so a click on one can open it in the viewer: the image's own URL, base64url.
+const VIEW_SCHEME: &str = "wispy-view:";
+/// The same for a pasted image in a draft: its id.
+const VIEW_LOCAL_SCHEME: &str = "wispy-view-local:";
 
 #[derive(Clone)]
 pub struct CodeRefs {
@@ -47,6 +55,8 @@ pub struct RenderOptions {
     /// Return a prepared image, or None while loading. The owner schedules loading
     /// and requests a new frame when ready; rendering never performs file I/O.
     pub image: Option<ImageResolver>,
+    /// A click on an image (None: it opens in the browser, as a link to it would).
+    pub on_open_image: Option<OpenImage>,
     pub selectable: bool,
     pub text_size: Pixels,
     /// Code blocks use this family; inline code uses the kit theme's mono family.
@@ -63,6 +73,7 @@ impl RenderOptions {
             on_open_url,
             refs: None,
             image: None,
+            on_open_image: None,
             selectable: true,
             text_size: px(14.),
             mono_font_family: "monospace".into(),
@@ -231,6 +242,7 @@ impl Node {
     fn special(&self) -> bool {
         matches!(self.tag(), "details" | "pre" | "hr")
             || self.suggestion_box()
+            || self.images_only()
             || self.children().iter().any(Node::special)
     }
     fn suggestion_box(&self) -> bool {
@@ -238,6 +250,29 @@ impl Node {
             && self
                 .attr("class")
                 .is_some_and(|c| c.split_whitespace().any(|c| c == "suggestion"))
+    }
+    /// The image a reader can open in the viewer: a bare `<img>`, or one GitHub links to itself.
+    fn viewable_image(&self) -> Option<&Node> {
+        match self.tag() {
+            "img" => self
+                .attr("src")
+                .filter(|src| http_url(src) || src.starts_with("wispy-image:"))
+                .map(|_| self),
+            "a" => self_linked_image(self).and_then(|_| self.descendant("img")),
+            _ => None,
+        }
+    }
+    /// A paragraph or table cell of nothing but images. We draw those ourselves: TextView gives
+    /// the images of every paragraph (and table cell) of an HTML document the same element id,
+    /// so only the first one could be clicked.
+    fn images_only(&self) -> bool {
+        matches!(self.tag(), "p" | "div" | "td" | "th")
+            && self.children().iter().any(|n| n.viewable_image().is_some())
+            && self.children().iter().all(|n| {
+                n.viewable_image().is_some()
+                    || n.tag() == "br"
+                    || matches!(n, Node::Text(t) if t.trim().is_empty())
+            })
     }
     fn descendant(&self, tag: &str) -> Option<&Node> {
         if self.tag() == tag {
@@ -281,7 +316,9 @@ fn sanitize(source: &str) -> Vec<Node> {
                     return vec![];
                 }
                 let children = handle.children.borrow().iter().flat_map(visit).collect();
-                if matches!(tag.as_str(), "html" | "body" | "head") {
+                // Custom elements are unknown to TextView, which would run their contents
+                // together as one line: GitHub wraps every table in <markdown-accessiblity-table>.
+                if matches!(tag.as_str(), "html" | "body" | "head") || tag.contains('-') {
                     return children;
                 }
                 let attrs = attrs
@@ -294,7 +331,11 @@ fn sanitize(source: &str) -> Vec<Node> {
                             && !(matches!(key.as_str(), "href" | "src") && unsafe_url(&value)))
                         .then_some((key, value))
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
+                let children = match attrs.iter().find(|(k, _)| k == "href") {
+                    Some((_, href)) if tag == "a" => image_link(href, children),
+                    _ => children,
+                };
                 vec![Node::Element {
                     tag,
                     attrs,
@@ -404,6 +445,18 @@ enum Block {
         key: String,
         children: Vec<Block>,
     },
+    /// Images side by side, each opening in the viewer on a click.
+    Images {
+        key: String,
+        images: Vec<ImageItem>,
+    },
+}
+struct ImageItem {
+    /// `http(s)` or `wispy-image:`.
+    src: String,
+    alt: String,
+    /// The `width` GitHub keeps from `<img width=…>`.
+    width: Option<f32>,
 }
 impl Plan {
     fn parse(source: &str, format: Format) -> Self {
@@ -414,7 +467,7 @@ impl Plan {
             Format::Markdown { breaks } => markdown_html(source, breaks),
         };
         let nodes = sanitize(&html);
-        let blocks = partition(&nodes, "root");
+        let blocks = partition(&nodes, "root", false);
         let source = (0..blocks.len())
             .map(|i| format!("```wispy-block\n{i}\n```\n\n"))
             .collect::<String>()
@@ -422,7 +475,9 @@ impl Plan {
         Self { blocks, source }
     }
 }
-fn partition(nodes: &[Node], parent: &str) -> Vec<Block> {
+/// `structural`: the nodes are a table's rows or a row's cells, each kept as its own block (as
+/// text they'd lose their table layout).
+fn partition(nodes: &[Node], parent: &str, structural: bool) -> Vec<Block> {
     fn flush(pending: &mut Vec<Node>, blocks: &mut Vec<Block>, key: String) {
         if pending.is_empty() {
             return;
@@ -442,7 +497,7 @@ fn partition(nodes: &[Node], parent: &str) -> Vec<Block> {
     let mut blocks = vec![];
     let mut pending = vec![];
     for (index, node) in nodes.iter().enumerate() {
-        if !node.special() {
+        if !node.special() && !(structural && matches!(node, Node::Element { .. })) {
             pending.push(node.clone());
             continue;
         }
@@ -450,6 +505,25 @@ fn partition(nodes: &[Node], parent: &str) -> Vec<Block> {
         flush(&mut pending, &mut blocks, format!("{key}/before"));
         let children = node.children();
         blocks.push(match node.tag() {
+            tag if node.images_only() => {
+                let images = Block::Images {
+                    key: format!("{key}/images"),
+                    images: children
+                        .iter()
+                        .filter_map(Node::viewable_image)
+                        .map(|img| ImageItem {
+                            src: img.attr("src").unwrap_or_default().into(),
+                            alt: img.attr("alt").unwrap_or_default().into(),
+                            width: img.attr("width").and_then(|w| w.trim_end_matches("px").parse().ok()),
+                        })
+                        .collect(),
+                };
+                if matches!(tag, "td" | "th") {
+                    Block::Container { tag: tag.into(), key, children: vec![images] }
+                } else {
+                    images
+                }
+            }
             "details" => {
                 let summary = children.iter().position(|n| n.tag() == "summary");
                 let summary_nodes = summary
@@ -469,7 +543,7 @@ fn partition(nodes: &[Node], parent: &str) -> Vec<Block> {
                 Block::Details {
                     initially_open: node.attr("open").is_some(),
                     summary: Rc::new(Fragment::new(summary_nodes, format!("{key}/summary-text"))),
-                    body: partition(&body, &format!("{key}/body")),
+                    body: partition(&body, &format!("{key}/body"), false),
                     key,
                 }
             }
@@ -484,14 +558,14 @@ fn partition(nodes: &[Node], parent: &str) -> Vec<Block> {
                     .iter()
                     .filter(|n| n.tag() == "li")
                     .enumerate()
-                    .map(|(i, n)| partition(n.children(), &format!("{key}/item-{i}")))
+                    .map(|(i, n)| partition(n.children(), &format!("{key}/item-{i}"), false))
                     .collect(),
                 key,
             },
             "hr" => Block::Rule(key),
             tag => Block::Container {
                 tag: tag.into(),
-                children: partition(children, &key),
+                children: partition(children, &key, matches!(tag, "table" | "thead" | "tbody" | "tfoot" | "tr")),
                 key,
             },
         });
@@ -547,6 +621,8 @@ enum Slot {
         original: String,
         id: String,
         alt: String,
+        /// Inside a link already (which a click follows instead of viewing the image).
+        linked: bool,
     },
 }
 enum Piece {
@@ -628,7 +704,8 @@ fn serialize(node: &Node) -> String {
 }
 impl Fragment {
     fn new(nodes: Vec<Node>, key: String) -> Self {
-        fn add(node: &Node, blocked: bool, f: &mut Fragment) {
+        // `linked`: inside a link, whose click wins over viewing an image.
+        fn add(node: &Node, blocked: bool, linked: bool, f: &mut Fragment) {
             let Node::Element {
                 tag,
                 attrs,
@@ -656,16 +733,43 @@ impl Fragment {
                         original: serialize(node),
                         id: id.into(),
                         alt: node.attr("alt").unwrap_or("").into(),
+                        linked,
                     });
                     return;
                 }
                 // Scheme-less and file:// document images must never gain filesystem access.
-                if !node.attr("src").is_some_and(http_url) {
+                let Some(src) = node.attr("src").filter(|src| http_url(src)) else {
                     f.literal(escape_html(node.attr("alt").unwrap_or("")));
+                    return;
+                };
+                if !linked {
+                    f.literal(format!("<a href=\"{}\">{}</a>", view_url(src), serialize(node)));
                     return;
                 }
             }
+            if tag == "video" {
+                // GitHub's uploaded videos. They don't play here: a link opens them in the browser
+                // (`data-canonical-src` is the lasting URL; `src` may be signed for minutes only).
+                let source = children.iter().find(|n| n.tag() == "source");
+                let src = [node.attr("data-canonical-src"), node.attr("src"), source.and_then(|s| s.attr("src"))]
+                    .into_iter()
+                    .flatten()
+                    .find(|src| http_url(src));
+                if let Some(src) = src.filter(|_| !linked) {
+                    f.literal(format!("<a href=\"{}\">▶ Open the video in the browser</a>", attr_escape(src)));
+                }
+                return;
+            }
             if tag == "a" {
+                // GitHub links each image to itself: a click views it instead.
+                if let Some(src) = self_linked_image(node) {
+                    f.literal(format!("<a href=\"{}\">", view_url(src)));
+                    for child in children {
+                        add(child, true, true, f);
+                    }
+                    f.literal("</a>".into());
+                    return;
+                }
                 let href = node.attr("href").unwrap_or("");
                 let reference = if href.starts_with("http:")
                     || href.starts_with("https:")
@@ -683,7 +787,7 @@ impl Fragment {
                 f.literal(start_tag(tag, attrs));
             }
             for child in children {
-                add(child, blocked || tag == "pre" || tag == "a", f);
+                add(child, blocked || tag == "pre" || tag == "a", linked || tag == "a", f);
             }
             if !void(tag) {
                 f.literal(format!("</{tag}>"));
@@ -696,7 +800,7 @@ impl Fragment {
             cached: RefCell::new(None),
         };
         for node in &nodes {
-            add(node, false, &mut f);
+            add(node, false, false, &mut f);
         }
         f
     }
@@ -800,8 +904,11 @@ impl Fragment {
                         html.push_str(opening);
                     }
                 }
-                (Slot::Image { original, alt, .. }, Value::Image(image)) => {
+                (Slot::Image { original, alt, id, linked }, Value::Image(image)) => {
                     if let Some(image) = image {
+                        if !linked {
+                            html.push_str(&format!("<a href=\"{VIEW_LOCAL_SCHEME}{}\">", attr_escape(id)));
+                        }
                         // Only trusted resolver bytes may introduce an embedded image.
                         // TextView decodes/caches these natively, with no HTTP/filesystem request.
                         let uri = format!(
@@ -814,6 +921,9 @@ impl Fragment {
                                 .replacen("src=\"wispy-image:", "data-wispy-image=\"", 1)
                                 .replacen("<img", &format!("<img src=\"{uri}\""), 1),
                         );
+                        if !linked {
+                            html.push_str("</a>");
+                        }
                     } else {
                         html.push_str(&escape_html(alt));
                     }
@@ -829,6 +939,38 @@ impl Fragment {
         });
         html
     }
+}
+fn view_url(src: &str) -> String {
+    format!("{VIEW_SCHEME}{}", URL_SAFE_NO_PAD.encode(src))
+}
+/// The image a `wispy-view` link stands for.
+fn viewed_image(url: &str, opts: &RenderOptions) -> Option<ViewedImage> {
+    if let Some(encoded) = url.strip_prefix(VIEW_SCHEME) {
+        let src = String::from_utf8(URL_SAFE_NO_PAD.decode(encoded).ok()?).ok()?;
+        return Some(ViewedImage::Remote(src.into()));
+    }
+    let id = url.strip_prefix(VIEW_LOCAL_SCHEME)?;
+    opts.image.as_ref().and_then(|image| image(id)).map(ViewedImage::Local)
+}
+/// The image's `src` when a link holds just that image and leads to it (as GitHub links them).
+fn self_linked_image(link: &Node) -> Option<&str> {
+    let mut children = link.children().iter().filter(|n| !matches!(n, Node::Text(t) if t.trim().is_empty()));
+    let (Some(image), None) = (children.next(), children.next()) else { return None };
+    let src = image.attr("src").filter(|_| image.tag() == "img")?;
+    (http_url(src) && link.attr("href") == Some(src)).then_some(src)
+}
+/// A text link to an image file shows the image, linked to itself as GitHub links its images:
+/// bots write `[Walkthrough](….gif)` where they meant `![Walkthrough](….gif)`.
+fn image_link(href: &str, children: Vec<Node>) -> Vec<Node> {
+    let path = href.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    let image = http_url(href)
+        && [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|ext| path.ends_with(ext))
+        && children.iter().all(|n| matches!(n, Node::Text(_)));
+    if !image {
+        return children;
+    }
+    let alt = children.iter().map(Node::text).collect::<String>().trim().to_string();
+    vec![Node::Element { tag: "img".into(), attrs: vec![("src".into(), href.into()), ("alt".into(), alt)], children: vec![] }]
 }
 fn http_url(url: &str) -> bool {
     let url = url.trim().to_ascii_lowercase();
@@ -866,6 +1008,14 @@ fn rich(fragment: &Rc<Fragment>, state: &Entity<Renderer>, cx: &mut App) -> AnyE
         .on_link_click(move |url, _, window, cx| {
             let renderer = handler_state.read(cx);
             let opts = renderer.opts.clone();
+            if url.starts_with(VIEW_SCHEME) || url.starts_with(VIEW_LOCAL_SCHEME) {
+                match (viewed_image(url, &opts), &opts.on_open_image) {
+                    (Some(image), Some(open)) => open(image, window, cx),
+                    (Some(ViewedImage::Remote(src)), None) => (opts.on_open_url)(&src, window, cx),
+                    _ => {}
+                }
+                return;
+            }
             let reference = find_fragment(&renderer.plan.blocks, &key).and_then(|f| {
                 f.cached
                     .borrow()
@@ -993,23 +1143,38 @@ fn render_block(
             }
             root.into_any_element()
         }
+        Block::Images { key, images } => div()
+            .id(SharedString::from(key.clone()))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .gap_2()
+            .children(images.iter().enumerate().map(|(i, image)| {
+                render_image(format!("{key}/{i}"), image, 1. / images.len() as f32, &opts, window, cx)
+            }))
+            .into_any_element(),
         Block::Container { tag, key, children } => {
+            let table = matches!(tag.as_str(), "table" | "thead" | "tbody" | "tr");
             let mut root = div()
                 .id(SharedString::from(key.clone()))
                 .w_full()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap_2();
+                .when(!table, |d| d.gap_2());
             if tag == "blockquote" {
                 root = root.pl_3().border_l_2().border_color(cx.theme().border);
             }
             if tag == "tr" {
                 root = root.flex_row();
             }
+            if tag == "th" {
+                root = root.font_weight(gpui_kit::FontWeight::SEMIBOLD);
+            }
             if tag == "td" || tag == "th" {
                 root = root
                     .flex_1()
+                    .flex_basis(gpui_kit::relative(0.))
                     .p_2()
                     .border_1()
                     .border_color(cx.theme().border);
@@ -1049,6 +1214,94 @@ fn render_block(
             }))
             .into_any_element(),
     }
+}
+
+/// An image as big as its width (or the room there is) allows, opening in the viewer on a click.
+/// `share`: of the row's width (the images side by side share it).
+fn render_image(id: String, image: &ImageItem, share: f32, opts: &RenderOptions, window: &mut Window, cx: &mut App) -> AnyElement {
+    use gpui_kit::{img, ImageSource, ImgResourceLoader, Resource, SharedUri};
+    let muted = cx.theme().muted_foreground;
+    let placeholder = |text: &str| {
+        div()
+            .text_color(muted)
+            .child(SharedString::from(if text.is_empty() { "image".to_string() } else { text.to_string() }))
+            .into_any_element()
+    };
+    // `get_*`, not `use_*`: this runs inside TextView's state, not a view of the window, so GPUI's
+    // own "loaded" notification wouldn't redraw anything; `redraw_when_loaded` does that.
+    let (source, viewed, loaded) = if let Some(local) = image.src.strip_prefix("wispy-image:") {
+        let Some(local) = opts.image.as_ref().and_then(|image| image(local)) else { return placeholder(&image.alt) };
+        let decoded = local.clone();
+        let loaded: LoadImage = Rc::new(move |window, cx| decoded.clone().get_render_image(window, cx).map(Ok));
+        (ImageSource::Image(local.clone()), ViewedImage::Local(local), loaded)
+    } else {
+        let uri = Resource::Uri(SharedUri::from(image.src.clone()));
+        let asset = uri.clone();
+        let loaded: LoadImage =
+            Rc::new(move |window, cx| window.get_asset::<ImgResourceLoader>(&asset, cx).map(|r| r.map_err(|_| ())));
+        (ImageSource::Resource(uri), ViewedImage::Remote(image.src.clone().into()), loaded)
+    };
+    // Until it has loaded (or if it can't be), its alt text.
+    let data = loaded(window, cx);
+    if data.is_none() {
+        redraw_when_loaded(image.src.clone(), loaded, window, cx);
+    }
+    let Some(data) = data.and_then(Result::ok).filter(|data| data.frame_count() > 0) else { return placeholder(&image.alt) };
+    let natural = data.size(0);
+    let (w, h) = (natural.width.0 as f32, natural.height.0 as f32);
+    if w <= 0. || h <= 0. {
+        return placeholder(&image.alt);
+    }
+    let (open_image, open_url) = (opts.on_open_image.clone(), opts.on_open_url.clone());
+    div()
+        .id(SharedString::from(id))
+        // A definite width (so the aspect ratio gives the height), shrinking for the gaps.
+        .w(gpui_kit::relative(share))
+        .flex_shrink(1.)
+        .min_w_0()
+        .max_w(px(image.width.unwrap_or(w)))
+        .aspect_ratio(w / h)
+        .cursor_pointer()
+        .on_click(move |_, window, cx| match (&open_image, &viewed) {
+            (Some(open), _) => open(viewed.clone(), window, cx),
+            (None, ViewedImage::Remote(url)) => open_url(url, window, cx),
+            _ => {}
+        })
+        .child(img(source).size_full())
+        .into_any_element()
+}
+
+thread_local! {
+    /// Images whose loading `redraw_when_loaded` is waiting for.
+    static AWAITED: RefCell<HashSet<String>> = RefCell::default();
+}
+
+/// An image's decoded frames: None while loading, Err if it can't be loaded.
+type LoadImage = Rc<dyn Fn(&mut Window, &mut App) -> Option<Result<Arc<gpui_kit::RenderImage>, ()>>>;
+
+/// Redraws the window once the image has loaded (or failed to): GPUI tells only the view that
+/// asked for it, and rich text asks from inside TextView, which isn't one. Gives up after a minute.
+fn redraw_when_loaded(src: String, loaded: LoadImage, window: &mut Window, cx: &mut App) {
+    if !AWAITED.with(|awaited| awaited.borrow_mut().insert(src.clone())) {
+        return;
+    }
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        for _ in 0..1200 {
+            cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+            // A failed load is done too (its alt text stays).
+            match handle.update(cx, |_, window, cx| loaded(window, cx).is_some()) {
+                Ok(false) => continue,
+                Ok(true) => {
+                    let _ = handle.update(cx, |_, window, _| window.refresh());
+                }
+                Err(_) => {} // the window closed
+            }
+            break;
+        }
+        AWAITED.with(|awaited| awaited.borrow_mut().remove(&src));
+    })
+    .detach();
 }
 
 // Observation is free of test-only application state; production builds need not
@@ -1338,6 +1591,124 @@ mod tests {
         assert_eq!(fragment.render(&opts), html);
         ready.set(false);
         assert!(!fragment.render(&opts).contains("data:"));
+    }
+
+    #[test]
+    fn images_link_to_the_viewer_unless_a_link_leads_elsewhere() {
+        let src = "https://camo.example/a.png";
+        let view = format!("<a href=\"{}\">", view_url(src));
+        // GitHub's own link to the image, and a bare image (Markdown in drafts), view it.
+        let github = rendered(&format!(r#"<p><a target="_blank" rel="noopener" href="{src}"><img src="{src}" alt="a"></a></p>"#), &options());
+        assert_eq!(github, format!(r#"<p>{view}<img src="{src}" alt="a"></a></p>"#));
+        let bare = rendered(&format!(r#"<p><img src="{src}" alt="a"></p>"#), &options());
+        assert_eq!(bare, github);
+        // A linked badge keeps its link.
+        let badge = format!(r#"<p><a href="https://ci.example"><img src="{src}" alt="a"></a></p>"#);
+        assert_eq!(rendered(&badge, &options()), badge);
+        // The link decodes back to the image.
+        let opts = options();
+        let url = view_url(src);
+        assert!(matches!(viewed_image(&url, &opts), Some(ViewedImage::Remote(s)) if s.as_ref() == src));
+        assert!(viewed_image("wispy-view:%%%", &opts).is_none());
+
+        // A pasted image views the resolver's bytes.
+        let image = Arc::new(Image::from_bytes(gpui_kit::ImageFormat::Png, vec![1, 2, 3]));
+        let mut opts = options();
+        let resolved = image.clone();
+        opts.image = Some(Rc::new(move |id| (id == "123").then(|| resolved.clone())));
+        let html = rendered(r#"<p><img src="wispy-image:123" alt="x"></p>"#, &opts);
+        assert!(html.starts_with(r#"<p><a href="wispy-view-local:123"><img src="data:image/png"#), "{html}");
+        assert!(matches!(viewed_image("wispy-view-local:123", &opts), Some(ViewedImage::Local(i)) if i.id() == image.id()));
+        assert!(viewed_image("wispy-view-local:9", &opts).is_none());
+    }
+
+    #[test]
+    fn github_table_wrappers_are_dropped_so_tables_stay_tables() {
+        let html = rendered(
+            "<markdown-accessiblity-table><table role=\"table\"><thead><tr><th>Before</th><th>After</th></tr></thead></table></markdown-accessiblity-table><p><g-emoji alias=\"tada\">🎉</g-emoji></p>",
+            &options(),
+        );
+        assert_eq!(html, "<table role=\"table\"><thead><tr><th>Before</th><th>After</th></tr></thead></table><p>🎉</p>");
+    }
+
+    /// The plan's blocks as `tag key` lines, nested by indentation.
+    fn outline(blocks: &[Block], depth: usize, out: &mut Vec<String>) {
+        for block in blocks {
+            let pad = "  ".repeat(depth);
+            match block {
+                Block::Rich(f) => out.push(format!("{pad}text {}", f.render(&options()))),
+                Block::Container { tag, children, .. } => {
+                    out.push(format!("{pad}{tag}"));
+                    outline(children, depth + 1, out)
+                }
+                Block::Images { images, .. } => out.push(format!(
+                    "{pad}images {}",
+                    images.iter().map(|i| i.src.as_str()).collect::<Vec<_>>().join(" ")
+                )),
+                _ => out.push(format!("{pad}other")),
+            }
+        }
+    }
+
+    #[test]
+    fn images_alone_in_a_paragraph_or_cell_are_drawn_apart_and_tables_keep_their_cells() {
+        let img = |n: &str| format!(r#"<a href="https://i.example/{n}"><img src="https://i.example/{n}" alt="{n}"></a>"#);
+        let body = format!(
+            "<markdown-accessiblity-table><table><thead><tr><th>Before</th><th>After</th></tr></thead><tbody><tr><td>{}</td><td>text</td></tr></tbody></table></markdown-accessiblity-table><p>{} {}</p><p>Inline {}</p>",
+            img("a"), img("b"), img("c"), img("d")
+        );
+        let mut out = vec![];
+        outline(&Plan::parse(&body, Format::Html).blocks, 0, &mut out);
+        assert_eq!(
+            out,
+            [
+                "table",
+                "  thead",
+                "    tr",
+                "      th",
+                "        text Before",
+                "      th",
+                "        text After",
+                "  tbody",
+                "    tr",
+                "      td",
+                "        images https://i.example/a",
+                "      td",
+                "        text text",
+                "images https://i.example/b https://i.example/c",
+                &format!("text <p>Inline <a href=\"{}\"><img src=\"https://i.example/d\" alt=\"d\"></a></p>", view_url("https://i.example/d")),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_links_to_image_files_show_the_image() {
+        let src = "https://i.example/walkthrough.gif?v=1";
+        let html = rendered(&format!(r#"<p><a href="{src}">Walkthrough</a></p>"#), &options());
+        assert_eq!(html, format!(r#"<p><a href="{}"><img src="{src}" alt="Walkthrough"></a></p>"#, view_url(src)));
+        let blocks = partition(&sanitize(&format!(r#"<p><a href="{src}">Walkthrough</a></p>"#)), "", false);
+        assert!(matches!(&blocks[..], [Block::Images { images, .. }] if images.len() == 1), "drawn apart, so it can be opened");
+        // Not a video, a page, code, or a link with more than text.
+        for other in [
+            r#"<a href="https://i.example/v.mp4">Video</a>"#,
+            r#"<a href="https://i.example/png">Page</a>"#,
+            r#"<a href="https://i.example/a.png"><code>a.png</code></a>"#,
+            r#"<a href="file:///a.png">a</a>"#,
+        ] {
+            assert!(!rendered(other, &options()).contains("<img"), "{other}");
+        }
+    }
+
+    #[test]
+    fn videos_become_links_to_the_browser() {
+        let html = rendered(
+            r#"<video src="https://private.example/v.mp4?jwt=1" data-canonical-src="https://github.com/user-attachments/assets/v" controls></video>"#,
+            &options(),
+        );
+        assert_eq!(html, r#"<a href="https://github.com/user-attachments/assets/v">▶ Open the video in the browser</a>"#);
+        let sourced = rendered(r#"<video controls><source src="https://x.example/v.mp4"></video>"#, &options());
+        assert!(sourced.contains(r#"href="https://x.example/v.mp4""#), "{sourced}");
+        assert_eq!(rendered(r#"<video src="file:///v.mp4"></video>"#, &options()), "");
     }
 
     struct TestView {

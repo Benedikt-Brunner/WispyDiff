@@ -388,6 +388,7 @@ pub fn markdown_options(backend: &std::sync::Arc<crate::backend::Backend>, cx: &
             eprintln!("{err}");
         }
     }));
+    opts.on_open_image = Some(std::rc::Rc::new(crate::app::view_image));
     opts.text_size = upx(13., cx);
     opts.mono_font_family = mono_family(cx);
     let p = palette(cx);

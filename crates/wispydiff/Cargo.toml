@@ -30,6 +30,8 @@ markdown = "1"
 [dev-dependencies]
 gpui-kit = { version = "~0.6.6", features = ["test-support"] }
 tempfile = "3"
+# Encodes the animated GIF the image viewer's tests show (GPUI already builds it).
+image = { version = "0.25", default-features = false, features = ["gif"] }
 
 [features]
 # GPUI's frame profiler: `--perf` then also reports CPU draw times per frame.
