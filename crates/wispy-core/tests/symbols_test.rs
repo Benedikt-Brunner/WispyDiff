@@ -141,6 +141,20 @@ fn tells_which_paths_are_files_of_the_head_without_downloading_them() {
 }
 
 #[test]
+fn lists_every_file_of_the_head_without_downloading_them() {
+    let (origin, service, snapshot, _data) = setup();
+    let gone = origin.path().with_extension("offline");
+    std::fs::rename(origin.path(), &gone).unwrap();
+    let files = service.head_files(&snapshot, 0);
+    std::fs::rename(&gone, origin.path()).unwrap();
+    let files = files.unwrap();
+    for path in ["src/Unrelated.php", "src/Allocator.php", "views/bin.html.twig"] {
+        assert!(files.iter().any(|f| f == path), "{path} in {files:?}");
+    }
+    assert!(!files.iter().any(|f| f == "src" || f == "views"), "directories aren't files");
+}
+
+#[test]
 fn reads_any_file_of_the_head_and_locates_head_lines_in_a_view() {
     let (_origin, service, snapshot, _data) = setup();
     let lines = service.read_file(&snapshot, 0, "src/Unrelated.php").unwrap();

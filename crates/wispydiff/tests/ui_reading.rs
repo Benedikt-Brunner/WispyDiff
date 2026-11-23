@@ -1642,6 +1642,47 @@ async fn e_expands_collapsed_current_file(cx: &mut TestAppContext) {
     t.finish(cx).await;
 }
 
+// Shift Shift finds the head's files outside the diff too, after the diff's, and opens them read-only.
+#[gpui_kit::test]
+async fn file_search_finds_files_outside_the_diff(cx: &mut TestAppContext) {
+    let t = Reading::new(cx);
+    t.open(cx, 3).await;
+    let (stack, hi, diff) = t.read(cx, |d, _| {
+        let paths: Vec<String> = d.view.summary.files.iter().map(|f| f.path.clone()).collect();
+        (d.stack_id.clone(), d.hi, paths)
+    });
+    let head = t.backend.head_files(stack, hi).await.unwrap();
+    let outside = head.iter().find(|p| !diff.contains(p)).expect("a file outside the diff").clone();
+
+    t.double_shift(cx);
+    // Nothing typed: only the diff's files.
+    t.wait(cx, |d, cx| d.file_search().is_some_and(|s| !s.read(cx).listed().is_empty())).await;
+    let listed = t.read(cx, |d, cx| d.file_search().unwrap().read(cx).listed());
+    assert!(listed.iter().all(|(_, in_diff)| *in_diff), "{listed:?}");
+
+    t.input(cx, &outside);
+    t.wait(cx, |d, cx| d.file_search().is_some_and(|s| s.read(cx).listed().iter().any(|(p, _)| *p == outside))).await;
+    let listed = t.read(cx, |d, cx| d.file_search().unwrap().read(cx).listed());
+    let at = listed.iter().position(|(p, _)| *p == outside).unwrap();
+    assert!(!listed[at].1, "listed as outside the diff");
+    assert!(listed[..at].iter().all(|(_, in_diff)| *in_diff), "the diff's files come first: {listed:?}");
+    for _ in 0..at {
+        t.keys(cx, "down");
+    }
+    t.keys(cx, "enter");
+    t.wait(cx, |d, _| d.file_search().is_none() && d.file_view.as_ref().is_some_and(|v| v.lines.is_some())).await;
+    t.read(cx, |d, _| {
+        let view = d.file_view.as_ref().unwrap();
+        assert_eq!(view.path, outside);
+        assert_eq!((view.line, view.end), (0, 0), "opens from the top, nothing flashed");
+        assert!(!view.filtered);
+        assert!(view.error.is_none());
+    });
+    t.keys(cx, "escape");
+    t.read(cx, |d, _| assert!(d.file_view.is_none()));
+    t.finish(cx).await;
+}
+
 // The last-file search target remains tested above, with its expected behaviour ignored as a bug.
 #[gpui_kit::test]
 async fn file_search_temporary_open_escape_and_keep_open(cx: &mut TestAppContext) {

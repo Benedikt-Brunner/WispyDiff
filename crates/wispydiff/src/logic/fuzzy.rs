@@ -116,9 +116,15 @@ pub fn match_path(path: &str, query: &str) -> Option<PathMatch> {
 }
 /// Hidden files come last; otherwise best score first, ties in diff order. At most 50 results.
 pub fn rank_paths(paths: &[impl AsRef<str>], filtered: &[bool], query: &str) -> Vec<SearchResult> {
+    let wanted: Vec<char> = query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|c| !super::js_whitespace(*c))
+        .collect();
     let mut out: Vec<_> = paths
         .iter()
         .enumerate()
+        .filter(|(_, p)| may_match(p.as_ref(), &wanted))
         .filter_map(|(index, p)| {
             match_path(p.as_ref(), query).map(|m| SearchResult {
                 index,
@@ -138,6 +144,21 @@ pub fn rank_paths(paths: &[impl AsRef<str>], filtered: &[bool], query: &str) -> 
     });
     out.truncate(MAX_RESULTS);
     out
+}
+/// Whether `wanted` (lowercase) is a subsequence of `path`, lowercased: a cheap check before
+/// scoring, so a whole repository's paths stay quick to search.
+fn may_match(path: &str, wanted: &[char]) -> bool {
+    let mut rest = wanted.iter();
+    let Some(mut next) = rest.next() else { return true };
+    for c in path.chars().flat_map(char::to_lowercase) {
+        if c == *next {
+            match rest.next() {
+                Some(n) => next = n,
+                None => return true,
+            }
+        }
+    }
+    false
 }
 pub fn search_files(files: &[FileSummary], filtered: &[bool], query: &str) -> Vec<SearchResult> {
     rank_paths(

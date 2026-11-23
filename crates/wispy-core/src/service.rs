@@ -717,6 +717,21 @@ impl PrService {
         Ok(crate::indent::indent_unit(&String::from_utf8_lossy(&content)))
     }
 
+    /// Every file on the head of stack PR `index` (for the file search). Reads only trees, so
+    /// nothing is downloaded.
+    pub fn head_files(&self, snapshot: &StackSnapshot, index: usize) -> Result<Vec<String>> {
+        let git = self.git(snapshot)?;
+        let out = git.run(&["ls-tree", "-r", "-z", &snapshot.heads[index]])?;
+        Ok(out
+            .split(|&b| b == 0)
+            .filter_map(|entry| {
+                // `<mode> <type> <oid>\t<path>`; submodules are commits, not files.
+                let (meta, path) = std::str::from_utf8(entry).ok()?.split_once('\t')?;
+                meta.split(' ').nth(1).filter(|kind| *kind == "blob").map(|_| path.to_string())
+            })
+            .collect())
+    }
+
     /// Which of `paths` are files on the head of stack PR `index`. Reads only trees, so nothing
     /// is downloaded; globs and directories aren't files.
     pub fn existing_files(&self, snapshot: &StackSnapshot, index: usize, paths: &[String]) -> Result<Vec<String>> {
