@@ -290,6 +290,8 @@ fn search_nodes(fixture: &Fixture, state: &State, numbers: &[u64]) -> Vec<Value>
                 "viewerLatestReview": state.latest_review.get(&pr.number).cloned().unwrap_or(Value::Null),
                 "bodyHTML": body_html(&description(pr.number)),
                 "autoMergeRequest": if state.auto_merge(pr.number) { json!({ "enabledAt": "2026-09-30T10:00:00Z" }) } else { Value::Null },
+                // A made-up size: GitHub's count, which the app shows as it is.
+                "additions": 120 * pr.number + 7, "deletions": 30 * pr.number + 2, "changedFiles": 10 + pr.number,
             })
         })
         .collect()

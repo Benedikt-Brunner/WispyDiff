@@ -254,9 +254,11 @@ impl DiffViewer {
                 });
             })
             .on_mouse_up(gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back), move |_, window, cx| {
+                cx.stop_propagation();
                 let _ = back.update(cx, |this, cx| this.go_history(true, window, cx));
             })
             .on_mouse_up(gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Forward), move |_, window, cx| {
+                cx.stop_propagation();
                 let _ = forward.update(cx, |this, cx| this.go_history(false, window, cx));
             })
             .child(body)

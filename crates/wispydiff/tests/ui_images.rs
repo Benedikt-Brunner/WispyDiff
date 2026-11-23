@@ -52,6 +52,8 @@ fn describe(ui: &Ui, cx: &mut TestAppContext) {
         body_html: format!(r#"<p><a target="_blank" rel="noopener noreferrer" href="{GIF}"><img src="{GIF}" alt="Walkthrough" style="max-width: 100%;"></a></p>"#),
         color: None,
         auto_merge: false,
+        branches: String::new(),
+        stats: None,
     };
     cx.update_window(ui.window, |_, window, cx| ui.app.update(cx, |app, cx| app.show_description(vec![pr], 0, window, cx))).unwrap();
     ui.frame(cx);
@@ -180,7 +182,7 @@ async fn every_image_opens_wherever_it_is(cx: &mut TestAppContext) {
         "<markdown-accessiblity-table><table><thead><tr><th>Before</th><th>After</th></tr></thead><tbody><tr><td>{}</td><td>{}</td></tr><tr><td>text</td><td>{}</td></tr></tbody></table></markdown-accessiblity-table><p>{}</p>",
         img("c"), img("d"), img("e"), img("a")
     );
-    let pr = DescribedPr { label: "wispy/fixture#1".into(), title: "Images".into(), author: "octocat".into(), url: String::new(), body_html: body, color: None, auto_merge: false };
+    let pr = DescribedPr { label: "wispy/fixture#1".into(), title: "Images".into(), author: "octocat".into(), url: String::new(), body_html: body, color: None, auto_merge: false, branches: String::new(), stats: None };
     let open = |ui: &Ui, cx: &mut TestAppContext| {
         cx.update_window(ui.window, |_, window, cx| ui.app.update(cx, |app, cx| app.show_description(vec![pr.clone()], 0, window, cx))).unwrap();
         for _ in 0..5 {

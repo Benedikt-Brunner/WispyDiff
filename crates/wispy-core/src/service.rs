@@ -504,6 +504,12 @@ impl PrService {
         self.github.search_prs(text, repos).await
     }
 
+    /// One PR's metadata by number (open or not), e.g. to name a number typed in the palette.
+    pub async fn lookup_pr(&self, repo: &str, number: u64) -> Result<crate::github::PullRequest> {
+        let reference = PrRef { owner: owner_of(repo).into(), repo: name_of(repo).into(), number };
+        self.github.pull_request(&reference).await
+    }
+
     pub async fn refresh_inbox(&self) -> Result<Vec<InboxGroup>> {
         let groups = group(self.github.inbox().await?);
         self.cache.put_app_value(INBOX_KEY, &serde_json::to_value(&groups).map_err(crate::Error::codec)?)?;

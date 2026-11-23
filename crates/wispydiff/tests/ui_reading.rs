@@ -1305,9 +1305,9 @@ async fn file_tree_folds_and_navigation_reopens_directories(cx: &mut TestAppCont
     t.finish(cx).await;
 }
 
-// keys.e2e: "filters files by extension, remembered per PR".
+// keys.e2e: "filters files by extension, remembered per repo (across its PRs)".
 #[gpui_kit::test]
-async fn file_filter_persists_per_pr_hidden_search_and_show_all(cx: &mut TestAppContext) {
+async fn file_filter_persists_per_repo_hidden_search_and_show_all(cx: &mut TestAppContext) {
     let t = Reading::new(cx);
     t.open(cx, 3).await;
     let (extensions, hidden_path, hidden_ext) = t.read(cx, |d, _| {
@@ -1353,9 +1353,19 @@ async fn file_filter_persists_per_pr_hidden_search_and_show_all(cx: &mut TestApp
         assert_eq!(d.file_rows.len(), paths.len());
         paths
     });
+    // Another PR of the repo leaves out the same files.
     t.keys(cx, "tab");
     t.range(cx, 3, 3).await;
-    assert!(t.read(cx, |d, _| d.filter().exts.is_empty()));
+    t.read(cx, |d, _| {
+        assert_eq!(d.filter().exts, [hidden_ext.as_str()]);
+        assert!(d
+            .view
+            .summary
+            .files
+            .iter()
+            .enumerate()
+            .all(|(i, f)| d.filtered()[i] == (extension_of(&f.path) == hidden_ext)));
+    });
     t.keys(cx, "shift-tab");
     t.range(cx, 2, 2).await;
     t.read(cx, |d, _| {

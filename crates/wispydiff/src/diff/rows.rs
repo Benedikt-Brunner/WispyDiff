@@ -655,25 +655,28 @@ impl DiffViewer {
         } else {
             vec![(text.clone(), runs, 0)]
         };
-        let shift = if wrap || mode == Mode::Split && false { px(0.) } else { self.scroll_x };
-        let lines = lines.into_iter().map(|(t, r, base)| {
-            let styled = StyledText::new(t).with_runs(r);
-            let layout = styled.layout().clone();
-            let ctx = ctx.clone();
-            let (down_ctx, move_ctx, up_ctx) = (ctx.clone(), ctx.clone(), ctx);
-            let (down_layout, move_layout, up_layout) = (layout.clone(), layout.clone(), layout);
-            div()
-                .h(u(ROW))
-                .whitespace_nowrap()
-                .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, window, cx| code_down(&down_ctx, &down_layout, base, event, window, cx))
-                .on_mouse_move(move |event: &MouseMoveEvent, window, cx| code_move(&move_ctx, &move_layout, base, event, window, cx))
-                .on_mouse_up(MouseButton::Left, move |event: &MouseUpEvent, window, cx| code_up(&up_ctx, &up_layout, base, event, window, cx))
-                .child(styled)
-        });
+        let shift = if wrap { px(0.) } else { self.scroll_x };
+        let mut layouts: Vec<(TextLayout, usize)> = Vec::with_capacity(lines.len());
+        let lines: Vec<_> = lines
+            .into_iter()
+            .map(|(t, r, base)| {
+                let styled = StyledText::new(t).with_runs(r);
+                layouts.push((styled.layout().clone(), base));
+                div().h(u(ROW)).whitespace_nowrap().child(styled)
+            })
+            .collect();
+        // The mouse is handled on the whole visible cell rather than on each line: shifted
+        // sideways, a line's own box no longer covers the text scrolled into view.
+        let lines_at = Rc::new(LinesAt { layouts, shift, pad: u_px(8., cx) });
+        let (down_ctx, move_ctx, up_ctx) = (ctx.clone(), ctx.clone(), ctx);
+        let (down_at, move_at) = (lines_at.clone(), lines_at);
         div()
             .flex_1()
             .min_w(px(0.))
             .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, window, cx| code_down(&down_ctx, &down_at, event, window, cx))
+            .on_mouse_move(move |event: &MouseMoveEvent, window, cx| code_move(&move_ctx, &move_at, event, window, cx))
+            .on_mouse_up(MouseButton::Left, move |event: &MouseUpEvent, window, cx| code_up(&up_ctx, event, window, cx))
             .child(div().relative().left(-shift).pl(u(8.)).pr(u(8.)).children(lines))
             .into_any_element()
     }
@@ -703,6 +706,24 @@ impl DiffViewer {
             .into_any_element()
     }
 
+    /// The code of a row (one side of a side-by-side row) as the file has it, tabs included;
+    /// none for rows without code (headers, notices, filler).
+    pub fn row_code(&mut self, file: usize, mode: Mode, side: SelSide, offset: u32, cx: &mut Context<Self>) -> Option<String> {
+        match mode {
+            Mode::Unified => match self.unified_at(file, offset) {
+                UnifiedRow::Row(r) if !matches!(r.k, row_kind::HUNK | row_kind::NOTICE | row_kind::FILE) => Some(seg_text(&r.s)),
+                UnifiedRow::Line { segs, .. } => Some(seg_text(&segs)),
+                _ => None,
+            },
+            _ => {
+                let rows = self.split_rows(file, cx)?;
+                let r = rows.get((offset as usize).wrapping_sub(1))?;
+                let (kind, segs) = if side == SelSide::Old { (r.ok, &r.os) } else { (r.nk, &r.ns) };
+                (kind != FILLER).then(|| seg_text(segs))
+            }
+        }
+    }
+
     /// Finishes a text selection: what's selected, with the files' own tabs.
     pub fn finish_selection(&mut self, cx: &mut Context<Self>) {
         let Some(sel) = self.text_selection.clone() else { return };
@@ -714,22 +735,7 @@ impl DiffViewer {
         let (a, b) = sel.ordered();
         let mut lines = Vec::new();
         for offset in a.offset..=b.offset {
-            let original = match sel.mode {
-                Mode::Unified => match self.unified_at(sel.file, offset) {
-                    UnifiedRow::Row(r) if !matches!(r.k, row_kind::HUNK | row_kind::NOTICE | row_kind::FILE) => seg_text(&r.s),
-                    UnifiedRow::Line { segs, .. } => seg_text(&segs),
-                    _ => continue,
-                },
-                _ => {
-                    let Some(rows) = self.split_rows(sel.file, cx) else { continue };
-                    let Some(r) = rows.get((offset as usize).wrapping_sub(1)) else { continue };
-                    let (kind, segs) = if sel.side == SelSide::Old { (r.ok, &r.os) } else { (r.nk, &r.ns) };
-                    if kind == FILLER {
-                        continue;
-                    }
-                    seg_text(segs)
-                }
-            };
+            let Some(original) = self.row_code(sel.file, sel.mode, sel.side, offset, cx) else { continue };
             let start = if offset == a.offset { original_byte(&original, a.byte) } else { 0 };
             let end = if offset == b.offset { original_byte(&original, b.byte) } else { original.len() };
             lines.push(original[start.min(end)..end].to_string());
@@ -751,9 +757,32 @@ struct CodeContext {
     text: SharedString,
 }
 
-fn byte_at(layout: &TextLayout, base: usize, position: gpui_kit::Point<Pixels>) -> usize {
-    base + match layout.index_for_position(position) {
-        Ok(i) | Err(i) => i,
+/// A code cell's laid-out lines (one, or several when wrapped), to find the byte under the mouse.
+struct LinesAt {
+    /// Each line's layout and the byte of the row's text it starts at.
+    layouts: Vec<(TextLayout, usize)>,
+    /// How far the code is scrolled sideways, and the cell's left padding.
+    shift: Pixels,
+    pad: Pixels,
+}
+
+impl LinesAt {
+    /// The byte under `position`: on the line at its height (the first line above them, the last
+    /// below), and before the first / after the last character beside the text.
+    fn byte_at(&self, position: gpui_kit::Point<Pixels>) -> usize {
+        // The last line starting above it (a line's row is taller than its text).
+        let line = self.layouts.iter().take_while(|(layout, _)| layout.bounds().top() <= position.y).count().saturating_sub(1);
+        let Some((layout, base)) = self.layouts.get(line) else { return 0 };
+        let bounds = layout.bounds();
+        let at = gpui_kit::point(position.x, bounds.top() + bounds.size.height / 2.);
+        base + match layout.index_for_position(at) {
+            Ok(i) | Err(i) => i,
+        }
+    }
+
+    /// The cell's left edge in the window (where the code starts when not scrolled sideways).
+    fn cell_left(&self) -> Option<Pixels> {
+        self.layouts.first().map(|(layout, _)| layout.bounds().left() + self.shift - self.pad)
     }
 }
 
@@ -767,8 +796,8 @@ fn word_at(text: &str, at: usize) -> Option<String> {
     word.chars().next().filter(|c| c.is_ascii_alphabetic() || *c == '_').map(|_| word.to_string())
 }
 
-fn code_down(ctx: &CodeContext, layout: &TextLayout, base: usize, event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
-    let at = byte_at(layout, base, event.position);
+fn code_down(ctx: &CodeContext, lines: &LinesAt, event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
+    let at = lines.byte_at(event.position);
     if event.modifiers.secondary() {
         if let Some(word) = word_at(&ctx.text, at) {
             let _ = ctx.weak.update(cx, |this, cx| this.open_usages(&word, window, cx));
@@ -777,11 +806,17 @@ fn code_down(ctx: &CodeContext, layout: &TextLayout, base: usize, event: &MouseD
     }
     let point = SelPoint { offset: ctx.offset, byte: at };
     let (file, mode, side) = (ctx.file, ctx.mode, ctx.side);
-    // A double click selects the word under it.
-    let word = if event.click_count == 2 { word_bounds(&ctx.text, at) } else { None };
+    // A double click selects the word under it, a triple click the whole line.
+    let word = match event.click_count {
+        2 => word_bounds(&ctx.text, at),
+        n if n >= 3 => Some((0, ctx.text.len())),
+        _ => None,
+    };
     let extend = event.modifiers.shift;
+    let cell_left = lines.cell_left();
     let _ = ctx.weak.update(cx, |this, cx| {
         this.selection = None;
+        this.drag_cell_left = cell_left;
         if let Some((a, b)) = word {
             let mut sel = TextSelection::start(file, mode, side, SelPoint { offset: point.offset, byte: a });
             sel.head = SelPoint { offset: point.offset, byte: b };
@@ -814,8 +849,8 @@ fn word_bounds(text: &str, at: usize) -> Option<(usize, usize)> {
     (start < end).then_some((start, end))
 }
 
-fn code_move(ctx: &CodeContext, layout: &TextLayout, base: usize, event: &MouseMoveEvent, _: &mut Window, cx: &mut App) {
-    let at = byte_at(layout, base, event.position);
+fn code_move(ctx: &CodeContext, lines: &LinesAt, event: &MouseMoveEvent, _: &mut Window, cx: &mut App) {
+    let at = lines.byte_at(event.position);
     let word = word_at(&ctx.text, at);
     let dragging = event.pressed_button == Some(MouseButton::Left);
     let (file, mode, side, offset) = (ctx.file, ctx.mode, ctx.side, ctx.offset);
@@ -835,7 +870,7 @@ fn code_move(ctx: &CodeContext, layout: &TextLayout, base: usize, event: &MouseM
     });
 }
 
-fn code_up(ctx: &CodeContext, _: &TextLayout, _: usize, _: &MouseUpEvent, _: &mut Window, cx: &mut App) {
+fn code_up(ctx: &CodeContext, _: &MouseUpEvent, _: &mut Window, cx: &mut App) {
     let _ = ctx.weak.update(cx, |this, cx| this.finish_selection(cx));
 }
 

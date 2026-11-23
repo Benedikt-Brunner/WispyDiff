@@ -222,3 +222,96 @@ async fn file_view_drag_copies_original_tabs_and_shift_click_extends(cx: &mut Te
     drop(diff);
     ui.close(cx).await;
 }
+
+/// A line far longer than the window: text scrolled into view sideways selects like any other
+/// (double click: a word, triple click: the whole line), and dragging past the code's right
+/// edge scrolls it, the selection following.
+#[gpui_kit::test]
+async fn long_lines_select_after_scrolling_sideways_and_drag_scrolls_them(cx: &mut TestAppContext) {
+    let f = Fixture::new();
+    const PATH: &str = "long.txt";
+    let line: String = (0..120).map(|i| format!("word{i:03}")).collect::<Vec<_>>().join(" ");
+    f.git(&["checkout", "--quiet", "solo"]);
+    f.write(PATH, &format!("{line}\n"));
+    f.git(&["add", PATH]);
+    f.git(&["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--quiet", "-m", "a long line"]);
+    f.git(&["update-ref", "refs/pull/5/head", "solo"]);
+    f.git(&["checkout", "--quiet", "main"]);
+
+    let ui = Ui::mount(cx, &f);
+    ui.open(cx, 5).await;
+    let diff = ui.diff(cx);
+    let (file, offset) = diff.read_with(cx, |d, _| {
+        let file = d.view.summary.files.iter().position(|f| f.path == PATH).expect("long file in the diff");
+        let offset = (0..d.segment(file).rows)
+            .find(|&o| matches!(d.unified_at(file, o), UnifiedRow::Row(r) if seg_text(&r.s) == line))
+            .expect("the long line's row");
+        (file, offset)
+    });
+    ui.reveal_row(cx, file, offset);
+    let cw = cx.update_window(ui.window, |_, w, cx| diff.update(cx, |d, cx| d.char_width(w, cx))).unwrap();
+    let viewport = diff.read_with(cx, |d, _| d.list.viewport_bounds());
+
+    // Scroll sideways with the wheel, far past where the row's own box used to end.
+    let mut v = VisualTestContext::from_window(ui.window, cx);
+    v.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: viewport.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(point(-(cw * 400.), px(0.))),
+        ..Default::default()
+    });
+    ui.frame(cx);
+    let scrolled = diff.read_with(cx, |d, _| d.scroll_x);
+    assert!(scrolled > cw * 300., "scrolled sideways: {scrolled:?}");
+    let shifted = (scrolled / cw).round() as usize;
+
+    // A double click on a word now in view: column 20 of the cell is that much further on.
+    let at = ui.code_position(cx, file, offset, 20.5);
+    for clicks in [2, 3] {
+        let mut v = VisualTestContext::from_window(ui.window, cx);
+        v.simulate_event(MouseDownEvent { position: at, button: MouseButton::Left, click_count: clicks, ..Default::default() });
+        v.simulate_event(MouseUpEvent { position: at, button: MouseButton::Left, click_count: clicks, ..Default::default() });
+        ui.frame(cx);
+        let selection = diff.read_with(cx, |d, _| d.text_selection.clone().expect("selected after scrolling sideways"));
+        if clicks == 2 {
+            let column = shifted + 20;
+            let start = line[..column].rfind(' ').map_or(0, |i| i + 1);
+            let end = line[column..].find(' ').map_or(line.len(), |i| column + i);
+            assert_eq!(selection.text, line[start..end], "the word under the pointer");
+        } else {
+            assert_eq!(selection.text, line, "a triple click selects the whole line");
+        }
+    }
+
+    // Back to the start, then drag from the line's start past the code's right edge.
+    let mut v = VisualTestContext::from_window(ui.window, cx);
+    v.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: viewport.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(point(cw * 1000., px(0.))),
+        ..Default::default()
+    });
+    ui.frame(cx);
+    assert_eq!(diff.read_with(cx, |d, _| d.scroll_x), px(0.));
+    let from = ui.code_position(cx, file, offset, 0.);
+    // Inside the edge zone at the right, where it scrolls slowly.
+    let past = point(viewport.right() - px(4.), from.y);
+    let mut v = VisualTestContext::from_window(ui.window, cx);
+    v.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    v.simulate_mouse_move(past, MouseButton::Left, Default::default());
+    ui.frame(cx);
+    let visible_columns = ((viewport.right() - from.x) / cw) as usize;
+    ui.wait(cx, "dragging past the right edge scrolls sideways", |cx| {
+        let d = diff.read(cx);
+        d.scroll_x > cw * 20. && d.text_selection.as_ref().is_some_and(|s| s.head.byte > visible_columns + 10)
+    })
+    .await;
+    let mut v = VisualTestContext::from_window(ui.window, cx);
+    v.simulate_mouse_up(past, MouseButton::Left, Default::default());
+    ui.frame(cx);
+    diff.read_with(cx, |d, _| {
+        let selection = d.text_selection.as_ref().unwrap();
+        assert!(!selection.active);
+        assert_eq!(selection.anchor.byte, 0);
+        assert!(line.starts_with(&selection.text) && selection.text.len() > visible_columns);
+    });
+    ui.close(cx).await;
+}

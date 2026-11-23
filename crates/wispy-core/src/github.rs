@@ -124,6 +124,7 @@ const SEARCH_QUERY: &str = "query($q: String!) {
     nodes {
       ... on PullRequest {
         number title url isDraft updatedAt headRefName baseRefName headRefOid bodyHTML
+        additions deletions changedFiles
         autoMergeRequest { enabledAt }
         author { login }
         repository { nameWithOwner }
@@ -295,6 +296,10 @@ impl GitHubClient {
                 my_review: parse_my_review(&node["viewerLatestReview"]),
                 body_html: text("bodyHTML"),
                 auto_merge: !node["autoMergeRequest"].is_null(),
+                stats: match (node["changedFiles"].as_u64(), node["additions"].as_u64(), node["deletions"].as_u64()) {
+                    (Some(files), Some(additions), Some(deletions)) => Some(crate::inbox::DiffStats { files, additions, deletions }),
+                    _ => None,
+                },
             });
         }
         Ok(prs)

@@ -32,6 +32,17 @@ pub struct InboxPr {
     /// Auto-merge is enabled: GitHub merges it once its checks pass.
     #[serde(default)]
     pub auto_merge: bool,
+    /// The PR's size as GitHub counts it (none in caches from before).
+    #[serde(default)]
+    pub stats: Option<DiffStats>,
+}
+
+/// How big a PR's diff is: changed files and lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffStats {
+    pub files: u64,
+    pub additions: u64,
+    pub deletions: u64,
 }
 
 /// A review the user submitted.
