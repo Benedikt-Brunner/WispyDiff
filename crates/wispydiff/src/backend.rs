@@ -1177,6 +1177,22 @@ impl Backend {
         async move { task.await.map_err(|e| e.to_string())? }
     }
 
+    /// Every file on a stack PR's head (for the file search).
+    pub fn head_files(
+        self: &Arc<Self>,
+        stack_id: String,
+        pr_index: usize,
+    ) -> impl Future<Output = Result<Vec<String>, String>> + Send + 'static {
+        let backend = self.clone();
+        let task = self.runtime().spawn(async move {
+            let (snapshot, service) = (backend.snapshot_of(&stack_id)?, backend.service()?);
+            backend
+                .blocking(move || service.head_files(&snapshot, pr_index))
+                .await
+        });
+        async move { task.await.map_err(|e| e.to_string())? }
+    }
+
     /// Which of `paths` are files on a stack PR's head (for file references in assistant answers).
     pub fn existing_files(
         self: &Arc<Self>,

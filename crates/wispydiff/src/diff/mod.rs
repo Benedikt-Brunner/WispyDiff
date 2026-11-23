@@ -2095,9 +2095,24 @@ impl DiffViewer {
         let filtered = self.filtered();
         let viewed: Vec<bool> = files.iter().map(|f| self.is_viewed(&f.content_key, cx)).collect();
         let search = cx.new(|cx| FileSearch::new(files, filtered, viewed, window, cx));
+        // The rest of the head's files join the search once listed.
+        let head_files = self.backend.head_files(self.stack_id.clone(), self.hi);
+        let weak = search.downgrade();
+        cx.spawn(async move |_, cx| match head_files.await {
+            Ok(head) => {
+                let _ = weak.update(cx, |search, cx| search.set_head_files(head, cx));
+            }
+            Err(err) => eprintln!("listing the head's files: {err}"),
+        })
+        .detach();
         cx.subscribe_in(&search, window, |this, _, event: &FileSearchEvent, window, cx| {
             this.file_search = None;
             window.focus(&this.focus, cx);
+            if let FileSearchEvent::Open(path) = event {
+                // A file outside the diff opens read-only, from its top.
+                this.remember(cx);
+                this.open_file_view(path.clone(), 0, 0, false, window, cx);
+            }
             if let FileSearchEvent::Pick(index) = event {
                 let index = *index;
                 // Files the filter hides open in the file view, like usages in them.
