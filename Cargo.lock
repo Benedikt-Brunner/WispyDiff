@@ -9048,6 +9048,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "html5ever",
+ "image",
  "indexmap",
  "markdown",
  "markup5ever_rcdom",

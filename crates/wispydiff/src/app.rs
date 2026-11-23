@@ -12,6 +12,7 @@ use gpui_kit::{
 };
 
 use crate::description::{DescribedPr, DescriptionView};
+use crate::image_viewer::{ImageViewer, ViewedImage, ViewerEvent};
 use crate::diff::DiffViewer;
 use crate::inbox::{Inbox, InboxEvent};
 use crate::overlays::{NewerChangesWarning, OverlayEvent, ShortcutsHelp, ThemePicker};
@@ -94,6 +95,16 @@ pub fn saved_zoom(cx: &App) -> f32 {
     settings::pref(cx, "zoom", &allowed, "1").parse().unwrap_or(1.0)
 }
 
+/// The window's app, for rich text that opens an image in the viewer.
+struct ViewerHost(gpui_kit::WeakEntity<WispyApp>);
+impl gpui_kit::Global for ViewerHost {}
+
+/// Shows an image clicked in rich text over the whole window (and whatever overlay is open).
+pub fn view_image(image: ViewedImage, window: &mut Window, cx: &mut App) {
+    let Some(app) = cx.try_global::<ViewerHost>().and_then(|host| host.0.upgrade()) else { return };
+    app.update(cx, |app, cx| app.show_image(image, window, cx));
+}
+
 enum Overlay {
     Theme(Entity<ThemePicker>),
     Shortcuts(Entity<ShortcutsHelp>),
@@ -109,6 +120,8 @@ pub struct WispyApp {
     diff_stack: Option<String>,
     palette: Option<Entity<CommandPalette>>,
     overlay: Option<Overlay>,
+    /// Over everything else (it opens from rich text in overlays too).
+    image_viewer: Option<Entity<ImageViewer>>,
     pub sheet: Option<Entity<SubmitSheet>>,
     toast: Option<(SharedString, Task<()>)>,
     menus: crate::menu::MenuSlot,
@@ -176,6 +189,7 @@ impl WispyApp {
             }),
         ];
         let focus = cx.focus_handle();
+        cx.set_global(ViewerHost(cx.entity().downgrade()));
         let app = WispyApp {
             session,
             inbox,
@@ -183,6 +197,7 @@ impl WispyApp {
             diff_stack: None,
             palette: None,
             overlay: None,
+            image_viewer: None,
             sheet: None,
             toast: None,
             menus: Default::default(),
@@ -280,6 +295,11 @@ impl WispyApp {
 
     pub fn palette_view(&self) -> Option<&Entity<CommandPalette>> {
         self.palette.as_ref()
+    }
+
+    /// The image viewer, while it is open.
+    pub fn image_viewer(&self) -> Option<&Entity<ImageViewer>> {
+        self.image_viewer.as_ref()
     }
 
     /// The description modal's view, while it is open.
@@ -388,6 +408,32 @@ impl WispyApp {
         cx.notify();
     }
 
+    pub fn show_image(&mut self, image: ViewedImage, window: &mut Window, cx: &mut Context<Self>) {
+        let opts = crate::ui::markdown_options(&self.session.read(cx).backend, cx);
+        let viewer = cx.new(|cx| ImageViewer::new(image, opts.on_open_url, window, cx));
+        cx.subscribe_in(&viewer, window, |this, _, event: &ViewerEvent, window, cx| match event {
+            ViewerEvent::Closed => this.close_image(window, cx),
+        })
+        .detach();
+        self.image_viewer = Some(viewer);
+        cx.notify();
+    }
+
+    /// Back to where the image was clicked: the overlay, the sheet or the content.
+    fn close_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.image_viewer = None;
+        if let Some(palette) = &self.palette {
+            palette.update(cx, |p, cx| p.focus_input(window, cx));
+        } else if let Some(sheet) = &self.sheet {
+            window.focus(&sheet.focus_handle(cx), cx);
+        } else if let Some(Overlay::Description(view)) = &self.overlay {
+            window.focus(&view.focus_handle(cx), cx);
+        } else {
+            self.focus_content(window, cx);
+        }
+        cx.notify();
+    }
+
     /// Opens the description modal for these PRs, scrolled to `prs[first]`.
     pub fn show_description(&mut self, prs: Vec<DescribedPr>, first: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.overlay.is_some() || self.sheet.is_some() || prs.is_empty() {
@@ -432,7 +478,7 @@ impl WispyApp {
     }
 
     fn blocked(&self) -> bool {
-        self.overlay.is_some()
+        self.overlay.is_some() || self.image_viewer.is_some()
     }
 
     fn go_inbox(&mut self, _: &GoInbox, window: &mut Window, cx: &mut Context<Self>) {
@@ -1113,6 +1159,7 @@ impl Render for WispyApp {
             .child(content)
             .child(wheel)
             .children(overlay)
+            .children(self.image_viewer.clone())
             .when_some(self.toast.as_ref().map(|t| t.0.clone()), |d, message| {
                 d.child(
                     div().absolute().bottom(u(20.)).left_0().right_0().flex().justify_center().child(
