@@ -233,6 +233,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(Vec<String>, String)>)> {
                 (vec![s("Space"), s("e")], s("Collapse / expand the stack")),
                 (vec![s("r")], s("Refresh")),
                 (vec![s("i")], s("The PR's description, with its stack's (or right-click it)")),
+                (vec![s("f")], s("Find PRs by number, title or branch (Esc: show all)")),
             ],
         ),
         (

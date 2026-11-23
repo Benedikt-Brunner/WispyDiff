@@ -306,6 +306,29 @@ async fn repository_file_view_escape_preserves_search_panel(cx: &mut TestAppCont
     ui.close(cx).await;
 }
 
+// The mouse's back button with no jump left to go back to returns to the inbox, from the diff
+// as from the title bar.
+#[gpui_kit::test]
+async fn mouse_back_with_nothing_behind_goes_to_the_inbox(cx: &mut TestAppContext) {
+    let f = Fixture::new();
+    let ui = Ui::mount(cx, &f);
+    for at in [point(px(700.), px(400.)), point(px(700.), px(15.))] {
+        ui.open(cx, 1).await;
+        ui.click_button(cx, at, MouseButton::Navigate(NavigationDirection::Back));
+        ui.wait(cx, "back to the inbox", |cx| ui.session.read(cx).home).await;
+    }
+    // A jump to go back to comes first.
+    ui.open(cx, 1).await;
+    click_last_unchanged(&ui, cx).await;
+    let at = point(px(700.), px(400.));
+    ui.click_button(cx, at, MouseButton::Navigate(NavigationDirection::Back));
+    ui.frame(cx);
+    assert!(!ui.session.read_with(cx, |s, _| s.home));
+    ui.click_button(cx, at, MouseButton::Navigate(NavigationDirection::Back));
+    ui.wait(cx, "then the inbox", |cx| ui.session.read(cx).home).await;
+    ui.close(cx).await;
+}
+
 // e2e: Back closes the outside-file view; Forward reopens its highlighted line.
 #[gpui_kit::test]
 async fn repository_file_view_mouse_history(cx: &mut TestAppContext) {

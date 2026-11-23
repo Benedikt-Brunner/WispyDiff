@@ -11,6 +11,8 @@ use gpui_kit::{
     KeyBinding, Render, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, Window,
 };
 
+use wispy_core::inbox::DiffStats;
+
 use crate::description::{DescribedPr, DescriptionView};
 use crate::image_viewer::{ImageViewer, ViewedImage, ViewerEvent};
 use crate::diff::DiffViewer;
@@ -171,6 +173,8 @@ impl WispyApp {
                                 body_html: pr.body_html.clone(),
                                 color: colored.then_some(i as u8),
                                 auto_merge: pr.auto_merge,
+                                branches: format!("{} ← {}", pr.base_ref, pr.head_ref),
+                                stats: pr.stats,
                             })
                             .collect();
                         this.show_description(prs, first, window, cx);
@@ -368,7 +372,8 @@ impl WispyApp {
             known.extend(stack.prs.iter().map(|pr| crate::palette::Suggestion { label: pr_label(pr), title: pr.title.clone(), source: "stack" }));
         }
         let backend = s.backend.clone();
-        let palette = cx.new(|cx| CommandPalette::new(commands, recents, window, cx).with_suggestions(known, Some(backend)));
+        let current_repo = s.repo();
+        let palette = cx.new(|cx| CommandPalette::new(commands, recents, window, cx).with_suggestions(known, Some(backend)).with_current_repo(current_repo));
         cx.subscribe_in(&palette, window, |this, _, event: &PaletteEvent, window, cx| match event {
             PaletteEvent::Open(input) => this.session.update(cx, |s, cx| s.open(input.clone(), cx)),
             PaletteEvent::Close => {
@@ -436,12 +441,17 @@ impl WispyApp {
 
     /// Opens the description modal for these PRs, scrolled to `prs[first]`.
     pub fn show_description(&mut self, prs: Vec<DescribedPr>, first: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_description(prs, first, None, window, cx);
+    }
+
+    /// The description modal, with the size of the diff in view in its heading when one is.
+    fn open_description(&mut self, prs: Vec<DescribedPr>, first: usize, in_view: Option<(String, DiffStats)>, window: &mut Window, cx: &mut Context<Self>) {
         if self.overlay.is_some() || self.sheet.is_some() || prs.is_empty() {
             return;
         }
         self.palette = None;
         let opts = crate::ui::markdown_options(&self.session.read(cx).backend, cx);
-        let view = cx.new(|cx| DescriptionView::new(prs, first, opts, window, cx));
+        let view = cx.new(|cx| DescriptionView::new(prs, first, opts, window, cx).with_in_view(in_view));
         self.subscribe_overlay(&view, window, cx);
         self.overlay = Some(Overlay::Description(view));
         cx.notify();
@@ -449,8 +459,13 @@ impl WispyApp {
 
     /// The open stack's PRs as the description modal shows them.
     fn stack_descriptions(&self, cx: &App) -> Vec<DescribedPr> {
-        let Some(stack) = &self.session.read(cx).stack else { return Vec::new() };
+        let s = self.session.read(cx);
+        let Some(stack) = &s.stack else { return Vec::new() };
         let colored = stack.prs.len() > 1;
+        // GitHub's size of a PR, where the inbox has it at the same head.
+        let inbox_stats = |pr: &wispy_core::github::PullRequest| {
+            s.inbox.iter().flat_map(|e| &e.group.prs).find(|i| i.repo == pr.base_repo && i.number == pr.number && i.head_sha == pr.head_sha).and_then(|i| i.stats)
+        };
         (0..stack.prs.len())
             .map(|i| {
                 let pr = &stack.prs[i];
@@ -462,9 +477,21 @@ impl WispyApp {
                     body_html: pr.body_html.clone(),
                     color: colored.then_some(i as u8),
                     auto_merge: pr.auto_merge,
+                    branches: format!("{} ← {}", pr.base_ref, pr.head_ref),
+                    stats: inbox_stats(pr),
                 }
             })
             .collect()
+    }
+
+    /// The diff in view ("#12", "#12–#14") and its size, as the app computed it.
+    fn in_view_stats(&self, cx: &App) -> Option<(String, DiffStats)> {
+        let s = self.session.read(cx);
+        let (stack, shown) = (s.stack.as_ref()?, s.shown.as_ref()?);
+        let (lo, hi) = (shown.range.lo, shown.range.hi);
+        let what = if lo == hi { format!("#{}", stack.prs[lo].number) } else { format!("#{}–#{}", stack.prs[lo].number, stack.prs[hi].number) };
+        let summary = &shown.view.summary;
+        Some((what, DiffStats { files: summary.files.len() as u64, additions: summary.additions as u64, deletions: summary.deletions as u64 }))
     }
 
     /// `i`: the stack's descriptions, scrolled to the PR in view (a range: its lowest).
@@ -474,7 +501,8 @@ impl WispyApp {
         }
         let Some(lo) = self.session.read(cx).shown.as_ref().map(|r| r.range.lo) else { return };
         let prs = self.stack_descriptions(cx);
-        self.show_description(prs, lo, window, cx);
+        let in_view = self.in_view_stats(cx);
+        self.open_description(prs, lo, in_view, window, cx);
     }
 
     fn blocked(&self) -> bool {
@@ -703,13 +731,9 @@ impl WispyApp {
         let (stack, shown) = (s.stack.as_ref().unwrap(), s.shown.as_ref().unwrap());
         let (lo, hi) = (shown.range.lo, shown.range.hi);
         let (bottom, top) = (&stack.prs[lo], &stack.prs[hi]);
-        let summary = &shown.view.summary;
         let title = if lo == hi { top.title.clone() } else { format!("#{}–#{} · {} PRs", bottom.number, top.number, hi - lo + 1) };
-        let meta = if lo == hi {
-            format!("{} · {} · {} ← {} · {} files ·", pr_label(top), top.author, bottom.base_ref, top.head_ref, summary.files.len())
-        } else {
-            format!("{} · {} ← {} · {} files ·", top.base_repo, bottom.base_ref, top.head_ref, summary.files.len())
-        };
+        // Kept short: the author, branches and diff size are in the description modal (`i`).
+        let meta = if lo == hi { pr_label(top) } else { top.base_repo.clone() };
         // Auto-merge on the shown PR, or on some of the shown range.
         let auto: Vec<u64> = stack.prs[lo..=hi].iter().filter(|pr| pr.auto_merge).map(|pr| pr.number).collect();
         let auto_badge = (!auto.is_empty()).then(|| {
@@ -763,8 +787,6 @@ impl WispyApp {
                     .text_color(p.fg_muted)
                     .whitespace_nowrap()
                     .child(div().flex_shrink(1.).min_w(px(0.)).overflow_hidden().text_ellipsis().child(meta))
-                    .child(div().flex_none().text_color(p.add_fg).child(format!("+{}", summary.additions)))
-                    .child(div().flex_none().text_color(p.del_fg).child(format!("−{}", summary.deletions)))
                     .when(shown.ignore_whitespace, |d| d.child(div().text_color(p.pr(1)).child("· whitespace hidden")))
                     .when_some(since, |d, since| {
                         let label = checkpoints
@@ -908,7 +930,8 @@ impl WispyApp {
                 .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     if event.click_count() >= 2 {
                         let prs = this.stack_descriptions(cx);
-                        this.show_description(prs, i, window, cx);
+                        let in_view = this.in_view_stats(cx);
+                        this.open_description(prs, i, in_view, window, cx);
                         return;
                     }
                     let extend = event.modifiers().shift;
@@ -1117,6 +1140,16 @@ impl Render for WispyApp {
                 cx.listener(|this, _, window, cx| {
                     if this.focus.is_focused(window) && this.palette.is_none() && this.overlay.is_none() && this.sheet.is_none() {
                         this.focus_content(window, cx);
+                    }
+                }),
+            )
+            // The mouse's back button over the title bar or stack bar returns to the inbox (the
+            // diff handles it itself: back through its jumps first).
+            .on_mouse_up(
+                gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| {
+                    if this.session.read(cx).showing_diff() && this.palette.is_none() && this.sheet.is_none() {
+                        this.go_inbox(&GoInbox, window, cx);
                     }
                 }),
             )

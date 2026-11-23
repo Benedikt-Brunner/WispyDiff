@@ -110,6 +110,29 @@ pub fn original_byte(original: &str, expanded: usize) -> usize {
     original.len()
 }
 
+/// The byte of `original`'s tab-expanded text at display column `column` (its end past the last
+/// character); a wide character's second column counts as the character's start.
+pub fn expanded_byte_at_column(original: &str, column: u32) -> usize {
+    let mut at = 0;
+    let mut col = 0u32;
+    for ch in original.chars() {
+        let (width, bytes) = match ch {
+            '\t' => {
+                let to = TAB_WIDTH - col % TAB_WIDTH;
+                (to, to as usize)
+            }
+            _ => (if is_wide(ch) { 2 } else { 1 }, ch.len_utf8()),
+        };
+        if col + width > column {
+            // Within a tab: its spaces are bytes of their own.
+            return if ch == '\t' { at + (column - col) as usize } else { at };
+        }
+        col += width;
+        at += bytes;
+    }
+    at
+}
+
 /// One run of plain text in `color`.
 pub fn plain(text: impl Into<SharedString>, font: &Font, color: Hsla) -> (SharedString, Vec<TextRun>) {
     let text = text.into();
@@ -189,6 +212,19 @@ mod tests {
         assert_eq!(original_byte("a\tb", 8), 2);
         assert_eq!(original_byte("a\tb", 1), 1);
         assert_eq!(original_byte("a\tb", 99), 3);
+    }
+
+    #[test]
+    fn finds_the_expanded_byte_of_a_column() {
+        // "a\tb" shows as "a       b".
+        assert_eq!(expanded_byte_at_column("a\tb", 0), 0);
+        assert_eq!(expanded_byte_at_column("a\tb", 3), 3);
+        assert_eq!(expanded_byte_at_column("a\tb", 8), 8);
+        assert_eq!(expanded_byte_at_column("a\tb", 50), 9);
+        // "é" is two bytes, "中" two columns and three bytes.
+        assert_eq!(expanded_byte_at_column("é中x", 1), 2);
+        assert_eq!(expanded_byte_at_column("é中x", 2), 2);
+        assert_eq!(expanded_byte_at_column("é中x", 3), 5);
     }
 
     #[test]

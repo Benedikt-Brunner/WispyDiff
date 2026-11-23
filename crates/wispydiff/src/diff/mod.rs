@@ -181,7 +181,7 @@ fn same_place(a: &HistoryPlace, b: &HistoryPlace) -> bool {
     }
 }
 
-/// Files left out of the diff by extension (like GitHub's file filter), remembered per PR / range.
+/// Files left out of the diff by extension (like GitHub's file filter), remembered per repo.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileFilter {
     /// Hidden extensions ("" = files without one).
@@ -395,8 +395,12 @@ pub struct DiffViewer {
     pub pointer: Option<Point<Pixels>>,
     /// The current file as of this frame (headers drawn in the list mark it).
     pub frame_current: Option<usize>,
-    /// Scrolls while a text selection is dragged past the list's top or bottom edge.
+    /// Scrolls while a text selection is dragged past the list's edges (or the code's, sideways).
     drag_scroll: Option<gpui_kit::Task<()>>,
+    /// The left edge (in the window) of the code cell a text selection started in.
+    pub drag_cell_left: Option<Pixels>,
+    /// How far the code can scroll sideways (as of the last drag-scroll tick).
+    drag_max_x: Pixels,
     pub wrap_columns: (usize, usize),
     pub pending_mark: Option<&'static str>,
     pub file_list_width: f32,
@@ -490,6 +494,8 @@ impl DiffViewer {
             pointer: None,
             frame_current: None,
             drag_scroll: None,
+            drag_cell_left: None,
+            drag_max_x: px(0.),
             wrap_columns: (0, 0),
             pending_mark: Some("view"),
             file_list_width: width("files", 280., cx),
@@ -607,13 +613,10 @@ impl DiffViewer {
 
     // ---------- modes ----------
 
+    /// The filter is the repo's: hiding `.unit.php` in one PR hides it in every PR of the repo.
+    /// (Saved filters keyed `owner/repo#N` are per-PR ones from before; they're left alone.)
     pub fn filter_key(&self) -> String {
-        let (lo, hi) = (&self.prs[self.lo], &self.prs[self.hi]);
-        if self.lo == self.hi {
-            pr_key(lo)
-        } else {
-            format!("{}..#{}", pr_key(lo), hi.number)
-        }
+        self.prs[self.lo].base_repo.clone()
     }
 
     pub fn filter(&self) -> FileFilter {
@@ -1862,8 +1865,18 @@ impl DiffViewer {
         })
     }
 
+    /// Back / forward through the jumps; back with nothing left to go back to returns to the
+    /// inbox, like a browser's back button leaving the page.
     fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(now) = self.here(cx) else { return };
+        let place = self.here(cx).and_then(|now| self.history_step(now, back));
+        match place {
+            Some(place) => self.restore_place(place, window, cx),
+            None if back => window.dispatch_action(Box::new(crate::app::GoInbox), cx),
+            None => {}
+        }
+    }
+
+    fn history_step(&mut self, now: HistoryPlace, back: bool) -> Option<HistoryPlace> {
         // Whether a remembered place can still be shown (a diff file the filter hides now can't).
         let shown: HashSet<String> = self
             .view
@@ -1878,9 +1891,10 @@ impl DiffViewer {
             HistoryPlace::File { .. } => true,
             HistoryPlace::Diff { place_path, .. } => shown.contains(place_path),
         };
-        let place = if back { self.history.go_back(now, usable) } else { self.history.go_forward(now, usable) };
-        if let Some(place) = place {
-            self.restore_place(place, window, cx);
+        if back {
+            self.history.go_back(now, usable)
+        } else {
+            self.history.go_forward(now, usable)
         }
     }
 
@@ -2655,8 +2669,20 @@ impl Render for DiffViewer {
             .on_any_mouse_down(cx.listener(|this, _, _, _| this.reset_shift()))
             // The mouse's back / forward buttons, like in a browser.
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
-            .on_mouse_up(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, window, cx| this.navigate(true, window, cx)))
-            .on_mouse_up(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, window, cx| this.navigate(false, window, cx)))
+            .on_mouse_up(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.navigate(true, window, cx)
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.navigate(false, window, cx)
+                }),
+            )
             .size_full()
             .flex()
             .bg(p.bg)
@@ -2750,12 +2776,16 @@ impl DiffViewer {
         if dx == px(0.) || self.s(cx).wrap {
             return;
         }
+        self.scroll_x = (self.scroll_x - dx).clamp(px(0.), self.max_scroll_x(window, cx));
+        cx.notify();
+    }
+
+    /// How far the code can scroll sideways: until the longest line's end is in view.
+    fn max_scroll_x(&mut self, window: &mut Window, cx: &App) -> Pixels {
         let char_width = self.char_width(window, cx);
         let content = char_width * (self.view.summary.max_line_chars + 4) as f32;
         let visible = self.list.viewport_bounds().size.width * 0.5;
-        let max = (content - visible).max(px(0.));
-        self.scroll_x = (self.scroll_x - dx).clamp(px(0.), max);
-        cx.notify();
+        (content - visible).max(px(0.))
     }
 
     /// Window-wide mouse moves and releases while a selection is dragged (they may leave the list).
@@ -2765,9 +2795,9 @@ impl DiffViewer {
             |_, _, _| {},
             move |_, _, window, _| {
                 let (moved, up) = (this.clone(), this.clone());
-                window.on_mouse_event(move |event: &gpui_kit::MouseMoveEvent, phase, _, cx| {
+                window.on_mouse_event(move |event: &gpui_kit::MouseMoveEvent, phase, window, cx| {
                     if phase == gpui_kit::DispatchPhase::Bubble {
-                        let _ = moved.update(cx, |this, cx| this.on_window_mouse_move(event, cx));
+                        let _ = moved.update(cx, |this, cx| this.on_window_mouse_move(event, window, cx));
                     }
                 });
                 window.on_mouse_event(move |event: &gpui_kit::MouseUpEvent, phase, _, cx| {
@@ -2787,16 +2817,17 @@ impl DiffViewer {
     }
 
     /// A mouse move anywhere in the window (a drag leaves the list): a selection being dragged
-    /// near or past the list's top or bottom scrolls it.
-    fn on_window_mouse_move(&mut self, event: &gpui_kit::MouseMoveEvent, cx: &mut Context<Self>) {
+    /// near or past the list's top or bottom, or the code's left or right edge, scrolls it.
+    fn on_window_mouse_move(&mut self, event: &gpui_kit::MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.pressed_button != Some(gpui_kit::MouseButton::Left) || !self.text_selection.as_ref().is_some_and(|s| s.active) {
             return;
         }
         self.pointer = Some(event.position);
-        if self.drag_scroll.is_none() && self.drag_scroll_speed(cx) != px(0.) {
-            self.drag_scroll = Some(cx.spawn(async move |this, cx| loop {
+        self.drag_max_x = self.max_scroll_x(window, cx);
+        if self.drag_scroll.is_none() && self.drag_scroll_speed(cx) != Point::default() {
+            self.drag_scroll = Some(cx.spawn_in(window, async move |this, cx| loop {
                 cx.background_executor().timer(Duration::from_millis(16)).await;
-                let going = this.update(cx, |this, cx| this.drag_scroll_step(cx)).unwrap_or(false);
+                let going = this.update_in(cx, |this, window, cx| this.drag_scroll_step(window, cx)).unwrap_or(false);
                 if !going {
                     let _ = this.update(cx, |this, _| this.drag_scroll = None);
                     break;
@@ -2805,46 +2836,91 @@ impl DiffViewer {
         }
     }
 
-    /// Pixels per tick: faster the further the pointer is past the edge.
-    fn drag_scroll_speed(&self, cx: &App) -> Pixels {
-        let Some(pointer) = self.pointer else { return px(0.) };
+    /// The code cell the selection is in, left and right edge in the window.
+    fn drag_cell(&self) -> Option<(Pixels, Pixels)> {
+        let sel = self.text_selection.as_ref()?;
+        let left = self.drag_cell_left?;
         let bounds = self.list.viewport_bounds();
-        let edge = u_px(20., cx);
-        let (top, bottom) = (bounds.top() + edge, bounds.bottom() - edge);
-        let over = if pointer.y < top {
-            pointer.y - top
-        } else if pointer.y > bottom {
-            pointer.y - bottom
-        } else {
-            return px(0.);
-        };
-        (over * 0.5).clamp(-u_px(60., cx), u_px(60., cx))
+        let right = if sel.side == selection::Side::Old { bounds.left() + bounds.size.width * 0.5 } else { bounds.right() };
+        (right > left).then_some((left, right))
     }
 
-    fn drag_scroll_step(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Pixels per tick, down / right positive: faster the further the pointer is past the edge.
+    fn drag_scroll_speed(&self, cx: &App) -> Point<Pixels> {
+        let Some(pointer) = self.pointer else { return Point::default() };
+        let edge = u_px(20., cx);
+        let past = |at: Pixels, low: Pixels, high: Pixels| {
+            let over = if at < low + edge {
+                at - (low + edge)
+            } else if at > high - edge {
+                at - (high - edge)
+            } else {
+                return px(0.);
+            };
+            (over * 0.5).clamp(-u_px(60., cx), u_px(60., cx))
+        };
+        let bounds = self.list.viewport_bounds();
+        let y = past(pointer.y, bounds.top(), bounds.bottom());
+        // Sideways only when there's somewhere to go (not wrapped, not already at that end).
+        let x = match self.drag_cell() {
+            Some((left, right)) if !self.s(cx).wrap => {
+                let x = past(pointer.x, left, right);
+                if (x < px(0.) && self.scroll_x <= px(0.)) || (x > px(0.) && self.scroll_x >= self.drag_max_x) {
+                    px(0.)
+                } else {
+                    x
+                }
+            }
+            _ => px(0.),
+        };
+        gpui_kit::point(x, y)
+    }
+
+    fn drag_scroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.text_selection.as_ref().is_some_and(|s| s.active) {
             return false;
         }
+        self.drag_max_x = self.max_scroll_x(window, cx);
         let speed = self.drag_scroll_speed(cx);
-        if speed == px(0.) {
+        if speed == Point::default() {
             return false;
         }
-        self.glide = None;
-        self.pinned = None;
-        self.list.scroll_by(speed);
-        // The selection follows to the row at the edge it scrolls towards.
-        let top = self.list.logical_scroll_top().item_ix;
-        let item = if speed > px(0.) {
-            let bottom = self.list.viewport_bounds().bottom();
-            (top..self.list.item_count()).take_while(|ix| self.list.bounds_for_item(*ix).is_some_and(|b| b.top() < bottom)).last().unwrap_or(top)
-        } else {
-            top
-        };
-        let row = self.built.row_of_item(item);
-        if let (Some(segment), Some(sel)) = (self.built.segment_at(row).cloned(), self.text_selection.as_mut()) {
-            if segment.file == sel.file && segment.mode == sel.mode && row > segment.start {
-                let byte = if speed > px(0.) { usize::MAX } else { 0 };
-                sel.head = selection::Point { offset: row - segment.start, byte };
+        if speed.y != px(0.) {
+            self.glide = None;
+            self.pinned = None;
+            self.list.scroll_by(speed.y);
+            // The selection follows to the row at the edge it scrolls towards.
+            let top = self.list.logical_scroll_top().item_ix;
+            let item = if speed.y > px(0.) {
+                let bottom = self.list.viewport_bounds().bottom();
+                (top..self.list.item_count()).take_while(|ix| self.list.bounds_for_item(*ix).is_some_and(|b| b.top() < bottom)).last().unwrap_or(top)
+            } else {
+                top
+            };
+            let row = self.built.row_of_item(item);
+            if let (Some(segment), Some(sel)) = (self.built.segment_at(row).cloned(), self.text_selection.as_mut()) {
+                if segment.file == sel.file && segment.mode == sel.mode && row > segment.start {
+                    let byte = if speed.y > px(0.) { usize::MAX } else { 0 };
+                    sel.head = selection::Point { offset: row - segment.start, byte };
+                }
+            }
+        }
+        if speed.x != px(0.) {
+            self.scroll_x = (self.scroll_x + speed.x).clamp(px(0.), self.drag_max_x);
+            // The selection's end follows to the column at the edge in view (unless the
+            // vertical scroll just took it to a row's start or end).
+            if let (Some((left, right)), Some(pointer), true) = (self.drag_cell(), self.pointer, speed.y == px(0.)) {
+                let pad = u_px(8., cx);
+                let x = pointer.x.clamp(left + pad, right - pad);
+                let column = ((x - (left + pad) + self.scroll_x) / self.char_width(window, cx)).round().max(0.) as u32;
+                if let Some(sel) = self.text_selection.clone() {
+                    if let Some(code) = self.row_code(sel.file, sel.mode, sel.side, sel.head.offset, cx) {
+                        let byte = crate::text::expanded_byte_at_column(&code, column);
+                        if let Some(sel) = self.text_selection.as_mut() {
+                            sel.head.byte = byte;
+                        }
+                    }
+                }
             }
         }
         cx.notify();

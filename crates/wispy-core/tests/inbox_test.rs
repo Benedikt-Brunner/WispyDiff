@@ -28,6 +28,7 @@ fn inbox_pr(repo: &str, number: u64, base: &str, head: &str, updated: &str) -> I
         my_review: None,
         body_html: String::new(),
         auto_merge: false,
+        stats: None,
     }
 }
 

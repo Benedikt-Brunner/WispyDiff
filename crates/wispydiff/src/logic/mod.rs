@@ -7,6 +7,7 @@ pub mod gaps;
 pub mod glob;
 pub mod history;
 pub mod images;
+pub mod inbox_search;
 pub mod indent;
 pub mod layout;
 pub mod palette;

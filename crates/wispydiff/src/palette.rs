@@ -92,6 +92,8 @@ pub struct CommandPalette {
     commands: Vec<Command>,
     recents: Vec<String>,
     known: Vec<Suggestion>,
+    /// The open stack's repo: a bare number is looked for there first.
+    current_repo: Option<String>,
     backend: Option<Arc<crate::backend::Backend>>,
     remote: Remote,
     _search: Option<Task<()>>,
@@ -122,6 +124,7 @@ impl CommandPalette {
             commands,
             recents,
             known: Vec::new(),
+            current_repo: None,
             backend: None,
             remote: Remote::default(),
             _search: None,
@@ -140,9 +143,15 @@ impl CommandPalette {
         self
     }
 
-    /// The repos the user works in: the known PRs' and recent ones', most recent first.
+    pub fn with_current_repo(mut self, repo: Option<String>) -> Self {
+        self.current_repo = repo;
+        self
+    }
+
+    /// The repos the user works in: the open stack's, then the known PRs' and recent ones', most
+    /// recent first.
     fn repos(&self) -> Vec<String> {
-        let mut repos: Vec<String> = Vec::new();
+        let mut repos: Vec<String> = self.current_repo.iter().cloned().collect();
         for label in self.recents.iter().chain(self.known.iter().map(|k| &k.label)) {
             if let Some((repo, _)) = label.rsplit_once('#') {
                 if repo.contains('/') && !repos.iter().any(|r| r == repo) {
@@ -163,6 +172,27 @@ impl CommandPalette {
             return;
         }
         if query == self.remote.query {
+            return;
+        }
+        // A bare number (`12552`, `#12552`): that PR in each known repo, open or not, by its title.
+        if let Some(number) = number_query(&query).and_then(|n| n.parse::<u64>().ok()) {
+            let mut repos = self.repos();
+            repos.truncate(5);
+            if repos.is_empty() {
+                self._search = None;
+                self.remote = Remote::default();
+                return;
+            }
+            self.remote.pending = true;
+            self._search = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(250)).await;
+                let found = backend.lookup_prs(number, repos).await;
+                let _ = this.update(cx, |this, cx| {
+                    let results = found.into_iter().map(|(repo, title)| Suggestion { label: format!("{repo}#{number}"), title, source: "GitHub" }).collect();
+                    this.remote = Remote { query, results, pending: false, failed: false };
+                    cx.notify();
+                });
+            }));
             return;
         }
         // `owner/repo#…` (or just `owner/repo`): that repo's latest open PRs.
@@ -331,6 +361,21 @@ pub fn suggest(query: &str, candidates: &[Suggestion], repos: &[String]) -> Vec<
         for c in candidates {
             push(c.clone(), false, 0, &mut out);
         }
+    } else if let Some(number) = number_query(&q) {
+        // A bare number, with or without `#`: the PR with that number first, then the known
+        // PRs whose number starts with it, then that number in each known repo.
+        for c in candidates {
+            let label = c.label.to_lowercase();
+            let Some((_, n)) = label.rsplit_once('#') else { continue };
+            if n == number {
+                push(c.clone(), false, 0, &mut out);
+            } else if n.starts_with(number) {
+                push(c.clone(), false, 1, &mut out);
+            }
+        }
+        for repo in repos {
+            push(Suggestion { label: format!("{repo}#{number}"), title: String::new(), source: "open" }, false, 2, &mut out);
+        }
     } else {
         let words: Vec<&str> = q.split_whitespace().collect();
         // `owner/repo#12`: the number typed so far narrows that repo's PRs.
@@ -354,11 +399,6 @@ pub fn suggest(query: &str, candidates: &[Suggestion], repos: &[String]) -> Vec<
                 push(c.clone(), false, rank, &mut out);
             }
         }
-        if q.chars().all(|c| c.is_ascii_digit()) {
-            for repo in repos {
-                push(Suggestion { label: format!("{repo}#{q}"), title: String::new(), source: "open" }, false, 1, &mut out);
-            }
-        }
         if !q.contains('#') && !q.contains(' ') {
             for repo in repos.iter().filter(|r| r.to_lowercase().contains(&q)) {
                 push(Suggestion { label: repo.clone(), title: String::new(), source: "repo" }, true, 2, &mut out);
@@ -369,10 +409,17 @@ pub fn suggest(query: &str, candidates: &[Suggestion], repos: &[String]) -> Vec<
     out.into_iter().take(10).map(|(s, fill, _)| (s, fill)).collect()
 }
 
-/// `#123` at the end, or a `/pull/123` URL.
+/// A bare PR number, `12552` or `#12552` (its digits).
+pub fn number_query(q: &str) -> Option<&str> {
+    let digits = q.trim().strip_prefix('#').unwrap_or(q.trim());
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then_some(digits)
+}
+
+/// `repo#123` at the end, or a `/pull/123` URL (a bare `#123` names no repo: it's a number to
+/// look for).
 pub fn looks_like_pr(s: &str) -> bool {
-    let t = s.trim_end();
-    let hash = t.rfind('#').is_some_and(|at| at + 1 < t.len() && t[at + 1..].chars().all(|c| c.is_ascii_digit()));
+    let t = s.trim();
+    let hash = t.rfind('#').is_some_and(|at| at > 0 && at + 1 < t.len() && t[at + 1..].chars().all(|c| c.is_ascii_digit()));
     let pull = t.find("/pull/").is_some_and(|at| t[at + 6..].chars().next().is_some_and(|c| c.is_ascii_digit()));
     hash || pull
 }
@@ -486,6 +533,12 @@ mod tests {
         assert!(looks_like_pr("https://github.com/o/r/pull/7/files"));
         assert!(!looks_like_pr("owner/repo"));
         assert!(!looks_like_pr("#"));
+        // A bare number is looked for in the known repos, not opened as it is.
+        assert!(!looks_like_pr("#12552"));
+        assert_eq!(number_query("#12552"), Some("12552"));
+        assert_eq!(number_query("12552"), Some("12552"));
+        assert_eq!(number_query("#"), None);
+        assert_eq!(number_query("12a"), None);
     }
 
     fn s(label: &str, title: &str, source: &'static str) -> Suggestion {
@@ -505,6 +558,10 @@ mod tests {
         assert_eq!(labels("pickable units"), [("acme/shop#19117".into(), false), ("acme/app#5".into(), false)]);
         // A number: the PR whose number starts with it, and that number in each known repo.
         assert_eq!(labels("1911"), [("acme/shop#19117".into(), false), ("acme/shop#1911".into(), false), ("acme/app#1911".into(), false)]);
+        // With `#` too; the PR with exactly that number first.
+        assert_eq!(labels("#1911"), labels("1911"));
+        assert_eq!(labels("#88"), [("acme/shop#88".into(), false), ("acme/app#88".into(), false)]);
+        assert_eq!(labels(" 19117 ")[0], ("acme/shop#19117".into(), false));
         // A repo to go on in; after `#`, that repo's PRs by number.
         assert_eq!(labels("app"), [("acme/app#5".into(), false), ("acme/app".into(), true)]);
         assert_eq!(labels("acme/shop#8"), [("acme/shop#88".into(), false)]);

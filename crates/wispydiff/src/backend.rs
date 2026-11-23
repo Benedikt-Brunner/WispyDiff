@@ -1067,6 +1067,22 @@ impl Backend {
         async move { task.await.map_err(|e| e.to_string())? }
     }
 
+    /// The titles of the PRs numbered `number` in `repos` that exist (`owner/repo`, title).
+    pub fn lookup_prs(self: &Arc<Self>, number: u64, repos: Vec<String>) -> impl Future<Output = Vec<(String, String)>> + Send + 'static {
+        let backend = self.clone();
+        let task = self.runtime().spawn(async move {
+            let Ok(service) = backend.service() else { return Vec::new() };
+            let lookups = repos.iter().map(|repo| service.lookup_pr(repo, number));
+            futures::future::join_all(lookups)
+                .await
+                .into_iter()
+                .zip(&repos)
+                .filter_map(|(found, repo)| found.ok().map(|pr| (repo.clone(), pr.title)))
+                .collect()
+        });
+        async move { task.await.unwrap_or_default() }
+    }
+
     pub fn usages(
         self: &Arc<Self>,
         view_id: String,

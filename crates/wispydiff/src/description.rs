@@ -6,6 +6,8 @@ use std::{cell::Cell, rc::Rc};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Render, ScrollHandle, SharedString, Window};
 
+use wispy_core::inbox::DiffStats;
+
 use crate::markdown::RenderOptions;
 use crate::overlays::{Cancel, Next, OverlayEvent, Prev};
 use crate::ui::{link_button, palette, panel, u};
@@ -27,10 +29,37 @@ pub struct DescribedPr {
     pub color: Option<u8>,
     /// Auto-merge is enabled.
     pub auto_merge: bool,
+    /// `base ← head`; empty when unknown.
+    pub branches: String,
+    /// The PR's size, when known (GitHub's count, from the inbox).
+    pub stats: Option<DiffStats>,
+}
+
+/// "12 files · +340 −25".
+pub fn stats_text(stats: &DiffStats) -> (String, String, String) {
+    let files = format!("{} file{}", stats.files, if stats.files == 1 { "" } else { "s" });
+    (files, format!("+{}", stats.additions), format!("−{}", stats.deletions))
+}
+
+/// A diff's size as the muted "12 files · +340 −25", the line counts in their colours.
+pub fn stats_line(stats: &DiffStats, cx: &App) -> gpui_kit::Div {
+    let p = palette(cx);
+    let (files, additions, deletions) = stats_text(stats);
+    div()
+        .flex()
+        .flex_none()
+        .items_baseline()
+        .gap(u(4.))
+        .whitespace_nowrap()
+        .child(div().text_color(p.fg_muted).child(format!("{files} ·")))
+        .child(div().text_color(p.add_fg).child(additions))
+        .child(div().text_color(p.del_fg).child(deletions))
 }
 
 pub struct DescriptionView {
     prs: Vec<DescribedPr>,
+    /// The diff in view (a PR or a range of them) and its size, in the heading.
+    in_view: Option<(String, DiffStats)>,
     opts: RenderOptions,
     scroll: ScrollHandle,
     focus: FocusHandle,
@@ -48,7 +77,17 @@ impl DescriptionView {
     pub fn new(prs: Vec<DescribedPr>, first: usize, opts: RenderOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        DescriptionView { prs, opts, scroll: ScrollHandle::new(), focus, pressed_inside: Rc::default(), pin_top: (first > 0).then_some(first) }
+        DescriptionView { prs, in_view: None, opts, scroll: ScrollHandle::new(), focus, pressed_inside: Rc::default(), pin_top: (first > 0).then_some(first) }
+    }
+
+    /// Shows the size of the diff in view (`what`: "#12" or "#12–#14") in the heading.
+    pub fn with_in_view(mut self, in_view: Option<(String, DiffStats)>) -> Self {
+        self.in_view = in_view;
+        self
+    }
+
+    pub fn in_view(&self) -> Option<&(String, DiffStats)> {
+        self.in_view.as_ref()
     }
 
     /// Whether the press the backdrop sees started inside the panel (and forgets it). The panel
@@ -125,7 +164,20 @@ impl Render for DescriptionView {
                         }),
                 )
                 .child(div().text_size(u(15.)).font_weight(FontWeight::SEMIBOLD).child(pr.title.clone()))
-                .child(div().text_size(u(12.)).text_color(p.fg_muted).child(format!("by {}", pr.author)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_baseline()
+                        .gap_x(u(6.))
+                        .text_size(u(12.))
+                        .text_color(p.fg_muted)
+                        .child(div().child(format!("by {}", pr.author)))
+                        .when(!pr.branches.is_empty(), |d| {
+                            d.child(div().child("·")).child(div().font_family(mono.clone()).child(pr.branches.clone()))
+                        })
+                        .when_some(pr.stats, |d, stats| d.child(div().child("·")).child(stats_line(&stats, cx))),
+                )
                 .child(div().text_size(u(13.)).line_height(u(20.)).child(body))
         });
         if let Some(first) = self.pin_top {
@@ -159,7 +211,28 @@ impl Render for DescriptionView {
                     .py(u(10.))
                     .border_b_1()
                     .border_color(p.border)
-                    .child(div().text_size(u(14.)).font_weight(FontWeight::SEMIBOLD).child(heading))
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(u(10.))
+                            .min_w(px(0.))
+                            .child(div().flex_none().text_size(u(14.)).font_weight(FontWeight::SEMIBOLD).child(heading))
+                            .when_some(self.in_view.clone(), |d, (what, stats)| {
+                                d.child(
+                                    div()
+                                        .id("description-in-view")
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(u(4.))
+                                        .min_w(px(0.))
+                                        .text_size(u(12.))
+                                        .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("The diff in view, as the app computes it").build(window, cx))
+                                        .child(div().flex_none().text_color(p.fg_muted).child(format!("in view: {what} ·")))
+                                        .child(stats_line(&stats, cx)),
+                                )
+                            }),
+                    )
                     .child(link_button("close", cx).id("description-close").on_click(cx.listener(|_, _, _, cx| cx.emit(OverlayEvent::Closed(None))))),
             )
             .child(

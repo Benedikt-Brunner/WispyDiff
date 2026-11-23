@@ -1,14 +1,16 @@
 //! Home: review requests and your own PRs, grouped into stacks. j/k to move, Enter to open,
-//! Space/e to collapse a stack, r to refresh, i (or a right-click) for a PR's description.
+//! Space/e to collapse a stack, r to refresh, i (or a right-click) for a PR's description, f to
+//! find PRs by number, title or branch.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::AnimationExt as _;
 use gpui_kit::{
-    div, px, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, Render, ScrollHandle, SharedString,
-    Window,
+    div, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, Render, ScrollHandle,
+    SharedString, Subscription, Window,
 };
 use wispy_core::inbox::InboxPr;
 use wispy_core::service::{InboxEntry, PrProgress};
@@ -19,7 +21,7 @@ use crate::logic::time::{ago, exact_local, now_unix};
 use crate::settings;
 use crate::ui::{key_label, link_button, palette, status_badge, u, wordmark, BadgeKind};
 
-gpui_kit::actions!(inbox, [Down, Up, Open, Toggle, Refresh, Describe]);
+gpui_kit::actions!(inbox, [Down, Up, Open, Toggle, Refresh, Describe, Find]);
 
 pub fn bind_keys(cx: &mut App) {
     let ctx = Some("Inbox && !Input");
@@ -33,6 +35,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("e", Toggle, ctx),
         KeyBinding::new("r", Refresh, ctx),
         KeyBinding::new("i", Describe, ctx),
+        KeyBinding::new("f", Find, ctx),
     ]);
 }
 
@@ -77,9 +80,17 @@ pub struct Inbox {
     collapsed: HashSet<String>,
     /// The selected item: a PR label, or a collapsed stack as `group:<key>`.
     selected_id: Option<String>,
+    /// The find box (`f`) while it's open, and what's typed in it.
+    search: Option<Entity<InputState>>,
+    query: String,
+    _search_subscription: Option<Subscription>,
     scroll: ScrollHandle,
     focus: FocusHandle,
 }
+
+/// The groups the find box leaves, best match first: each group's index, the PRs in it that
+/// match, and its best score.
+type Found = Vec<(usize, Vec<usize>, f64)>;
 
 impl EventEmitter<InboxEvent> for Inbox {}
 
@@ -99,8 +110,109 @@ impl Inbox {
             refreshing: None,
             collapsed: settings::list(cx, "inboxCollapsed").into_iter().collect(),
             selected_id: None,
+            search: None,
+            query: String::new(),
+            _search_subscription: None,
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+        }
+    }
+
+    pub fn searching(&self) -> bool {
+        self.search.is_some()
+    }
+
+    /// What j/k move over, in order (for tests): PR labels, or `group:…` for a collapsed stack.
+    pub fn listed(&self) -> Vec<String> {
+        self.items()
+    }
+
+    /// The selected item of [`Inbox::listed`] (for tests).
+    pub fn selected_item(&self) -> Option<String> {
+        let items = self.items();
+        items.get(self.selected(&items)).cloned()
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// What the find box leaves (none while nothing is typed).
+    fn found(&self) -> Option<Found> {
+        if self.query.trim().is_empty() {
+            return None;
+        }
+        let mut found: Found = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let scored: Vec<(usize, f64)> = entry
+                    .group
+                    .prs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, pr)| crate::logic::inbox_search::score(&self.query, pr.number, &pr.title, &pr.head_ref).map(|s| (i, s)))
+                    .collect();
+                let best = scored.iter().map(|(_, s)| *s).reduce(f64::max)?;
+                Some((index, scored.into_iter().map(|(i, _)| i).collect(), best))
+            })
+            .collect();
+        found.sort_by(|a, b| b.2.total_cmp(&a.2));
+        Some(found)
+    }
+
+    /// `f`: opens the find box (or goes back to it).
+    fn find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(search) = &self.search {
+            search.update(cx, |input, cx| input.focus(window, cx));
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find by #number, title or branch"));
+        self._search_subscription = Some(cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| match event {
+            InputEvent::Change => {
+                this.query = input.read(cx).value().to_string();
+                this.select_best();
+                this.scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
+                cx.notify();
+            }
+            InputEvent::PressEnter { .. } => this.open_selected(cx),
+            _ => {}
+        }));
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.search = Some(input);
+        cx.notify();
+    }
+
+    /// Closes the find box: the whole inbox again, the selection kept.
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search = None;
+        self.query.clear();
+        self._search_subscription = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Opens a PR; the find box is done with (the inbox shows everything when it's back).
+    fn open_pr(&mut self, label: String, cx: &mut Context<Self>) {
+        self.search = None;
+        self.query.clear();
+        self._search_subscription = None;
+        cx.emit(InboxEvent::Open(label));
+    }
+
+    /// Selects the PR matching what's typed best.
+    fn select_best(&mut self) {
+        let Some(found) = self.found() else { return };
+        let best = found.first().and_then(|(index, prs, _)| {
+            let entry = &self.entries[*index];
+            prs.iter()
+                .map(|&i| (i, crate::logic::inbox_search::score(&self.query, entry.group.prs[i].number, &entry.group.prs[i].title, &entry.group.prs[i].head_ref)))
+                .max_by(|a, b| a.1.unwrap_or(0.).total_cmp(&b.1.unwrap_or(0.)))
+                .map(|(i, _)| pr_label(&entry.group.prs[i]))
+        });
+        if best.is_some() {
+            self.selected_id = best;
         }
     }
 
@@ -131,6 +243,9 @@ impl Inbox {
 
     /// What j/k move over: each PR, or a collapsed stack as a whole.
     fn items(&self) -> Vec<String> {
+        if let Some(found) = self.found() {
+            return found.iter().flat_map(|(index, prs, _)| prs.iter().map(|&i| pr_label(&self.entries[*index].group.prs[i]))).collect();
+        }
         self.entries
             .iter()
             .flat_map(|e| {
@@ -183,6 +298,10 @@ impl Inbox {
     }
 
     fn open(&mut self, _: &Open, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_selected(cx);
+    }
+
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
         let items = self.items();
         let Some(current) = items.get(self.selected(&items)).cloned() else { return };
         if current.starts_with("group:") {
@@ -190,7 +309,7 @@ impl Inbox {
                 self.toggle_entry(index, cx);
             }
         } else {
-            cx.emit(InboxEvent::Open(current));
+            self.open_pr(current, cx);
         }
     }
 
@@ -239,8 +358,12 @@ impl Inbox {
 }
 
 impl Focusable for Inbox {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
+    /// The find box while it's open (it keeps the keyboard when the inbox gets it back).
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match &self.search {
+            Some(search) => search.read(cx).focus_handle(cx),
+            None => self.focus.clone(),
+        }
     }
 }
 
@@ -256,6 +379,26 @@ impl Render for Inbox {
             .on_action(cx.listener(Self::toggle))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::describe))
+            .on_action(cx.listener(Self::find))
+            // The find box takes ↑/↓/Esc itself: the list needs them first.
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::MoveDown, window, cx| {
+                if this.search.is_some() {
+                    cx.stop_propagation();
+                    this.down(&Down, window, cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::MoveUp, window, cx| {
+                if this.search.is_some() {
+                    cx.stop_propagation();
+                    this.up(&Up, window, cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                if this.search.is_some() {
+                    cx.stop_propagation();
+                    this.close_search(window, cx);
+                }
+            }))
             .size_full()
             .bg(p.bg)
             .text_color(p.fg);
@@ -286,10 +429,20 @@ impl Render for Inbox {
             format!("{n} group{}", if n == 1 { "" } else { "s" })
         };
         let mono = crate::ui::mono_family(cx);
-        let groups = self.entries.iter().enumerate().map(|(index, entry)| {
+        // While finding: the groups with matches, best first, and only their matching PRs.
+        let found = self.found();
+        let filtering = found.is_some();
+        let shown: Vec<(usize, Option<Vec<usize>>)> = match found {
+            Some(found) => found.into_iter().map(|(index, prs, _)| (index, Some(prs))).collect(),
+            None => (0..self.entries.len()).map(|index| (index, None)).collect(),
+        };
+        let nothing_found = filtering && shown.is_empty();
+        let find = self.render_find(cx);
+        let groups = shown.into_iter().map(|(index, only)| {
+            let entry = &self.entries[index];
             let key = group_key(entry);
             let stack = entry.group.prs.len() > 1;
-            let collapsed = stack && self.collapsed.contains(&key);
+            let collapsed = stack && !filtering && self.collapsed.contains(&key);
             let head_selected = collapsed && selected.as_deref() == Some(&format!("group:{key}"));
             let current = entry.progress.iter().filter(|p| up_to_date(p)).count();
             let changed = entry.progress.iter().filter(|p| changed_since(p)).count();
@@ -375,8 +528,11 @@ impl Render for Inbox {
                 );
             let prs = (!collapsed).then(|| {
                 let guides = guides(entry.group.prs.len(), |i| entry.group.parent(i));
-                div().flex().flex_col().children(entry.group.prs.iter().enumerate().map(|(i, pr)| {
-                    let guide = guides[i].clone();
+                let only = only.clone();
+                let rows = entry.group.prs.iter().enumerate().filter(move |(i, _)| only.as_ref().is_none_or(|only| only.contains(i)));
+                div().flex().flex_col().children(rows.map(|(i, pr)| {
+                    // A subset of the tree has no lines to draw between its PRs.
+                    let guide = if filtering { String::new() } else { guides[i].clone() };
                     let label = pr_label(pr);
                     let (open_label, hover_label) = (label.clone(), label.clone());
                     let (menu_label, button_label) = (label.clone(), label.clone());
@@ -392,7 +548,7 @@ impl Render for Inbox {
                         .rounded(u(6.))
                         .cursor_pointer()
                         .when(is_selected, |d| d.bg(p.selection))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(InboxEvent::Open(open_label.clone()))))
+                        .on_click(cx.listener(move |this, _, _, cx| this.open_pr(open_label.clone(), cx)))
                         // A right-click shows the description.
                         .on_mouse_down(
                             gpui_kit::MouseButton::Right,
@@ -437,7 +593,29 @@ impl Render for Inbox {
                         .when(pr.auto_merge, |d| d.child(crate::ui::auto_merge_badge(format!("inbox-auto-merge-{label}"), cx)))
                         .children(Self::progress_badges(&pr_label(pr), entry.progress.get(i), cx))
                         .child(div().flex_1())
-                        // On the row under the mouse (or selected with j/k).
+                        .when_some(pr.stats, |d, stats| {
+                            let files = format!("{} file{} changed", stats.files, if stats.files == 1 { "" } else { "s" });
+                            d.child(
+                                div()
+                                    .id(SharedString::from(format!("inbox-stats-{label}")))
+                                    .flex()
+                                    .flex_none()
+                                    .gap(u(4.))
+                                    .text_size(u(12.))
+                                    .whitespace_nowrap()
+                                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(files.clone()).build(window, cx))
+                                    .child(div().text_color(p.add_fg).child(format!("+{}", stats.additions)))
+                                    .child(div().text_color(p.del_fg).child(format!("−{}", stats.deletions))),
+                            )
+                        })
+                        .child(div().flex_shrink(100.).min_w(px(0.)).overflow_hidden().text_ellipsis().text_size(u(12.)).text_color(p.fg_muted).whitespace_nowrap().child(format!(
+                            "{} · {} · {} ← {}",
+                            if pr.requested { "review requested" } else { "yours" },
+                            pr.author,
+                            pr.base_ref,
+                            pr.head_ref
+                        )))
+                        // On the row under the mouse (or selected with j/k), at its end.
                         .when(is_selected, |d| {
                             d.child(
                                 link_button("description", cx)
@@ -450,13 +628,6 @@ impl Render for Inbox {
                                     })),
                             )
                         })
-                        .child(div().flex_shrink(100.).min_w(px(0.)).overflow_hidden().text_ellipsis().text_size(u(12.)).text_color(p.fg_muted).whitespace_nowrap().child(format!(
-                            "{} · {} · {} ← {}",
-                            if pr.requested { "review requested" } else { "yours" },
-                            pr.author,
-                            pr.base_ref,
-                            pr.head_ref
-                        )))
                 }))
             });
             div().flex().flex_col().gap(u(2.)).child(head).children(prs)
@@ -472,9 +643,11 @@ impl Render for Inbox {
                     .gap(u(10.))
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .items_baseline()
                             .gap(u(10.))
+                            .child(find)
                             .child(div().text_size(u(18.)).font_weight(FontWeight::SEMIBOLD).child("Inbox"))
                             .child(div().text_size(u(12.)).text_color(p.fg_muted).child(status))
                             .child(link_button("refresh", cx).id("inbox-refresh").on_click(cx.listener(|_, _, _, cx| cx.emit(InboxEvent::Refresh))))
@@ -494,11 +667,55 @@ impl Render for Inbox {
                                 )
                             }),
                     )
-                    .children(groups),
+                    .children(groups)
+                    .when(nothing_found, |d| {
+                        d.child(div().px(u(12.)).py(u(8.)).text_size(u(13.)).text_color(p.fg_muted).child(format!("No PR matches “{}”", self.query.trim())))
+                    }),
             ),
         )
         .child(gpui_kit::base::Scrollbar::vertical(&self.scroll))
         .into_any_element()
+    }
+}
+
+impl Inbox {
+    /// The find box, floating at the right of the heading so nothing moves when it opens; a
+    /// "find (f)" link in its place while it's closed.
+    fn render_find(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let p = palette(cx).clone();
+        let place = div().absolute().right_0().top(u(-4.)).h(u(30.)).flex().items_center();
+        let Some(search) = &self.search else {
+            return place
+                .child(
+                    link_button("find (f)", cx)
+                        .id("inbox-find")
+                        .tooltip(tip("Find PRs by number, title or branch"))
+                        .on_click(cx.listener(|this, _, window, cx| this.find(&Find, window, cx))),
+                )
+                .into_any_element();
+        };
+        let count = self.found().map(|found| found.iter().map(|(_, prs, _)| prs.len()).sum::<usize>());
+        place
+            .w(u(340.))
+            .gap(u(6.))
+            .pl(u(4.))
+            .pr(u(10.))
+            .rounded(u(8.))
+            .bg(p.bg)
+            .border_1()
+            .border_color(p.accent.opacity(0.6))
+            .when(p.shadows, |d| d.shadow_md())
+            .child(div().flex_1().min_w(px(0.)).child(Input::new(search).appearance(false).text_size(u(13.))))
+            .when_some(count, |d, count| {
+                let text = match count {
+                    0 => "none".to_string(),
+                    1 => "1 PR".to_string(),
+                    n => format!("{n} PRs"),
+                };
+                d.child(div().flex_none().text_size(u(11.)).text_color(p.fg_muted).child(text))
+            })
+            .child(div().flex_none().text_size(u(11.)).text_color(p.fg_muted.opacity(0.7)).child("esc"))
+            .into_any_element()
     }
 }
 

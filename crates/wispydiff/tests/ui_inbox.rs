@@ -338,6 +338,88 @@ async fn j_k_clamp_selection_and_enter_opens_selected_pr(cx: &mut TestAppContext
     ui.close(cx).await;
 }
 
+/// `f` opens the find box: typing narrows the inbox to PRs matching by title, branch or number
+/// (best match selected), Esc shows everything again, Enter opens the selected match.
+#[gpui_kit::test]
+async fn f_finds_prs_by_title_branch_and_number(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
+    let ui = Ui::new(backend.clone(), cx);
+    ui.home(cx).await;
+    let inbox = ui.app.read_with(cx, |a, _| a.inbox_view().clone());
+    let listed = |cx: &mut TestAppContext| inbox.read_with(cx, |i, _| (i.listed(), i.selected_item()));
+    let all = listed(cx).0;
+    assert_eq!(all.len(), 5);
+    // Letters are shortcuts until `f` opens the find box; then they're typed into it.
+    ui.press(cx, "f");
+    assert!(inbox.read_with(cx, |i, _| i.searching()));
+    ui.input(cx, "capacity");
+    let (matches, best) = listed(cx);
+    assert_eq!(matches, ["wispy/fixture#2", "wispy/fixture#3", "wispy/fixture#4"]);
+    // "Capacity docs and tests" has the word first.
+    assert_eq!(best.as_deref(), Some("wispy/fixture#4"), "the best match is selected");
+    ui.press(cx, "up");
+    assert_eq!(listed(cx).1.as_deref(), Some("wispy/fixture#3"), "↑/↓ move through the matches");
+    // A branch name (Esc closes the box, `f` opens it empty).
+    ui.press(cx, "escape f");
+    ui.input(cx, "solo");
+    assert_eq!(listed(cx), (vec!["wispy/fixture#5".to_string()], Some("wispy/fixture#5".to_string())));
+    ui.press(cx, "escape");
+    assert!(!inbox.read_with(cx, |i, _| i.searching()));
+    assert_eq!(listed(cx).0, all);
+    // A number, with `#`: that PR first, and Enter opens it.
+    ui.press(cx, "f");
+    ui.input(cx, "#3");
+    assert_eq!(listed(cx).1.as_deref(), Some("wispy/fixture#3"));
+    ui.press(cx, "enter");
+    ui.wait(cx, |cx| !ui.session.read(cx).home && ui.session.read(cx).shown.as_ref().is_some_and(|r| (r.range.lo, r.range.hi) == (2, 2))).await;
+    assert!(!inbox.read_with(cx, |i, _| i.searching()), "opening a PR closes the find box");
+    drop(backend);
+    ui.close(cx).await;
+}
+
+/// The inbox shows each PR's size as GitHub counts it.
+#[gpui_kit::test]
+async fn inbox_prs_carry_their_diff_size(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
+    let ui = Ui::new(backend.clone(), cx);
+    ui.home(cx).await;
+    let stats = ui.session.read_with(cx, |s, _| s.inbox.iter().flat_map(|e| &e.group.prs).find(|p| p.number == 5).and_then(|p| p.stats));
+    assert_eq!(stats, Some(wispy_core::inbox::DiffStats { files: 15, additions: 607, deletions: 152 }));
+    drop(backend);
+    ui.close(cx).await;
+}
+
+/// ⌘K takes a bare number, with or without `#`: the PR with that number in a known repo.
+#[gpui_kit::test]
+async fn palette_opens_a_pr_by_its_bare_number(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let backend = Backend::with_github(fixture.data.path().into(), fixture.api(), "fixture-token".into());
+    let ui = Ui::new(backend.clone(), cx);
+    ui.home(cx).await;
+    for (typed, lo) in [("#3", 2), ("5", 0)] {
+        ui.press(cx, secondary("k"));
+        ui.wait(cx, |cx| ui.app.read(cx).palette_view().is_some()).await;
+        ui.input(cx, typed);
+        ui.press(cx, "enter");
+        ui.wait(cx, |cx| {
+            let s = ui.session.read(cx);
+            assert!(s.error.is_none(), "open {typed}: {:?}", s.error);
+            !s.home && s.busy.is_none() && s.shown.as_ref().is_some_and(|r| r.range.lo == lo)
+        })
+        .await;
+        let number = ui.session.read_with(cx, |s, _| {
+            let shown = s.shown.as_ref().unwrap();
+            s.stack.as_ref().unwrap().prs[shown.range.lo].number
+        });
+        assert_eq!(format!("#{number}").trim_start_matches('#'), typed.trim_start_matches('#'));
+        ui.home(cx).await;
+    }
+    drop(backend);
+    ui.close(cx).await;
+}
+
 #[gpui_kit::test]
 async fn offline_prefetched_pr_accepts_draft_and_failed_preparation_keeps_it(
     cx: &mut TestAppContext,
