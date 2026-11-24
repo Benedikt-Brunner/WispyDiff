@@ -327,6 +327,8 @@ pub struct DiffViewer {
     tree_done: HashSet<String>,
     filters: serde_json::Map<String, Value>,
     pub filter_open: bool,
+    /// When a click outside last closed the filter menu: a click on its own button closes it, not reopens.
+    filter_closed_at: Option<Instant>,
     pub filter_highlight: usize,
     file_search: Option<Entity<FileSearch>>,
 
@@ -444,6 +446,7 @@ impl DiffViewer {
             tree_done: HashSet::new(),
             filters: settings::record(cx, "fileFilters"),
             filter_open: false,
+            filter_closed_at: None,
             filter_highlight: 0,
             file_search: None,
             reveals: HashMap::new(),
