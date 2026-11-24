@@ -1414,6 +1414,32 @@ async fn file_filter_persists_per_repo_hidden_search_and_show_all(cx: &mut TestA
     t.finish(cx).await;
 }
 
+// A click on the filter button while its menu is open closes the menu (its mouse-down, a click
+// outside the menu, must not leave the click to reopen it).
+#[gpui_kit::test]
+async fn filter_button_click_closes_open_menu(cx: &mut TestAppContext) {
+    let t = Reading::new(cx);
+    t.open(cx, 3).await;
+    let at = {
+        let shown = cx
+            .update_window(t.window, |_, w, _| gpui_kit::base::test_support::snapshots(w))
+            .unwrap();
+        shown
+            .iter()
+            .find(|s| s.visible() && s.path().last() == Some(&gpui_kit::ElementId::Name("file-filter".into())))
+            .expect("filter button is visible")
+            .bounds()
+            .center()
+    };
+    t.click(cx, at, Modifiers::default());
+    assert!(t.read(cx, |d, _| d.filter_open), "the first click opens the menu");
+    t.click(cx, at, Modifiers::default());
+    assert!(!t.read(cx, |d, _| d.filter_open), "a second click closes it");
+    t.click(cx, at, Modifiers::default());
+    assert!(t.read(cx, |d, _| d.filter_open), "a third click opens it again");
+    t.finish(cx).await;
+}
+
 // keys.e2e: "filters with the keyboard: x hides the current file's extension, F switches the filter off, f opens it".
 #[gpui_kit::test]
 async fn keyboard_file_filter_x_f_and_menu(cx: &mut TestAppContext) {

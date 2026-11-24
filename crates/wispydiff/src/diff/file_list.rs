@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt;
 use gpui_kit::{
     div, px, AnyElement, App, Context, DragMoveEvent, FontWeight, KeyBinding, Render, SharedString,
     Window,
@@ -227,6 +228,10 @@ impl DiffViewer {
                                 gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
+                                // The mouse-down of this click already closed the menu as a click outside.
+                                if this.filter_closed_at.take().is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(300)) {
+                                    return;
+                                }
                                 this.filter_open = !this.filter_open;
                                 this.filter_highlight = 0;
                                 // ↑/↓ and Space work the menu however it was opened.
@@ -240,7 +245,8 @@ impl DiffViewer {
                             }))
                             .child(crate::ui::icon("filter", 14., if active { p.accent } else { p.fg_muted }))
                             .when(filtered_count > 0, |d| d.child(format!("{filtered_count} hidden")))
-                            .when(self.filter().off && !self.filter().exts.is_empty(), |d| d.child("filter off")),
+                            .when(self.filter().off && !self.filter().exts.is_empty(), |d| d.child("filter off"))
+                            .test_support(),
                     )
                     .when(self.filter_open, |d| d.child(self.render_filter_menu(cx)))),
             )
@@ -445,6 +451,7 @@ impl DiffViewer {
                     .occlude()
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                         this.filter_open = false;
+                        this.filter_closed_at = Some(std::time::Instant::now());
                         cx.notify();
                     }))
                     .py(u(4.))
