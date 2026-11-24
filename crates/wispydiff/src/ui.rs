@@ -5,7 +5,7 @@
 
 use std::borrow::Cow;
 
-use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::component::theme::{Theme, ThemeMode, ThemeTokens};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     div, px, rems, svg, AnyElement, App, AssetSource, Div, FontWeight, Global, Hsla, IntoElement, Pixels, Rems,
@@ -157,6 +157,9 @@ fn sync_kit(cx: &mut App) {
     c.danger_foreground = p.bg_elevated;
     c.success = p.add_fg;
     c.warning = p.pr(1);
+    // Some components (tooltips, buttons, scrollbars) paint from the resolved tokens, not the
+    // colours: rebuild them, or they keep gpui-kit's default (light) surfaces.
+    theme.tokens = ThemeTokens::from(&theme.colors);
     Theme::sync_base(cx);
 }
 
