@@ -1113,6 +1113,9 @@ async fn theme_preview_revert_and_persist(cx: &mut TestAppContext) {
     cx.read(|cx| {
         assert_eq!(cx.global::<Looks>().theme, ThemeId::Nord);
         assert_eq!(cx.global::<Looks>().preview, None);
+        // gpui-kit's tooltips paint from its resolved tokens: they follow the theme too.
+        let kit = gpui_kit::component::theme::Theme::global(cx);
+        assert_eq!(kit.tokens.popover.color, wispydiff::ui::palette(cx).bg_elevated);
     });
     assert_eq!(
         t.backend.prefs().get_str("theme", &["nord"], "missing"),
