@@ -193,10 +193,8 @@ impl DiffViewer {
         let note = if view.filtered { "read-only · hidden by the file filter" } else { "read-only · not part of this diff" };
         let body = div()
             .id("file-view")
-            .w(u(1100.))
-            .max_w(gpui_kit::relative(0.9))
-            .h(u(680.))
-            .max_h(gpui_kit::relative(0.8))
+            // Fills the diff area, short of a margin that keeps the backdrop clickable.
+            .size_full()
             .flex()
             .flex_col()
             .rounded(u(10.))
@@ -244,7 +242,7 @@ impl DiffViewer {
             .flex()
             .justify_center()
             .items_start()
-            .pt(u(90.))
+            .p(u(24.))
             .bg(gpui_kit::Hsla { a: if p.dark { 0.45 } else { 0.18 }, ..gpui_kit::black() })
             .occlude()
             .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| {

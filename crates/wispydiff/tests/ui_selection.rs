@@ -157,11 +157,13 @@ async fn file_view_drag_copies_original_tabs_and_shift_click_extends(cx: &mut Te
     let (body, cw) = cx
         .update_window(ui.window, |_, w, cx| {
             let scale = w.scale_factor();
+            // The modal fills the window but for a 24px margin.
+            let width = f32::from(w.viewport_size().width) - 48.;
             let body = w
                 .painted_quads()
                 .into_iter()
                 .find(|q| {
-                    (q.bounds.size.width.0 / scale - 1100.).abs() < 1.
+                    (q.bounds.size.width.0 / scale - width).abs() < 1.
                         && q.bounds.size.height.0 / scale > 400.
                 })
                 .expect("painted file-view body");
