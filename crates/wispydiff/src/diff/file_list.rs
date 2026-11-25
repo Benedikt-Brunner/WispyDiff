@@ -124,7 +124,7 @@ impl DiffViewer {
         if current != self.file_list_current {
             if let Some(path) = current.and_then(|c| files.get(c)).map(|f| f.path.clone()) {
                 for dir in ancestors(&path) {
-                    self.tree_closed.remove(&dir);
+                    self.set_dir_folded(&dir, false);
                 }
             }
         }
@@ -132,7 +132,7 @@ impl DiffViewer {
         let rows: Vec<FileRow> = if self.list_mode_tree {
             let paths: Vec<Option<String>> = files.iter().enumerate().map(|(i, f)| (!filtered[i]).then(|| f.path.clone())).collect();
             let tree: Vec<TreeNode> = build_tree(&paths);
-            tree_rows(&tree, &self.tree_closed)
+            tree_rows(&tree, |dir| self.dir_folded(dir))
                 .into_iter()
                 .map(|row| match row.node {
                     TreeNode::File(i) => FileRow::File { index: *i, depth: Some(row.depth) },
@@ -332,7 +332,7 @@ impl DiffViewer {
                         .into_any_element()
                 }
                 FileRow::Dir { path, name, depth, files } => {
-                    let open = !self.tree_closed.contains(path);
+                    let open = !self.dir_folded(path);
                     let s = self.session.read(cx);
                     let all_viewed = files.iter().all(|&i| s.is_viewed(&self.view.summary.files[i].content_key));
                     let toggle = path.clone();
@@ -350,9 +350,8 @@ impl DiffViewer {
                         .hover(|d| d.bg(p.selection.opacity(0.5)))
                         .when(all_viewed, |d| d.text_color(p.fg_muted))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this.tree_closed.remove(&toggle) {
-                                this.tree_closed.insert(toggle.clone());
-                            }
+                            let folded = this.dir_folded(&toggle);
+                            this.set_dir_folded(&toggle, !folded);
                             cx.notify();
                         }))
                         .child(div().w(u(12.)).text_color(p.fg_muted).child(if open { "▾" } else { "▸" }))

@@ -323,8 +323,12 @@ pub struct DiffViewer {
     /// A collapsed file opened for a look: it collapses again once another file is shown.
     temporary: Option<String>,
     pub list_mode_tree: bool,
-    pub tree_closed: HashSet<String>,
-    tree_done: HashSet<String>,
+    /// Tree directories folded by hand while not settled.
+    tree_closed: HashSet<String>,
+    /// Settled tree directories opened by hand (or by reaching a file in them).
+    tree_opened: HashSet<String>,
+    /// Tree directories whose every shown file is viewed or collapsed: they fold by themselves.
+    tree_settled: HashSet<String>,
     filters: serde_json::Map<String, Value>,
     pub filter_open: bool,
     /// When a click outside last closed the filter menu: a click on its own button closes it, not reopens.
@@ -443,7 +447,8 @@ impl DiffViewer {
             temporary: None,
             list_mode_tree: settings::pref(cx, "fileList", &["list", "tree"], "list") == "tree",
             tree_closed: HashSet::new(),
-            tree_done: HashSet::new(),
+            tree_opened: HashSet::new(),
+            tree_settled: HashSet::new(),
             filters: settings::record(cx, "fileFilters"),
             filter_open: false,
             filter_closed_at: None,
@@ -703,7 +708,7 @@ impl DiffViewer {
         self.tallies = tallies;
         self.list.reset_with_uniform_height(self.built.items.len(), u_px(20., cx));
         self.signature = self.layout_signature(cx);
-        self.update_tree_done(cx);
+        self.update_tree_settled(&modes, cx);
     }
 
     /// A layout change (modes, collapsing, gaps, comments, filter): keeps the reader's place.
@@ -1813,21 +1818,44 @@ impl DiffViewer {
 
     // ---------- the file tree ----------
 
-    /// A directory folds once every file in it is viewed.
-    fn update_tree_done(&mut self, cx: &App) {
+    /// A directory is settled while every file in it (the filter's leaving out) is viewed or collapsed.
+    /// It is folded exactly while settled, unless the reader opened or folded it by hand; whenever it
+    /// settles or unsettles, that choice is dropped (so finishing a directory folds it, and a new
+    /// unviewed file in it, from another range or a changed filter, opens it again).
+    fn update_tree_settled(&mut self, modes: &[Mode], cx: &App) {
         let filtered = self.filtered();
         let paths: Vec<Option<String>> = self.view.summary.files.iter().enumerate().map(|(i, f)| (!filtered[i]).then(|| f.path.clone())).collect();
         let tree = crate::logic::file_tree::build_tree(&paths);
         let s = self.s(cx);
-        let done: HashSet<String> = crate::logic::file_tree::all_dirs(&tree)
+        let settled: HashSet<String> = crate::logic::file_tree::all_dirs(&tree)
             .into_iter()
-            .filter(|d| d.files.iter().all(|&i| s.is_viewed(&self.view.summary.files[i].content_key)))
+            .filter(|d| d.files.iter().all(|&i| modes[i] == Mode::Collapsed || s.is_viewed(&self.view.summary.files[i].content_key)))
             .map(|d| d.path.clone())
             .collect();
-        for d in done.difference(&self.tree_done) {
-            self.tree_closed.insert(d.clone());
+        for d in settled.symmetric_difference(&self.tree_settled) {
+            self.tree_closed.remove(d);
+            self.tree_opened.remove(d);
         }
-        self.tree_done = done;
+        self.tree_settled = settled;
+    }
+
+    /// Whether the tree shows `dir` folded.
+    pub fn dir_folded(&self, dir: &str) -> bool {
+        if self.tree_settled.contains(dir) {
+            !self.tree_opened.contains(dir)
+        } else {
+            self.tree_closed.contains(dir)
+        }
+    }
+
+    /// Folds or opens `dir` by hand.
+    pub fn set_dir_folded(&mut self, dir: &str, folded: bool) {
+        let (default, choices) = if self.tree_settled.contains(dir) { (true, &mut self.tree_opened) } else { (false, &mut self.tree_closed) };
+        if folded == default {
+            choices.remove(dir);
+        } else {
+            choices.insert(dir.to_string());
+        }
     }
 
     // ---------- jumps ----------
