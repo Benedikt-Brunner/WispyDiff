@@ -86,7 +86,7 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     assert_eq!(calls[3], "error: #1 doesn't change src/New.php");
     assert_eq!(calls[4], "error: #7 isn't in this stack");
     assert_eq!(calls[5], "error: README.md isn't changed in this range");
-    assert!(prompt.contains("The stack's other PRs are part of the same review.") && prompt.contains("\n- #3 PR 3 (above; not in the checkout)\n"), "{prompt}");
+    assert!(prompt.contains("The stack's other PRs are part of the same review.") && prompt.contains("\n- #3 PR 3 — by @octocat (above; not in the checkout)\n"), "{prompt}");
     assert!(prompt.contains("the whole stack is yours to explore") && prompt.contains("on the PR where it fits best"), "{prompt}");
 
     // About #2 alone: the PRs below and above it are a tool call away.
@@ -101,7 +101,7 @@ fn lists_the_changed_files_in_the_prompt_and_shows_their_diffs_on_request() {
     let new = NewThread { provider: Provider::Claude, model: None, effort: None, selection: None, anchor: None, hidden: vec![] };
     let thread = service.ask(&snapshot, (1, 1), None, Some(new), &format!("tools:{steps}"), |_| {}).unwrap();
     let prompt = last_prompt(log.path());
-    assert!(prompt.contains("\n- #1 PR 1 (below; its changes are in the checkout)\n- #3 PR 3 (above; not in the checkout)\n"), "{prompt}");
+    assert!(prompt.contains("\n- #1 PR 1 — by @octocat (below; its changes are in the checkout)\n- #3 PR 3 — by @octocat (above; not in the checkout)\n"), "{prompt}");
     assert!(!prompt.contains("- src/Later.php"), "other PRs' files aren't listed up front: {prompt}");
 
     let answer = &thread.messages.last().unwrap().text;

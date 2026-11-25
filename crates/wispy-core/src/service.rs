@@ -84,6 +84,8 @@ pub struct PrProgress {
 }
 
 const INBOX_KEY: &str = "inbox";
+/// The signed-in user's login, as last asked of GitHub.
+const VIEWER_KEY: &str = "viewer";
 
 /// Where a group's last complete prefetch time is kept.
 fn fetched_key(group: &InboxGroup) -> String {
@@ -444,7 +446,18 @@ impl PrService {
         }
         let login = self.github.viewer().await?;
         *self.viewer.lock().unwrap_or_else(|p| p.into_inner()) = Some(login.clone());
+        // Kept for offline use (the assistant's prompt names the reviewer).
+        self.cache.put_app_value(VIEWER_KEY, &serde_json::Value::String(login.clone()))?;
         Ok(login)
+    }
+
+    /// The signed-in user's login as last asked of GitHub (this run or an earlier one), without
+    /// asking it.
+    pub fn known_viewer(&self) -> Option<String> {
+        if let Some(login) = self.viewer.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+            return Some(login);
+        }
+        self.cache.app_value(VIEWER_KEY).ok().flatten().and_then(|v| v.as_str().map(str::to_string))
     }
 
     /// What merging stack PR `index` would do (target branch, methods, checks, prefilled message).
@@ -794,7 +807,7 @@ impl PrService {
         question: &str,
         on_event: impl FnMut(&crate::assistant::AssistantEvent) + Send,
     ) -> Result<crate::assistant::Thread> {
-        use crate::assistant::{first_prompt, run, worktree, AssistantEvent, Ask, ChangedFile, Context, Message, Thread};
+        use crate::assistant::{byline, first_prompt, run, worktree, AssistantEvent, Ask, ChangedFile, Context, Message, Thread};
         let (lo, hi) = (lo.min(hi), hi.min(snapshot.len() - 1));
         let existing = match thread {
             Some(id) => Some(self.cache.assistant_thread(id)?.ok_or_else(|| crate::Error::Assistant("thread not found".into()))?),
@@ -821,13 +834,23 @@ impl PrService {
                         ChangedFile::new(f, prs)
                     })
                     .collect();
+                let reviewer = self.known_viewer();
+                let by = |p: &crate::github::PullRequest| byline(&p.author, reviewer.as_deref());
                 let others = snapshot.stack.prs.iter().enumerate().filter(|&(i, _)| i < lo || i > hi).map(|(i, p)| {
                     let place = if i < lo { "below; its changes are in the checkout" } else { "above; not in the checkout" };
-                    format!("#{} {} ({place})", p.number, p.title)
+                    format!("#{} {} — {} ({place})", p.number, p.title, by(p))
                 });
+                let mut authors: Vec<String> = Vec::new();
+                for pr in &snapshot.stack.prs {
+                    if !authors.contains(&pr.author) {
+                        authors.push(pr.author.clone());
+                    }
+                }
                 let context = Context {
                     range_label: range_label(snapshot, lo, hi),
-                    titles: snapshot.stack.prs[lo..=hi].iter().map(|p| format!("#{} {}", p.number, p.title)).collect(),
+                    titles: snapshot.stack.prs[lo..=hi].iter().map(|p| format!("#{} {} — {}", p.number, p.title, by(p))).collect(),
+                    reviewer: reviewer.clone(),
+                    authors,
                     others: others.collect(),
                     files,
                     selection: new.selection,

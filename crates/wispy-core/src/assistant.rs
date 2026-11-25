@@ -341,8 +341,14 @@ pub fn sign_in(provider: Provider, on_url: impl FnOnce(&str)) -> Result<()> {
 pub struct Context {
     /// e.g. "acme/shop #12–#14".
     pub range_label: String,
-    /// PR titles of the range, bottom first.
+    /// PR titles of the range, bottom first, with their author ("#12 Add orders — by @alice").
     pub titles: Vec<String>,
+    /// The signed-in user's GitHub login, when known.
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    /// The logins of the stack's PR authors, each once.
+    #[serde(default)]
+    pub authors: Vec<String>,
     /// The stack's other PRs, bottom first, e.g. "#11 Add orders (below; its changes are in the checkout)".
     #[serde(default)]
     pub others: Vec<String>,
@@ -439,6 +445,7 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
          fits best: the one that introduced the code it's about, even when that's another PR of the stack than the \
          ones in view. Nothing reaches GitHub until the reviewer submits the review.\n\n",
     );
+    prompt.push_str(&people(context));
     prompt.push_str(&format!("In view: {}\n", context.range_label));
     for title in &context.titles {
         prompt.push_str(&format!("- {title}\n"));
@@ -489,6 +496,37 @@ pub fn first_prompt(context: &Context, question: &str) -> String {
     prompt.push('\n');
     prompt.push_str(&format!("Question: {question}\n"));
     prompt
+}
+
+/// Who wrote a PR, as the prompt's PR lines say it.
+pub fn byline(author: &str, reviewer: Option<&str>) -> String {
+    if reviewer.is_some_and(|r| r.eq_ignore_ascii_case(author)) { "by the reviewer".into() } else { format!("by @{author}") }
+}
+
+/// Who reviews and who wrote the PRs: the reviewer often reviews their own (agent-written) PRs,
+/// where there's no one else to ask.
+fn people(context: &Context) -> String {
+    let Some(reviewer) = context.reviewer.as_deref() else {
+        return String::new();
+    };
+    let own = |a: &String| a.eq_ignore_ascii_case(reviewer);
+    let own_work = "they wrote them (often through their own coding agents), so there's no other author to ask: don't \
+                    suggest asking the author or waiting for their answer; find it out from the code, or say what's \
+                    unclear and how to check it. Their review comments there are notes for themselves and the agents \
+                    that write their code";
+    if !context.authors.is_empty() && context.authors.iter().all(own) {
+        format!("The reviewer is @{reviewer}, and every PR of the stack is theirs: {own_work}.\n\n")
+    } else if context.authors.iter().any(own) {
+        format!(
+            "The reviewer is @{reviewer}. Each PR below names its author. The ones \"by the reviewer\" are their own: \
+             {own_work}. Questions for the other PRs' authors go into review comments.\n\n"
+        )
+    } else {
+        format!(
+            "The reviewer is @{reviewer}; the PRs are someone else's (each PR below names its author). Questions for \
+             an author go into review comments.\n\n"
+        )
+    }
 }
 
 /// A pending draft as the assistant is shown it.

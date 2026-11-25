@@ -1227,6 +1227,10 @@ impl Backend {
         let backend = self.clone();
         let task = self.runtime().spawn(async move {
             let (snapshot, service) = (backend.snapshot_of(&stack_id)?, backend.service()?);
+            // The first prompt names the reviewer; ask GitHub once (it's kept), not for long offline.
+            if new_thread.is_some() && service.known_viewer().is_none() {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(3), service.viewer()).await;
+            }
             backend
                 .blocking(move || {
                     if let (Some(id), Some((model, effort))) = (thread_id.as_deref(), retune) {
