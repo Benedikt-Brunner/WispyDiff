@@ -283,8 +283,8 @@ async fn repository_search_outside_file_readonly_and_close_button(cx: &mut TestA
     let top = ui
         .diff(cx)
         .read_with(cx, |d, _| d.list.viewport_bounds().top());
-    // The modal is 1100px wide, centered, 90px below the diff's top; header padding is 14x8.
-    ui.click(cx, point(px(1240.), top + px(109.)));
+    // The modal fills the 1440px window but for a 24px margin; header padding is 14x8.
+    ui.click(cx, point(px(1390.), top + px(43.)));
     assert!(ui.diff(cx).read_with(cx, |d, _| d.file_view.is_none()));
     ui.click(cx, point(px(1420.), top + px(24.)));
     assert!(ui.diff(cx).read_with(cx, |d, _| d.code_panel().is_none()));

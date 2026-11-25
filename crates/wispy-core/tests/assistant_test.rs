@@ -3,7 +3,7 @@ mod support;
 use std::path::PathBuf;
 
 use support::{pull_request, OriginRepo};
-use wispy_core::assistant::{command, first_prompt, needs_sign_in, parse_line, sign_in, sign_in_command, sign_in_url, Ask, AssistantEvent, Context, Provider, Selection};
+use wispy_core::assistant::{byline, command, first_prompt, needs_sign_in, parse_line, sign_in, sign_in_command, sign_in_url, Ask, AssistantEvent, Context, Provider, Selection};
 use wispy_core::cache::Cache;
 use wispy_core::github::GitHubClient;
 use wispy_core::highlight::Highlighter;
@@ -158,7 +158,8 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
 
     let calls = asks(log.path());
     let prompt = calls[0]["prompt"].as_str().unwrap();
-    assert!(prompt.contains("In view: acme/shop #3"));
+    assert!(prompt.contains("In view: acme/shop #3\n- #3 PR 3 — by @octocat\n"), "names the author: {prompt}");
+    assert!(!prompt.contains("The reviewer is @"), "the reviewer was never asked of GitHub: {prompt}");
     assert!(prompt.contains("+$state = 'picked';"), "the selection is in the first prompt");
     assert!(prompt.contains("\n- src/Order.php (modified, +1 −1)\n- src/composer.lock (modified, +1 −1, lockfile)\n"), "the changed files are: {prompt}");
     assert!(!prompt.contains("diff --git"), "their diffs aren't: {prompt}");
@@ -230,8 +231,34 @@ fn asks_in_a_read_only_checkout_of_the_head_and_follows_up_in_the_same_session()
 #[test]
 fn names_the_checkouts_line_numbers_when_a_higher_pr_moved_the_selection() {
     let selection = Selection { path: "src/Order.php".into(), pr_label: "#2".into(), start_line: 10, end_line: 12, text: "x".into(), head_start: Some(14), head_end: Some(16) };
-    let context = Context { range_label: "acme/shop #2–#3".into(), titles: vec![], others: vec![], files: vec![], selection: Some(selection), hidden: vec![] };
+    let context = Context { range_label: "acme/shop #2–#3".into(), titles: vec![], reviewer: None, authors: vec![], others: vec![], files: vec![], selection: Some(selection), hidden: vec![] };
     assert!(first_prompt(&context, "Why?").contains("lines of src/Order.php (in #2, lines 10–12; lines 14–16 in the checkout)"));
+}
+
+#[test]
+fn tells_the_assistant_whether_the_reviewer_wrote_the_prs() {
+    let context = |reviewer: Option<&str>, authors: &[&str]| Context {
+        range_label: "acme/shop #2".into(),
+        titles: vec![],
+        reviewer: reviewer.map(str::to_string),
+        authors: authors.iter().map(|a| a.to_string()).collect(),
+        others: vec![],
+        files: vec![],
+        selection: None,
+        hidden: vec![],
+    };
+    let own = first_prompt(&context(Some("jan"), &["Jan"]), "Why?");
+    assert!(own.contains("The reviewer is @jan, and every PR of the stack is theirs"), "{own}");
+    assert!(own.contains("don't suggest asking the author"), "{own}");
+    let mixed = first_prompt(&context(Some("jan"), &["jan", "alice"]), "Why?");
+    assert!(mixed.contains("The ones \"by the reviewer\" are their own") && mixed.contains("don't suggest asking the author"), "{mixed}");
+    let theirs = first_prompt(&context(Some("jan"), &["alice"]), "Why?");
+    assert!(theirs.contains("the PRs are someone else's") && !theirs.contains("don't suggest asking"), "{theirs}");
+    assert!(!first_prompt(&context(None, &["alice"]), "Why?").contains("The reviewer is @"), "unknown reviewer");
+
+    assert_eq!(byline("Jan", Some("jan")), "by the reviewer");
+    assert_eq!(byline("alice", Some("jan")), "by @alice");
+    assert_eq!(byline("alice", None), "by @alice");
 }
 
 #[test]
@@ -269,4 +296,28 @@ fn signs_in_through_the_cli_and_reports_the_sign_in_page() {
         sign_in(provider, |url| opened = Some(url.to_string())).unwrap();
         assert!(opened.as_deref().is_some_and(|u| u.starts_with(expected)), "{opened:?}");
     }
+}
+
+#[tokio::test]
+async fn remembers_the_reviewers_login_for_later_runs() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/user"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({ "login": "octocat" })))
+        .mount(&server)
+        .await;
+    let data = tempfile::tempdir().unwrap();
+    let service = |api: &str| {
+        PrService::new(
+            GitHubClient::new(api, "t").unwrap(),
+            RepoStore::new(data.path().join("repos"), None),
+            Cache::open(&data.path().join("cache.sqlite")).unwrap(),
+            Highlighter::new(),
+        )
+    };
+    let online = service(&server.uri());
+    assert_eq!(online.known_viewer(), None);
+    assert_eq!(online.viewer().await.unwrap(), "octocat");
+    assert_eq!(online.known_viewer().as_deref(), Some("octocat"));
+    // A later run knows it without GitHub.
+    assert_eq!(service("http://127.0.0.1:9").known_viewer().as_deref(), Some("octocat"));
 }
