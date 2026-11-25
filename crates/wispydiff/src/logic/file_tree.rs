@@ -1,5 +1,4 @@
 //! The file list as a directory tree, in the order the diff shows its files.
-use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeDir {
     /// Full path of the directory (the key for collapsing it).
@@ -72,25 +71,25 @@ pub fn build_tree(paths: &[Option<String>]) -> Vec<TreeNode> {
     }
     nodes.into_iter().map(compress).collect()
 }
-/// The rows shown: every node, minus what's inside collapsed directories.
-pub fn tree_rows<'a>(nodes: &'a [TreeNode], collapsed: &HashSet<String>) -> Vec<TreeRow<'a>> {
+/// The rows shown: every node, minus what's inside folded directories (`folded` takes a dir's path).
+pub fn tree_rows<'a>(nodes: &'a [TreeNode], folded: impl Fn(&str) -> bool) -> Vec<TreeRow<'a>> {
     fn visit<'a>(
         nodes: &'a [TreeNode],
-        collapsed: &HashSet<String>,
+        collapsed: &dyn Fn(&str) -> bool,
         depth: usize,
         out: &mut Vec<TreeRow<'a>>,
     ) {
         for node in nodes {
             out.push(TreeRow { depth, node });
             if let TreeNode::Dir(dir) = node {
-                if !collapsed.contains(&dir.path) {
+                if !collapsed(&dir.path) {
                     visit(&dir.children, collapsed, depth + 1, out);
                 }
             }
         }
     }
     let mut out = vec![];
-    visit(nodes, collapsed, 0, &mut out);
+    visit(nodes, &folded, 0, &mut out);
     out
 }
 /// The directories a file sits in (`a/b/c.ts` → `a`, `a/b`).
@@ -127,10 +126,10 @@ mod tests {
         assert_eq!(dirs[0].name, "src/a");
         assert_eq!(dirs[0].path, "src/a");
         assert_eq!(dirs[0].files, [0, 2]);
-        let rows = tree_rows(&tree, &HashSet::new());
+        let rows = tree_rows(&tree, |_| false);
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[1].depth, 1);
-        assert_eq!(tree_rows(&tree, &HashSet::from(["src/a".into()])).len(), 2);
+        assert_eq!(tree_rows(&tree, |d| d == "src/a").len(), 2);
         assert_eq!(ancestors("a/b/c.ts"), ["a", "a/b"]);
         assert!(ancestors("root").is_empty());
         assert!(build_tree(&[]).is_empty());

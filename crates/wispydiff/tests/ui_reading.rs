@@ -1259,7 +1259,7 @@ async fn file_tree_folds_and_navigation_reopens_directories(cx: &mut TestAppCont
     let y = t.read(cx, |d, _| d.list.viewport_bounds().top()) + px(4. + row as f32 * 24. + 12.);
     t.click(cx, point(px(70.), y), Modifiers::default());
     t.read(cx, |d, _| {
-        assert!(d.tree_closed.contains(&dir));
+        assert!(d.dir_folded(&dir));
         assert!(!d
             .file_rows
             .iter()
@@ -1268,7 +1268,7 @@ async fn file_tree_folds_and_navigation_reopens_directories(cx: &mut TestAppCont
     t.keys(cx, "n");
     t.read(cx, |d, _| {
         assert_eq!(d.current(), Some(1));
-        assert!(!d.tree_closed.contains(&dir));
+        assert!(!d.dir_folded(&dir));
     });
     let (small, files) = t.read(cx, |d, _| {
         d.file_rows
@@ -1286,7 +1286,7 @@ async fn file_tree_folds_and_navigation_reopens_directories(cx: &mut TestAppCont
         t.read(cx, |d, cx| assert!(viewed(d, *file, cx)));
     }
     t.read(cx, |d, _| {
-        assert!(d.tree_closed.contains(&small));
+        assert!(d.dir_folded(&small));
         assert!(!d
             .file_rows
             .iter()
@@ -1305,6 +1305,41 @@ async fn file_tree_folds_and_navigation_reopens_directories(cx: &mut TestAppCont
         t.backend.prefs().get_str("fileList", &["list"], "missing"),
         "list"
     );
+    t.finish(cx).await;
+}
+
+// A directory is folded by itself only while everything shown in it is viewed or collapsed: the
+// directories a PR's viewed files folded open again in the next PR, whose files there are new.
+#[gpui_kit::test]
+async fn file_tree_folds_only_settled_directories_across_prs(cx: &mut TestAppContext) {
+    let t = Reading::new(cx);
+    t.open(cx, 3).await;
+    t.top(cx);
+    t.keys(cx, "t");
+    let dir_rows = |d: &DiffViewer| -> Vec<String> { d.file_rows.iter().filter_map(|r| match r { FileRow::Dir { path, .. } => Some(path.clone()), _ => None }).collect() };
+    // Every directory, while all are open.
+    let dirs = t.read(cx, |d, _| dir_rows(d));
+    let files = t.read(cx, |d, _| d.view.summary.files.len());
+    for file in 0..files {
+        if t.read(cx, |d, cx| !viewed(d, file, cx)) {
+            t.click_file(cx, file);
+            t.keys(cx, "v");
+        }
+    }
+    t.read(cx, |d, _| assert!(!dirs.is_empty() && dirs.iter().all(|dir| d.dir_folded(dir)), "every directory is done"));
+    t.keys(cx, "tab");
+    t.range(cx, 3, 3).await;
+    t.frame(cx);
+    t.read(cx, |d, cx| {
+        let settled = |files: &[usize]| files.iter().all(|&i| viewed(d, i, cx) || mode(d, i) == Mode::Collapsed);
+        let mut reopened = 0;
+        for row in d.file_rows.iter() {
+            let FileRow::Dir { path, files, .. } = row else { continue };
+            assert_eq!(d.dir_folded(path), settled(files), "{path}");
+            reopened += usize::from(dirs.contains(path) && !settled(files));
+        }
+        assert!(reopened > 0, "a directory folded in the last PR has unviewed files in this one");
+    });
     t.finish(cx).await;
 }
 
