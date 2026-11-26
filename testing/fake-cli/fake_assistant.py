@@ -15,6 +15,8 @@ def main(provider):
         return sign_in(provider, args)
     if provider == "codex" and args == ["app-server"]:
         return model_server()
+    if provider == "claude" and "--input-format" in args:
+        return claude_models(args)
     prompt = sys.stdin.read()
     cwd = os.getcwd()
     write_log({"provider": provider, "args": args, "cwd": cwd, "prompt": prompt})
@@ -261,3 +263,27 @@ def model_server():
             result["data"].append({"model": "hidden", "displayName": "Hidden", "isDefault": False, "hidden": True, "supportedReasoningEfforts": []})
         print(json.dumps({"method": "notification", "params": {}}), flush=True)
         print(json.dumps({"id": message["id"], "result": result}), flush=True)
+
+
+def claude_models(args):
+    """Claude Code's `initialize` handshake (model discovery only, hooks off). WISPY_FAKE_MODELS:
+    `no-mythos` (an account without it), `error`, `timeout`."""
+    write_log({"provider": "claude", "args": args, "discovery": True})
+    assert json.loads(args[args.index("--settings") + 1]) == {"disableAllHooks": True}
+    mode = os.environ.get("WISPY_FAKE_MODELS", "ok")
+    message = json.loads(sys.stdin.readline())
+    assert message["request"]["subtype"] == "initialize"
+    if mode == "timeout":
+        time.sleep(60)
+    print(json.dumps({"type": "system", "subtype": "hook_started"}), flush=True)
+    if mode == "error":
+        response = {"subtype": "error", "request_id": message["request_id"], "error": "Not logged in (fake)"}
+    else:
+        efforts = ["low", "medium", "high", "xhigh", "max"]
+        models = [{"value": v, "displayName": n, "supportedEffortLevels": efforts} for v, n in
+            [("default", "Default (recommended)"), ("opus", "Opus"), ("sonnet", "Sonnet"), ("claude-opus-4-8", "Opus 4.8")]]
+        if mode != "no-mythos":
+            models += [{"value": f"claude-mythos-5-{v}", "displayName": f"Mythos 5.{v}", "supportedEffortLevels": efforts} for v in (2, 1)]
+        response = {"subtype": "success", "request_id": message["request_id"], "response": {"commands": [], "models": models}}
+    print(json.dumps({"type": "control_response", "response": response}), flush=True)
+    sys.stdin.read()

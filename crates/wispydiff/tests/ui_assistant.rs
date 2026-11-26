@@ -109,6 +109,31 @@ async fn codex_picker_discovers_models_and_retunes_conversation(cx: &mut TestApp
     ui.close(cx).await;
 }
 
+#[gpui_kit::test]
+async fn claude_picker_offers_mythos_the_account_has(cx: &mut TestAppContext) {
+    let f = Fixture::new();
+    let ui = Ui::mount(cx, &f);
+    ui.open(cx, 2).await;
+    open(&ui, cx).await;
+    click_element(&ui, cx, "assistant-agent");
+    let start = std::time::Instant::now();
+    loop {
+        ui.frame(cx);
+        if ui.snapshots(cx).iter().any(|s| s.visible() && s.path().last() == Some(&gpui_kit::ElementId::Name("model-claude-mythos-5-2".into()))) { break; }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "Claude Code offered Mythos");
+        cx.executor().timer(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(f.log().iter().any(|l| l["discovery"] == true), "asked the CLI which models the account has");
+    let shown = ui.snapshots(cx);
+    assert!(!shown.iter().any(|s| s.path().last() == Some(&gpui_kit::ElementId::Name("model-claude-mythos-5-1".into()))), "only the newest Mythos");
+    click_element(&ui, cx, "model-claude-mythos-5-2");
+    click_element(&ui, cx, "assistant-agent");
+    let thread = ask(&ui, cx, "Explain the change").await;
+    assert_eq!(thread.model.as_deref(), Some("claude-mythos-5-2"));
+    assert!(args(&latest_call(&f)).windows(2).any(|w| w == ["--model", "claude-mythos-5-2"]));
+    ui.close(cx).await;
+}
+
 // e2e: asks about selected lines ...; follows up in the same session;
 // marks the asked-about lines in the gutter
 #[gpui_kit::test]
