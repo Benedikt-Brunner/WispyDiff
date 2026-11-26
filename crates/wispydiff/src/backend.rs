@@ -1273,6 +1273,16 @@ impl Backend {
         async move { task.await.map_err(|e| e.to_string())? }
     }
 
+    pub fn claude_models(
+        self: &Arc<Self>,
+    ) -> impl Future<Output = Result<Vec<wispy_core::assistant::AssistantModel>, String>> + Send + 'static {
+        let backend = self.clone();
+        let task = self.runtime().spawn(async move {
+            backend.blocking(wispy_core::assistant::claude_models).await
+        });
+        async move { task.await.map_err(|e| e.to_string())? }
+    }
+
     pub fn codex_models(
         self: &Arc<Self>,
     ) -> impl Future<Output = Result<Vec<wispy_core::assistant::AssistantModel>, String>> + Send + 'static {

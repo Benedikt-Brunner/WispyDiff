@@ -118,6 +118,10 @@ pub struct AssistantPanel {
     sign_in: Option<SignIn>,
     question: Entity<TextareaState>,
     codex_models: Vec<AssistantModel>,
+    /// What Claude Code offers this account (`None` until discovered); only Mythos is picked from
+    /// it, the aliases above are always there.
+    claude_models: Option<Vec<AssistantModel>>,
+    claude_loading: bool,
     models_loading: bool,
     models_error: Option<String>,
     /// Model and effort chosen for the active conversation's next turns (its id first).
@@ -277,6 +281,8 @@ impl AssistantPanel {
             sign_in: None,
             question,
             codex_models: Vec::new(),
+            claude_models: None,
+            claude_loading: false,
             models_loading: false,
             models_error: None,
             turn: None,
@@ -348,7 +354,10 @@ impl AssistantPanel {
         settings::set_pref(cx, "assistant.provider", provider_id(provider));
         self.model = settings::get::<String>(cx, &format!("assistant.model.{}", provider_id(provider))).unwrap_or_default();
         self.effort = settings::get::<String>(cx, &format!("assistant.effort.{}", provider_id(provider))).unwrap_or_default();
-        if provider == Provider::Codex { self.load_codex_models(cx); }
+        match provider {
+            Provider::Codex => self.load_codex_models(cx),
+            Provider::Claude => self.load_claude_models(cx),
+        }
         cx.notify();
     }
 
@@ -389,7 +398,10 @@ impl AssistantPanel {
     fn toggle_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_open = !self.picker_open;
         if self.picker_open {
-            if self.choice().0 == Provider::Codex { self.load_codex_models(cx); }
+            match self.choice().0 {
+                Provider::Codex => self.load_codex_models(cx),
+                Provider::Claude => self.load_claude_models(cx),
+            }
         }
         self.focus_question(window, cx);
         cx.notify();
@@ -408,6 +420,22 @@ impl AssistantPanel {
                     Ok(models) => this.codex_models = models,
                     Err(error) => this.models_error = Some(error),
                 }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    /// Asks Claude Code once which models the account has (a failure leaves only the aliases and
+    /// tries again next time the picker opens).
+    fn load_claude_models(&mut self, cx: &mut Context<Self>) {
+        if self.claude_loading || self.claude_models.is_some() { return; }
+        self.claude_loading = true;
+        let task = self.backend.claude_models();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.claude_loading = false;
+                this.claude_models = result.ok();
                 cx.notify();
             });
         }).detach();
@@ -1042,19 +1070,27 @@ impl AssistantPanel {
             }))
         });
         let models: Vec<AnyElement> = if provider == Provider::Claude {
-            CLAUDE_MODELS
-                .iter()
-                .map(|m| {
-                    let value = m.to_string();
-                    let label = if m.is_empty() { "Default".to_string() } else { capitalize(m) };
-                    row(SharedString::from(format!("model-{m}")), label, model == *m, true)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_model(value.clone(), cx);
-                            this.focus_question(window, cx);
-                        }))
-                        .into_any_element()
-                })
-                .collect()
+            let mut choices: Vec<(String, String)> = CLAUDE_MODELS.iter()
+                .map(|m| (m.to_string(), if m.is_empty() { "Default".to_string() } else { capitalize(m) }))
+                .collect();
+            // Mythos only for accounts Claude Code offers it to.
+            let discovered = self.claude_models.as_deref();
+            if let Some(mythos) = discovered.and_then(wispy_core::assistant::mythos) {
+                choices.push((mythos.model.clone(), mythos.display_name.clone()));
+            }
+            if !model.is_empty() && !choices.iter().any(|(value, _)| *value == model) {
+                let label = if discovered.is_some_and(|ms| !ms.iter().any(|m| m.model == model)) { format!("{model} (unavailable)") } else { model.clone() };
+                choices.push((model.clone(), label));
+            }
+            choices.into_iter().map(|(value, label)| {
+                row(SharedString::from(format!("model-{value}")), label, model == value, true)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_model(value.clone(), cx);
+                        this.focus_question(window, cx);
+                    }))
+                    .test_support()
+                    .into_any_element()
+            }).collect()
         } else {
             let mut choices = vec![(String::new(), "Default".to_string())];
             choices.extend(self.codex_models.iter().map(|m| (m.model.clone(), m.display_name.clone())));

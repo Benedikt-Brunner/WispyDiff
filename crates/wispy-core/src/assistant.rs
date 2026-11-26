@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
 mod models;
-pub use models::{codex_models, AssistantModel, ReasoningEffort};
+pub use models::{claude_models, codex_models, mythos, AssistantModel, ReasoningEffort};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
